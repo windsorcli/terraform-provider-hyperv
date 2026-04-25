@@ -1,0 +1,69 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "github>aquaproj/aqua-renovate-config#2.12.0",
+    ":dependencyDashboard"
+  ],
+  "packageRules": [
+    {
+      "description": "Pin GitHub Actions to specific commit SHAs",
+      "matchManagers": ["github-actions"],
+      "versioning": "github-tags",
+      "pinDigests": true,
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "matchPackageNames": ["/.*/"],
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Automerge dependency updates",
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": true,
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Update Go modules; group HashiCorp framework + log + go + testing together",
+      "matchManagers": ["gomod"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "labels": ["go", "dependencies"]
+    },
+    {
+      "description": "Group HashiCorp Terraform plugin libraries — they share transitive deps and bicker if updated separately",
+      "matchPackageNames": ["github.com/hashicorp/terraform-plugin-{/,}**"],
+      "groupName": "terraform-plugin-*"
+    },
+    {
+      "description": "Update Taskfile dependencies",
+      "matchFileNames": ["Taskfile.yaml"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "labels": ["dependencies"]
+    }
+  ],
+  "platformAutomerge": true,
+  "customManagers": [
+    {
+      "description": "Pick up `go install <pkg>@<version>` lines in Taskfile and workflows",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Taskfile\\.yaml$/",
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "go install (?<depName>\\S+)@(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "go",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"]
+}
