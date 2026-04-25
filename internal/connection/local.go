@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -111,6 +112,13 @@ func (b *localBackend) RunScript(ctx context.Context, script string, stdinJSON [
 // *exec.Cmd's Args and Path without invoking pwsh.
 func (b *localBackend) buildCmd(ctx context.Context, script string, stdinJSON []byte) *exec.Cmd {
 	encoded := base64.StdEncoding.EncodeToString(utf16leBytes(script))
+	// #nosec G204 -- b.pwshPath is the operator-configured path to the PowerShell
+	// binary they asked us to invoke (provider attribute local.pwsh_path or env
+	// HYPERV_PWSH_PATH, otherwise discovered from PATH). exec.CommandContext does
+	// not invoke a shell, so no metacharacter expansion is possible. All other
+	// arguments are static literals; `encoded` is base64 (no shell-unsafe chars)
+	// of UTF-16-encoded script content authored in this package. The tainted-input
+	// finding describes a config knob, not an untrusted-data path.
 	cmd := exec.CommandContext(ctx, b.pwshPath,
 		"-NoProfile",
 		"-NonInteractive",
@@ -140,13 +148,14 @@ func discoverPwsh(override string) (string, error) {
 }
 
 // utf16leBytes encodes s as little-endian UTF-16 with no BOM — the format
-// powershell.exe -EncodedCommand expects.
+// powershell.exe -EncodedCommand expects. Each uint16 code unit is packed
+// into two bytes via encoding/binary; the manual byte(r)/byte(r>>8) shorthand
+// is equivalent but trips gosec G115's uint16->byte truncation check.
 func utf16leBytes(s string) []byte {
 	u16 := utf16.Encode([]rune(s))
 	out := make([]byte, len(u16)*2)
 	for i, r := range u16 {
-		out[i*2] = byte(r)
-		out[i*2+1] = byte(r >> 8)
+		binary.LittleEndian.PutUint16(out[i*2:], r)
 	}
 	return out
 }

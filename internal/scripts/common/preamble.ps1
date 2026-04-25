@@ -1,4 +1,4 @@
-# common/preamble.ps1 — concatenated to the top of every resource script at
+﻿# common/preamble.ps1 — concatenated to the top of every resource script at
 # runtime.
 #
 # Three load-bearing facts here:
@@ -43,15 +43,20 @@ function Write-HypervError {
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
         $ErrorRecord
     )
-    $payload = [ordered]@{
-        message               = $ErrorRecord.Exception.Message
-        category              = $ErrorRecord.CategoryInfo.Category.ToString()
-        fullyQualifiedErrorId = $ErrorRecord.FullyQualifiedErrorId
-        cmdlet                = $ErrorRecord.CategoryInfo.Activity
-        targetObject          = $ErrorRecord.CategoryInfo.TargetName
+    # process block is required for ValueFromPipeline parameters: without it, only the
+    # last piped record would be emitted because the function body runs once after the
+    # pipeline drains, with $ErrorRecord overwritten on each iteration.
+    process {
+        $payload = [ordered]@{
+            message               = $ErrorRecord.Exception.Message
+            category              = $ErrorRecord.CategoryInfo.Category.ToString()
+            fullyQualifiedErrorId = $ErrorRecord.FullyQualifiedErrorId
+            cmdlet                = $ErrorRecord.CategoryInfo.Activity
+            targetObject          = $ErrorRecord.CategoryInfo.TargetName
+        }
+        $json = $payload | ConvertTo-Json -Depth 5 -Compress
+        [Console]::Error.WriteLine($json)
     }
-    $json = $payload | ConvertTo-Json -Depth 5 -Compress
-    [Console]::Error.WriteLine($json)
 }
 
 # Write-HypervResult is sugar for the standard result emit. The terminal
@@ -63,5 +68,8 @@ function Write-HypervResult {
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
         $Object
     )
-    $Object | ConvertTo-Json -Depth 10 -Compress
+    # process block required — see Write-HypervError above for the rationale.
+    process {
+        $Object | ConvertTo-Json -Depth 10 -Compress
+    }
 }
