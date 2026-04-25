@@ -133,9 +133,19 @@ tasks:
 
   docs:check:
     desc: CI gate — generated docs match schema
+    summary: |
+      Runs `task generate` then asserts no tracked-or-untracked changes in the
+      generated paths. Uses `git status --porcelain` instead of `git diff` so
+      paths that don't exist yet (no resources shipped) don't error.
     cmds:
       - task: generate
-      - git diff --exit-code docs/index.md docs/resources docs/data-sources
+      - |
+        drift="$(git status --porcelain docs/index.md docs/resources docs/data-sources docs/functions 2>/dev/null)"
+        if [ -n "$drift" ]; then
+          echo "Generated docs have drifted. Run 'task generate' and commit the result." >&2
+          echo "$drift" >&2
+          exit 1
+        fi
 
   docs:validate:
     desc: Validate doc structure against Registry rules
