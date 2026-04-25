@@ -33,7 +33,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task tools
@@ -48,7 +48,7 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install yamllint
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task lint:yaml
@@ -62,11 +62,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task test:unit
-      - uses: codecov/codecov-action@e28ff129e5465c2c0dcc6f003fc735cb6ae0c673 # v4.5.0
+      - uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         if: always()
         with:
           files: ./coverage.out
@@ -81,7 +81,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task build:all
@@ -95,10 +95,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
         with:
           terraform_wrapper: false
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task fmt:check
@@ -112,10 +112,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
         with:
           terraform_wrapper: false
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task validate:examples
@@ -129,7 +129,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      # tfplugindocs falls back to downloading Terraform itself when none is on
+      # PATH, and that download path verifies a HashiCorp GPG signature that
+      # has expired. Pre-installing Terraform short-circuits the download.
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_wrapper: false
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task tools
@@ -144,7 +150,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      # See note on docs-drift — Terraform on PATH avoids tfplugindocs's
+      # GPG-verified Terraform download.
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_wrapper: false
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - run: task tools
@@ -155,7 +166,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
       - shell: pwsh
