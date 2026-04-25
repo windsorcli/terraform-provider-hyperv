@@ -71,31 +71,29 @@ func (b *localBackend) RunScript(ctx context.Context, script string, stdinJSON [
 
 	// Distinguish ctx-driven termination from app-level exit. The original
 	// code did `if ctx.Err() != nil → ErrTimeout` unconditionally, which
-	// would mask a real exit code on an unrelated race (process exits
-	// non-zero AND parent ctx happens to cancel around the same moment).
-	// Now: only treat as ErrTimeout when the process didn't exit cleanly
-	// (signal-killed, exit code -1) AND the ctx is in fact done.
+	// could mask a clean exit. The fix: only treat as ErrTimeout when
+	// `cmd.Run` returned an error (process killed or couldn't start) AND
+	// the ctx is in fact done. A clean exit produces runErr == nil, so a
+	// coincidental late ctx-cancel doesn't suppress the Result.
+	//
+	// Cross-platform note: on Unix a signal-kill produces ExitCode == -1;
+	// on Windows exec.CommandContext kills via TerminateProcess yielding
+	// ExitCode == 1 (or whatever Go's KillProcess passes). Checking just
+	// `runErr != nil && ctxDone` covers both — we don't need to inspect
+	// the exit-code value, only that there was an error and ctx is done.
 	ctxDone := ctx.Err() != nil
 	exitCode := 0
 	if runErr != nil {
+		if ctxDone {
+			return Result{}, fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
+		}
 		var ee *exec.ExitError
 		if errors.As(runErr, &ee) {
+			// Application-level non-zero exit. The typed client interprets
+			// the stderr envelope.
 			exitCode = ee.ExitCode()
-			// Signal-killed (typically SIGKILL from exec.CommandContext's
-			// Cancel func) shows up as ExitCode == -1. Combined with a
-			// done ctx, that's our timeout signal.
-			if ctxDone && exitCode == -1 {
-				return Result{}, fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
-			}
-			// Otherwise: real application-level exit (any code, including
-			// ones that happen to coincide with a ctx cancel). The typed
-			// client interprets the stderr envelope.
 		} else {
-			// Process couldn't start, etc. — transport failure. If ctx is
-			// also done, prefer ErrTimeout for a clearer caller signal.
-			if ctxDone {
-				return Result{}, fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
-			}
+			// Process couldn't start, etc. — transport failure.
 			return Result{}, fmt.Errorf("local backend exec: %w", runErr)
 		}
 	}
