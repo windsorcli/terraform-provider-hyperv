@@ -1,4 +1,4 @@
-﻿# common/preamble.ps1 — concatenated to the top of every resource script at
+﻿# common/preamble.ps1 -- concatenated to the top of every resource script at
 # runtime.
 #
 # Three load-bearing facts here:
@@ -26,7 +26,7 @@ $ProgressPreference    = 'SilentlyContinue'
 $OutputEncoding           = [System.Text.Encoding]::UTF8
 
 # Write-HypervError emits the structured error envelope on stderr. The
-# Go-side hyperv/errors.go maps fields to typed errors per §5:
+# Go-side hyperv/errors.go maps fields to typed errors per PLAN.md section 5:
 #
 #   category=ObjectNotFound|ResourceUnavailable      -> ErrNotFound
 #   category=PermissionDenied                        -> ErrUnauthorized
@@ -60,7 +60,7 @@ function Write-HypervError {
 }
 
 # Write-HypervResult is sugar for the standard result emit. The terminal
-# `ConvertTo-Json -Depth 10 -Compress` pattern is locked in by spike #2 —
+# `ConvertTo-Json -Depth 10 -Compress` pattern is locked in by spike #2:
 # default depth=2 silently truncates nested objects to literal strings.
 function Write-HypervResult {
     [CmdletBinding()]
@@ -68,7 +68,7 @@ function Write-HypervResult {
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
         $Object
     )
-    # process block required — see Write-HypervError above for the rationale.
+    # process block required -- see Write-HypervError above for the rationale.
     process {
         $Object | ConvertTo-Json -Depth 10 -Compress
     }
