@@ -1,0 +1,43 @@
+---
+extends: default
+
+rules:
+  # Taskfile and workflow shell commands legitimately exceed 80 chars; allow
+  # generous lines without warning. Anything over 300 is probably a smell.
+  line-length:
+    max: 300
+    level: warning
+
+  # Task uses flow-style braces with spaces (`{ matrix: { OS: [...] } }`) for
+  # readability. Don't fight that style.
+  braces:
+    forbid: false
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+    min-spaces-inside-empty: -1
+    max-spaces-inside-empty: -1
+
+  brackets:
+    forbid: false
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+    min-spaces-inside-empty: -1
+    max-spaces-inside-empty: -1
+
+  comments:
+    min-spaces-from-content: 1
+
+  comments-indentation: disable
+  document-start: disable
+
+  truthy:
+    check-keys: false
+
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+
+ignore: |
+  docs/spikes/
+  spikes/*/go.sum
+  spikes/*/go.mod
