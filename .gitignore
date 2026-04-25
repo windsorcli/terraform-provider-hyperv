@@ -1,0 +1,34 @@
+# Build artifacts
+/terraform-provider-hyperv
+/terraform-provider-hyperv.exe
+/dist/
+
+# Coverage
+/coverage.out
+/coverage.html
+
+# Local config (committed: .env.example)
+.env
+.env.local
+.env.development
+
+# Terraform working dirs in examples/
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/crash.log
+**/crash.*.log
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Spike artifacts (per-spike .gitignore handles binaries)
+/creds.txt
