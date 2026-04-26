@@ -46,23 +46,26 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 	return nil
 }
 
-// minifyPS strips comment-only lines (whitespace + leading `#`) and blank
-// lines from a PowerShell script before it goes on the wire. The source
-// preamble.ps1 is human-readable (~3.7 KB); after minification it's ~1.2 KB.
+// minifyPS shrinks a PowerShell script for the wire by dropping comment-only
+// lines, blank lines, and leading/trailing whitespace per line. The source
+// preamble.ps1 is human-readable (~3.7 KB); after minification it's ~0.9 KB.
 //
 // This is load-bearing for the SSH backend: Windows OpenSSH server invokes
 // commands through cmd.exe whose CreateProcess command-line max is 8191
-// chars. The full preamble + base64 + UTF-16LE expansion (~10 KB) overflows
-// that. Minification gets us comfortably under the limit while preserving
-// every functional line of the §5 contract.
+// chars. The full preamble + verb-script + base64 + UTF-16LE expansion can
+// overflow that. Minification gets us comfortably under the limit while
+// preserving every functional line of the §5 contract.
 //
 // `#Requires` directives are preserved verbatim -- PowerShell parses them
 // before execution to enforce version/privilege checks, so silently
 // stripping them would bypass the check at runtime with no error.
 //
 // Trailing inline comments (e.g. `$x = 1 # note`) are NOT stripped -- doing
-// so safely requires PS-string-literal awareness. The line-level strip alone
-// is sufficient and unambiguous.
+// so safely requires PS-string-literal awareness. Same goes for collapsing
+// internal whitespace runs (here-strings @"..."@ would lose meaningful
+// indentation). Leading/trailing strip is unambiguously safe for our
+// scripts because none use here-strings; if a future script does, this
+// function's contract needs revisiting.
 func minifyPS(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -77,7 +80,7 @@ func minifyPS(s string) string {
 				continue
 			}
 		}
-		b.WriteString(line)
+		b.WriteString(trimmed)
 		b.WriteByte('\n')
 	}
 	return b.String()

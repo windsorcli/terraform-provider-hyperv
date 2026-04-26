@@ -16,7 +16,7 @@ func TestClient_GetVMSwitch_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/get.ps1").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
 	sw, err := c.GetVMSwitch(t.Context(), "external-switch")
@@ -43,7 +43,7 @@ func TestClient_GetVMSwitch_ForwardsNameInStdin(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/get.ps1").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
 	if _, err := c.GetVMSwitch(t.Context(), "lookup-target"); err != nil {
@@ -73,7 +73,7 @@ func TestClient_GetVMSwitch_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 
 	envelope := `{"category":"ObjectNotFound","message":"VM switch not found","cmdlet":"Get-VMSwitch"}`
 	fr := testutil.NewFakeRunner().
-		On("vswitch/get.ps1").Return("", envelope, 1)
+		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
 	_, err := c.GetVMSwitch(t.Context(), "missing")
@@ -89,7 +89,7 @@ func TestClient_GetVMSwitch_ResourceUnavailableMapsToErrUnavailable(t *testing.T
 
 	envelope := `{"category":"ResourceUnavailable","message":"vmms not running","cmdlet":"Get-VMSwitch"}`
 	fr := testutil.NewFakeRunner().
-		On("vswitch/get.ps1").Return("", envelope, 1)
+		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
 	_, err := c.GetVMSwitch(t.Context(), "external-switch")
@@ -106,7 +106,7 @@ func TestClient_NewVMSwitch_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/new.ps1").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+		On("function New-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
 	allow := true
@@ -144,7 +144,7 @@ func TestClient_NewVMSwitch_OmitsAbsentOptionals(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/new.ps1").Return(testutil.VMSwitchPrivateFixtureJSON, "", 0)
+		On("function New-HypervSwitch").Return(testutil.VMSwitchPrivateFixtureJSON, "", 0)
 	c := NewClient(fr)
 
 	in := NewVMSwitchInput{
@@ -169,7 +169,7 @@ func TestClient_SetVMSwitch_ForwardsSwitchTypeForGuard(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/set.ps1").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+		On("function Set-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
 	allow := false
@@ -197,7 +197,7 @@ func TestClient_SetVMSwitch_ReturnsReadShape(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/set.ps1").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+		On("function Set-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
 	allow := true
@@ -221,7 +221,7 @@ func TestClient_RemoveVMSwitch_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("vswitch/remove.ps1").Return("", "", 0)
+		On("function Remove-HypervSwitch").Return("", "", 0)
 	c := NewClient(fr)
 
 	if err := c.RemoveVMSwitch(t.Context(), "to-delete"); err != nil {
@@ -240,7 +240,7 @@ func TestClient_RemoveVMSwitch_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 
 	envelope := `{"category":"ObjectNotFound","message":"switch not found","cmdlet":"Remove-VMSwitch"}`
 	fr := testutil.NewFakeRunner().
-		On("vswitch/remove.ps1").Return("", envelope, 1)
+		On("function Remove-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
 	err := c.RemoveVMSwitch(t.Context(), "missing")

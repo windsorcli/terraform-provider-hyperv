@@ -3,13 +3,13 @@ package connection
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -218,10 +218,13 @@ func (b *sshBackend) Healthcheck(ctx context.Context) error {
 	return nil
 }
 
-// RunScript executes a PowerShell script on the remote host via a fresh
-// SSH session. The script body is base64+UTF-16LE-encoded and passed via
-// powershell.exe's -EncodedCommand flag, matching the local backend's
-// wire shape and the spike #2 contract.
+// RunScript executes a PowerShell script on the remote host. The script
+// body is staged as a temp file via SCP and executed with `powershell.exe
+// -File`, leaving stdin free for input JSON. This sidesteps the effective
+// command-line length cliff we hit with Windows OpenSSH (~1.3 KB on the
+// test host, well below cmd.exe's documented 8191 limit) -- both raw
+// `-EncodedCommand` of a typical preamble + verb script and a gzip+base64
+// bootstrap variant exceeded that ceiling.
 func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []byte) (Result, error) {
 	b.mu.Lock()
 	client := b.client
@@ -230,15 +233,20 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 		return Result{}, errors.New("ssh: backend not open -- call Open first")
 	}
 
+	remotePath, cleanup, err := stageScript(ctx, client, script)
+	if err != nil {
+		return Result{}, fmt.Errorf("ssh: stage script: %w", err)
+	}
+	defer cleanup()
+
 	session, err := client.NewSession()
 	if err != nil {
 		return Result{}, fmt.Errorf("ssh: open session: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
-	encoded := base64.StdEncoding.EncodeToString(utf16leBytes(script))
-	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand %s",
-		b.opts.PwshPath, encoded)
+	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -ExecutionPolicy Bypass -File %s",
+		b.opts.PwshPath, remotePath)
 
 	if len(stdinJSON) > 0 {
 		session.Stdin = bytes.NewReader(stdinJSON)
@@ -273,6 +281,70 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 		ExitCode: 0,
 		Duration: duration,
 	}, nil
+}
+
+// stageScript writes `script` to a remote temp file via SCP-over-SSH and
+// returns the remote path plus a cleanup func that deletes the file. The
+// returned path is the right argument for `powershell.exe -File`; stdin
+// stays free for input JSON.
+//
+// Why SCP instead of -EncodedCommand: Windows OpenSSH server's exec channel
+// silently truncates commands past ~1.3 KB on our test host (no error,
+// command runs with garbled args, stdout empty). cmd.exe's 8191-char limit
+// is a higher ceiling but the SSH layer is the bottleneck. Staging the
+// body as a file removes the wire-size constraint entirely.
+func stageScript(_ context.Context, client *ssh.Client, script string) (string, func(), error) {
+	name := fmt.Sprintf("hyperv-%d.ps1", time.Now().UnixNano())
+	remotePath := `C:/Windows/Temp/` + name
+
+	session, err := client.NewSession()
+	if err != nil {
+		return "", nil, fmt.Errorf("open scp session: %w", err)
+	}
+	stdinPipe, err := session.StdinPipe()
+	if err != nil {
+		_ = session.Close()
+		return "", nil, fmt.Errorf("scp stdin pipe: %w", err)
+	}
+	var scpStderr bytes.Buffer
+	session.Stderr = &scpStderr
+
+	if err := session.Start(`scp -t C:/Windows/Temp`); err != nil {
+		_ = session.Close()
+		return "", nil, fmt.Errorf("scp start: %w", err)
+	}
+
+	// SCP sink protocol: `Cmmmm <size> <name>\n` then bytes then `\0`.
+	body := []byte(script)
+	if _, err := fmt.Fprintf(stdinPipe, "C0644 %d %s\n", len(body), name); err != nil {
+		_ = session.Close()
+		return "", nil, fmt.Errorf("scp header: %w", err)
+	}
+	if _, err := stdinPipe.Write(body); err != nil {
+		_ = session.Close()
+		return "", nil, fmt.Errorf("scp body: %w", err)
+	}
+	if _, err := stdinPipe.Write([]byte{0}); err != nil {
+		_ = session.Close()
+		return "", nil, fmt.Errorf("scp eof: %w", err)
+	}
+	_ = stdinPipe.Close()
+
+	if err := session.Wait(); err != nil {
+		_ = session.Close()
+		return "", nil, fmt.Errorf("scp wait: %w (stderr=%s)", err, scpStderr.String())
+	}
+	_ = session.Close()
+
+	cleanup := func() {
+		s, err := client.NewSession()
+		if err != nil {
+			return
+		}
+		defer func() { _ = s.Close() }()
+		_ = s.Run(`cmd /c del "` + strings.ReplaceAll(remotePath, "/", `\`) + `"`)
+	}
+	return remotePath, cleanup, nil
 }
 
 // runSessionWithCtx wraps session.Run with ctx-cancel propagation. Cancel
