@@ -55,13 +55,22 @@ tasks:
       - golangci-lint run
 
   lint:ps:
-    desc: PSScriptAnalyzer on internal/scripts
+    desc: PSScriptAnalyzer on production scripts in internal/scripts
     summary: |
       Skipped if either (a) internal/scripts/ doesn't exist yet or
       (b) pwsh isn't on PATH. CI's psscriptanalyzer job installs PS Core
       so it always runs there.
+
+      Excludes Pester test infrastructure (*.Tests.ps1 and _*.ps1) since
+      stub functions for cmdlet mocking and test helpers don't satisfy
+      production-code rules (e.g. PSReviewUnusedParameter on stubs).
     cmds:
-      - pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path internal/scripts -Recurse -Settings .psscriptanalyzer.psd1 -EnableExit"
+      # Single-quoted -Command arg keeps the shell from expanding $_, which it
+      # would otherwise replace with the previous command's last argument.
+      - >-
+        pwsh -NoProfile -Command 'Get-ChildItem -Path internal/scripts -Recurse -Filter *.ps1 |
+        Where-Object { $_.Name -notlike "*.Tests.ps1" -and $_.Name -notlike "_*.ps1" } |
+        ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings .psscriptanalyzer.psd1 -EnableExit }'
     status:
       - test ! -d internal/scripts || ! command -v pwsh > /dev/null 2>&1
 
@@ -116,7 +125,12 @@ tasks:
       - go test -v -timeout 120m -run '^TestAcc' ./...
 
   test:pester:
-    desc: Pester tests against PowerShell scripts (Windows + Hyper-V required)
+    desc: Pester tests against PowerShell scripts (cross-platform; cmdlets are mocked)
+    summary: |
+      Locks the JSON wire contract for embedded scripts. The tests stub
+      Hyper-V cmdlets via Pester's Mock so they run anywhere pwsh is
+      available — Windows hosted runners, ubuntu-latest, local macOS dev.
+      Real Hyper-V validation lives in `task test:acc` (M1d).
     cmds:
       - pwsh -NoProfile -Command "Invoke-Pester -Path internal/scripts -CI"
     status:

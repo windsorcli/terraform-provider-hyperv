@@ -193,6 +193,47 @@ jobs:
           Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -Repository PSGallery
           task lint:ps
 
+  pester-linux:
+    name: Pester (pwsh 7.x, Linux)
+    # Fast lane: cross-platform pwsh runs the same .Tests.ps1 files. Catches
+    # Pester-syntax and contract-shape regressions in seconds. Hyper-V
+    # cmdlets are mocked so no Windows host needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Invoke-Pester -Path internal/scripts -CI
+
+  pester-windows-51:
+    name: Pester (Windows PowerShell 5.1)
+    # The PLAN.md S5 syntax floor. Production scripts run on whatever the
+    # connected host has; PS 5.1 is the lowest version we support, so the
+    # contract tests must pass under it. windows-latest ships with both
+    # powershell.exe (5.1) and pwsh (7.x); `shell: powershell` selects 5.1.
+    #
+    # Three PS 5.1-specific bootstraps are load-bearing here:
+    #   1. Install-PackageProvider NuGet  -- PS 5.1's PowerShellGet 1.x
+    #      prompts for NuGet on first Set-PSRepository / Install-Module;
+    #      non-TTY treats that as 'No' and the command fails.
+    #   2. PSGallery trust       -- avoids the "untrusted repo" prompt.
+    #   3. Import-Module Pester  -- PS 5.1 ships Pester 3.4 in System32 and
+    #      $PSModulePath loads system modules first; without an explicit
+    #      Import-Module of 5.x, Invoke-Pester -CI fails (the -CI switch
+    #      is Pester 5+ only).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - shell: powershell
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.5.0 -Force
+          Invoke-Pester -Path internal/scripts -CI
+
   sast-scan:
     name: gosec SAST Scan
     runs-on: ubuntu-latest
