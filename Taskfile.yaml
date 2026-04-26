@@ -201,15 +201,19 @@ tasks:
         # dev_overrides skips init, so go straight to validate. Capture
         # output once, scrub the harmless dev-override warning, and propagate
         # the real exit code so failures both print useful diagnostics and
-        # fail the task.
+        # fail the task. `set +e` inside the subshell is load-bearing: with
+        # the outer `set -e` inherited, `output=$(...)` would abort the
+        # subshell on a non-zero validate before printf could run, hiding
+        # the diagnostic.
         for dir in examples/resources/*/ examples/data-sources/*/; do
           [ -d "$dir" ] || continue
           echo "validating $dir"
           (
-            cd "$dir"
+            set +e
+            cd "$dir" || exit 1
             output=$(terraform validate -no-color 2>&1)
             rc=$?
-            printf '%s\n' "$output" | grep -v 'dev_overrides' | grep -v '^Warning:' | grep -v '^$' || true
+            printf '%s\n' "$output" | grep -v 'dev_overrides' | grep -v '^Warning:' | grep -v '^$'
             exit $rc
           )
         done
