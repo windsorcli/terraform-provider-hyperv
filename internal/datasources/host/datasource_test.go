@@ -67,6 +67,21 @@ func TestHostDataSource_Configure_NilProviderDataIsNoop(t *testing.T) {
 	}
 }
 
+func TestHostDataSource_Read_NilRunnerReturnsDiagnosticNotPanic(t *testing.T) {
+	t.Parallel()
+
+	ds := &DataSource{}
+	resp := &datasource.ReadResponse{}
+	ds.Read(t.Context(), datasource.ReadRequest{}, resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected an error diagnostic when runner is nil")
+	}
+	if !strings.Contains(resp.Diagnostics[0].Summary(), "not configured") {
+		t.Errorf("diag summary should name the failure mode; got %q", resp.Diagnostics[0].Summary())
+	}
+}
+
 func TestHostDataSource_Configure_WrongTypeIsClearError(t *testing.T) {
 	t.Parallel()
 

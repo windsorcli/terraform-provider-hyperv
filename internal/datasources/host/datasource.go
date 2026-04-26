@@ -114,6 +114,15 @@ type vmHostJSON struct {
 }
 
 func (d *DataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
+	if d.runner == nil {
+		resp.Diagnostics.AddError(
+			"Hyper-V provider not configured",
+			"Read was invoked before the provider stashed a runner. This usually means a "+
+				"required provider attribute was unknown at plan time and Configure returned early. "+
+				"Re-run once the dependency resolves.",
+		)
+		return
+	}
 	tflog.Debug(ctx, "reading hyperv_host", nil)
 	state, diags := readHost(ctx, d.runner)
 	resp.Diagnostics.Append(diags...)
