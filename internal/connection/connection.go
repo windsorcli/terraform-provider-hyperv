@@ -2,7 +2,7 @@
 // client (internal/hyperv) uses to ship PowerShell scripts to a Windows host
 // and read their results back. Three backends are planned: local (exec
 // pwsh.exe directly), ssh (golang.org/x/crypto/ssh), and winrm
-// (github.com/masterzen/winrm). Only local is implemented in this commit.
+// (github.com/masterzen/winrm). local and ssh are implemented; winrm ships in M3.
 //
 // Design notes are in docs/PLAN.md §4. Spike findings shaped the contract:
 // docs/spikes/02-json-contract.md (script body via -EncodedCommand, stdin for

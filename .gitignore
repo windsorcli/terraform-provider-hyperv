@@ -32,3 +32,8 @@ Thumbs.db
 
 # Spike artifacts (per-spike .gitignore handles binaries)
 /creds.txt
+/docs/spikes
+/docs/PLAN.md
+
+# Test artifacts
+testResults.xml
