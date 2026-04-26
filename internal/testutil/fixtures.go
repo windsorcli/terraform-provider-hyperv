@@ -12,3 +12,27 @@ const VMHostFixtureJSON = `{
 	"VirtualMachinePath": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V",
 	"VirtualHardDiskPath": "C:\\ProgramData\\Microsoft\\Windows\\Virtual Hard Disks"
 }`
+
+// VMSwitchExternalFixtureJSON is the canonical six-field shape that
+// vswitch/{get,new,set}.ps1 emit, locked by the Pester contract tests.
+// Single source of truth across the typed-client and resource-layer suites.
+const VMSwitchExternalFixtureJSON = `{
+	"Name": "external-switch",
+	"SwitchType": "External",
+	"AllowManagementOS": true,
+	"NetAdapterInterfaceDescription": "Intel(R) Ethernet I210",
+	"Notes": "production",
+	"Id": "12345678-1234-5678-1234-567812345678"
+}`
+
+// VMSwitchPrivateFixtureJSON is the Private-switch variant -- no NIC
+// description, no AllowManagementOS toggle in practice (the cmdlet ignores
+// it). Useful for resource-layer tests that need a non-External shape.
+const VMSwitchPrivateFixtureJSON = `{
+	"Name": "private-switch",
+	"SwitchType": "Private",
+	"AllowManagementOS": false,
+	"NetAdapterInterfaceDescription": null,
+	"Notes": "",
+	"Id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+}`
