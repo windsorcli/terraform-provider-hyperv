@@ -8,15 +8,42 @@
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side so Delete can treat already-gone as success.
 
-# Remove-HypervSwitch wraps Remove-VMSwitch with -Force (bypass confirmation,
-# required since the PLAN.md S5 preamble runs non-interactively) and
-# -ErrorAction Stop so the missing-switch case raises a terminating error the
-# entry block can convert into the PLAN.md S5 envelope.
+# Remove-HypervSwitch deletes a switch by name. Missing-switch case throws
+# an explicit ObjectNotFound so Delete on the Go side can treat already-gone
+# as success. The cmdlet's own missing-switch error is categorized as
+# InvalidArgument, which would otherwise surface as ErrPSExecution and
+# fail Delete unnecessarily. -Force bypasses confirmation (required in
+# non-interactive contexts).
 function Remove-HypervSwitch {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name
     )
+    # Stop + selective catch instead of SilentlyContinue: a transient WMI
+    # fault, permission error, or cluster-connectivity blip would otherwise
+    # be indistinguishable from "switch missing", get remapped to ObjectNotFound,
+    # and let the Go side drop a still-present switch from state.
+    try {
+        $sw = Get-VMSwitch -Name $Name -ErrorAction Stop
+    }
+    catch {
+        if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+            throw
+        }
+        $sw = $null
+    }
+    if ($null -eq $sw) {
+        $exception = [System.Management.Automation.ItemNotFoundException]::new(
+            "Hyper-V was unable to find a virtual switch with name '$Name'.")
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+            $exception, 'VMSwitchNotFound',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+        throw $errorRecord
+    }
+    # Stop on the action cmdlet so transient WMI faults, busy-resource errors,
+    # and permission failures surface to the Go side rather than being
+    # swallowed (which would record Delete success and drop the switch from
+    # state while leaving it on the host).
     Remove-VMSwitch -Name $Name -Force -ErrorAction Stop
 }
 

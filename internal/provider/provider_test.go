@@ -61,19 +61,22 @@ func TestProvider_Resources(t *testing.T) {
 	}
 }
 
+// Pin the registered data-source count so accidental wiring of additional
+// data sources doesn't slip in before their schemas are reviewed.
 func TestProvider_DataSources(t *testing.T) {
 	t.Parallel()
 
 	p := New("test")()
 	got := p.DataSources(t.Context())
 
-	// Currently just hyperv_host (PLAN §7).
-	if len(got) != 1 {
-		t.Fatalf("got %d data sources, want 1 (hyperv_host)", len(got))
+	// hyperv_host + hyperv_virtual_switch (PLAN S7).
+	if len(got) != 2 {
+		t.Fatalf("got %d data sources, want 2 (hyperv_host, hyperv_virtual_switch)", len(got))
 	}
 
-	// Construct one to ensure the factory works end-to-end.
-	if got[0]() == nil {
-		t.Error("data source factory returned nil")
+	for i, factory := range got {
+		if factory() == nil {
+			t.Errorf("data source factory %d returned nil", i)
+		}
 	}
 }

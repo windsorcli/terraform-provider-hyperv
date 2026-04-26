@@ -57,8 +57,26 @@ Describe 'Set-HypervSwitch' {
             { Set-HypervSwitch -Name 'priv0' -SwitchType 'Private' -AllowManagementOS $true } |
                 Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Private''*'
 
+            # Get-VMSwitch fires once for the existence pre-check; Set-VMSwitch
+            # never runs because the guard rejects after pre-check.
             Should -Invoke Set-VMSwitch -Times 0 -Exactly
-            Should -Invoke Get-VMSwitch -Times 0 -Exactly
+            Should -Invoke Get-VMSwitch -Times 1 -Exactly
+        }
+
+        It 'throws ObjectNotFound when the switch is missing (skips Set-VMSwitch, symmetric with remove.ps1)' {
+            # Asserts on CategoryInfo.Category because that's what the Go side
+            # maps to ErrNotFound. ErrorId drift wouldn't change behavior; a
+            # category drift would silently mis-route the typed error.
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { $null }
+
+            $captured = $null
+            try { Set-HypervSwitch -Name 'missing' -AllowManagementOS $true } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
         }
 
         It 'External + AllowManagementOS is allowed (no false positive on the Private guard)' {
@@ -90,8 +108,10 @@ Describe 'Set-HypervSwitch' {
             { Set-HypervSwitch -Name 'sw0' } |
                 Should -Throw -ExpectedMessage '*requires at least one mutable attribute*'
 
+            # Get-VMSwitch fires once for the existence pre-check; Set-VMSwitch
+            # never runs because the count guard rejects after pre-check.
             Should -Invoke Set-VMSwitch -Times 0 -Exactly
-            Should -Invoke Get-VMSwitch -Times 0 -Exactly
+            Should -Invoke Get-VMSwitch -Times 1 -Exactly
         }
 
         It 'forwards all three when all three are specified' {
@@ -119,7 +139,9 @@ Describe 'Set-HypervSwitch' {
 
             Set-HypervSwitch -Name 'sw0' -AllowManagementOS $true | Out-Null
 
-            Should -Invoke Get-VMSwitch -Times 1 -Exactly -ParameterFilter {
+            # Get-VMSwitch is called twice: once for the existence pre-check,
+            # once for the post-mutation read-back. Both target the same name.
+            Should -Invoke Get-VMSwitch -Times 2 -Exactly -ParameterFilter {
                 $Name -eq 'sw0'
             }
         }
@@ -156,6 +178,53 @@ Describe 'Set-HypervSwitch' {
 
             { Set-HypervSwitch -Name 'sw0' -AllowManagementOS $true } |
                 Should -Throw -ErrorId 'VmmsUnavailable'
+        }
+
+        It 'propagates non-ObjectNotFound errors from Get-VMSwitch (does not remap to missing)' {
+            # Locks the fix for the SilentlyContinue pre-check bug: a permission
+            # error or transient WMI fault must NOT be remapped to ObjectNotFound,
+            # because the Go-side Update treats ObjectNotFound as RemoveFromState
+            # -- after which the next apply calls New-VMSwitch and fails on a
+            # name conflict, requiring manual import or taint to recover.
+            Mock Get-VMSwitch {
+                $exception = [System.Exception]::new('access denied')
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'AccessDenied',
+                    [System.Management.Automation.ErrorCategory]::PermissionDenied, $Name)
+                throw $errorRecord
+            }
+            Mock Set-VMSwitch { }
+
+            $captured = $null
+            try { Set-HypervSwitch -Name 'sw0' -AllowManagementOS $true } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'PermissionDenied'
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'remaps a real ObjectNotFound error from Get-VMSwitch to the typed envelope' {
+            # The real cmdlet under -ErrorAction Stop raises a terminating
+            # ObjectNotFound error rather than returning $null. The catch must
+            # accept that path and re-emit the VMSwitchNotFound envelope so the
+            # Go side maps it to ErrNotFound.
+            Mock Get-VMSwitch {
+                $exception = [System.Management.Automation.ItemNotFoundException]::new(
+                    "Hyper-V was unable to find a virtual switch with name '$Name'.")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'GetVMSwitch,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch',
+                    [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+                throw $errorRecord
+            }
+            Mock Set-VMSwitch { }
+
+            $captured = $null
+            try { Set-HypervSwitch -Name 'missing' -AllowManagementOS $true } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
         }
     }
 }

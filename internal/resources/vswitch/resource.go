@@ -349,7 +349,13 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 		diags.Append(plan.NetAdapterNames.ElementsAs(ctx, &names, false)...)
 		in.NetAdapterNames = names
 	}
-	if !plan.AllowManagementOS.IsNull() && !plan.AllowManagementOS.IsUnknown() {
+	// Don't forward allow_management_os for Private switches. The attribute
+	// is Optional+Computed, so plan carries the prior-state value (false on
+	// Private since there's no host NIC) even when the user never set it --
+	// forwarding it would trip set.ps1's "not valid for Private" guard on
+	// every Update of a Private switch.
+	if state.SwitchType.ValueString() != "Private" &&
+		!plan.AllowManagementOS.IsNull() && !plan.AllowManagementOS.IsUnknown() {
 		v := plan.AllowManagementOS.ValueBool()
 		in.AllowManagementOS = &v
 	}

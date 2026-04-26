@@ -62,17 +62,62 @@ Describe 'Get-HypervSwitch' {
 
     Context 'error propagation' {
 
-        It 'lets cmdlet terminating errors propagate to the entry block' {
+        It 'throws ObjectNotFound when the switch is missing' {
+            # The Go side keys on CategoryInfo.Category (the wire envelope's
+            # `category` field), so assert on Category, not just ErrorId --
+            # ErrorId drifting wouldn't break the typed-error mapping but a
+            # category drift would silently mis-route ErrNotFound.
+            Mock Get-VMSwitch { $null }
+
+            $captured = $null
+            try { Get-HypervSwitch -Name 'missing' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
+        }
+
+        It 'propagates non-ObjectNotFound errors from Get-VMSwitch (does not remap to missing)' {
+            # Locks the fix for the SilentlyContinue pre-check bug: a permission
+            # error or transient WMI fault must NOT be remapped to ObjectNotFound,
+            # because the Go-side resource Read treats ObjectNotFound as
+            # RemoveResource -- after which the next apply calls New-VMSwitch
+            # and fails on a name conflict, requiring manual import or taint.
             Mock Get-VMSwitch {
-                $exception = [System.Management.Automation.ItemNotFoundException]::new(
-                    "Hyper-V was unable to find a virtual switch with name 'missing'.")
+                $exception = [System.Exception]::new('access denied')
                 $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-                    $exception, 'VMSwitchNotFound',
-                    [System.Management.Automation.ErrorCategory]::ObjectNotFound,
-                    'missing')
+                    $exception, 'AccessDenied',
+                    [System.Management.Automation.ErrorCategory]::PermissionDenied, $Name)
                 throw $errorRecord
             }
-            { Get-HypervSwitch -Name 'missing' } | Should -Throw -ErrorId 'VMSwitchNotFound'
+
+            $captured = $null
+            try { Get-HypervSwitch -Name 'sw0' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'PermissionDenied'
+        }
+
+        It 'remaps a real ObjectNotFound error from Get-VMSwitch to the typed envelope' {
+            # The real cmdlet under -ErrorAction Stop raises a terminating
+            # ObjectNotFound error rather than returning $null. The catch must
+            # accept that path and re-emit the VMSwitchNotFound envelope so the
+            # Go side maps it to ErrNotFound.
+            Mock Get-VMSwitch {
+                $exception = [System.Management.Automation.ItemNotFoundException]::new(
+                    "Hyper-V was unable to find a virtual switch with name '$Name'.")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'GetVMSwitch,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch',
+                    [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+                throw $errorRecord
+            }
+
+            $captured = $null
+            try { Get-HypervSwitch -Name 'missing' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
         }
     }
 }
