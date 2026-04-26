@@ -26,6 +26,17 @@ Describe 'Remove-HypervSwitch' {
         $output | Should -BeNullOrEmpty
     }
 
+    It 'propagates Remove-VMSwitch errors instead of swallowing them' {
+        # Locks the fix for the SilentlyContinue bug: a transient WMI fault or
+        # busy-resource error from Remove-VMSwitch must surface so the Go side
+        # fails Delete -- otherwise the resource would be dropped from state
+        # while still present on the host.
+        Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+        Mock Remove-VMSwitch { throw 'simulated WMI service fault' }
+
+        { Remove-HypervSwitch -Name 'sw0' } | Should -Throw -ExpectedMessage '*WMI service fault*'
+    }
+
     It 'throws ObjectNotFound when the switch is missing (skips Remove-VMSwitch)' {
         # Asserts on CategoryInfo.Category because that's what the Go side
         # maps to ErrNotFound. ErrorId drift wouldn't change behavior; a

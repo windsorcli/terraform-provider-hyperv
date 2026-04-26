@@ -28,13 +28,12 @@ function Remove-HypervSwitch {
             [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
         throw $errorRecord
     }
-    # SilentlyContinue closes the TOCTOU window between the existence check
-    # above and the actual removal: if another agent (Hyper-V Manager, cluster
-    # failover) deletes the switch between these two calls, the cmdlet's own
-    # InvalidArgument-categorized error would otherwise surface as
-    # ErrPSExecution and fail Delete. We've already verified existence; a
-    # silent failure here is the right semantic ("already gone is success").
-    Remove-VMSwitch -Name $Name -Force -ErrorAction SilentlyContinue
+    # Symmetric with set.ps1: pre-check uses SilentlyContinue, the action
+    # cmdlet uses Stop so transient WMI faults, busy-resource errors, and
+    # permission failures surface to the Go side instead of being swallowed
+    # (which would record Delete success and drop the switch from state
+    # while leaving it on the host).
+    Remove-VMSwitch -Name $Name -Force -ErrorAction Stop
 }
 
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
