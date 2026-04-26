@@ -55,12 +55,11 @@ func newConnection(_ context.Context, m HypervProviderModel) (connection.Connect
 }
 
 func newLocalConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
-	pwshPath := ""
+	var pwshAttr types.String
 	if m.Local != nil {
-		pwshPath = resolveString(m.Local.PwshPath, "HYPERV_PWSH_PATH", "")
-	} else {
-		pwshPath = os.Getenv("HYPERV_PWSH_PATH")
+		pwshAttr = m.Local.PwshPath
 	}
+	pwshPath := resolveString(pwshAttr, "HYPERV_PWSH_PATH", "")
 
 	conn, err := connection.NewLocal(connection.LocalOptions{PwshPath: pwshPath})
 	if err != nil {
