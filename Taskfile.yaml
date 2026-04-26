@@ -198,13 +198,20 @@ tasks:
         EOF
         export TF_CLI_CONFIG_FILE="$CLI_CFG"
 
+        # dev_overrides skips init, so go straight to validate. Capture
+        # output once, scrub the harmless dev-override warning, and propagate
+        # the real exit code so failures both print useful diagnostics and
+        # fail the task.
         for dir in examples/resources/*/ examples/data-sources/*/; do
           [ -d "$dir" ] || continue
           echo "validating $dir"
-          # dev_overrides skips init, so go straight to validate. The 2>&1
-          # filter drops the harmless "dev override" warning.
-          (cd "$dir" && terraform validate -no-color 2>&1 | grep -v "dev_overrides" | grep -v "^Warning:" | grep -v "^$" || true)
-          (cd "$dir" && terraform validate -no-color > /dev/null)
+          (
+            cd "$dir"
+            output=$(terraform validate -no-color 2>&1)
+            rc=$?
+            printf '%s\n' "$output" | grep -v 'dev_overrides' | grep -v '^Warning:' | grep -v '^$' || true
+            exit $rc
+          )
         done
 
   # ---------- Release ----------
