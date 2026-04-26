@@ -129,6 +129,16 @@ Per [spike #3](../../../docs/spikes/03-differencing-paths.md), `New-VHD -Differe
 
 Pester tests run **independently of the Go provider** — they pipe input JSON to `pwsh -Command -` and assert on the stdout/stderr/exit shape. This is the contract-locking layer per [PLAN.md §9 tier 3](../../../docs/PLAN.md). When you change the JSON shape a script emits, update its Pester tests in the same commit.
 
+## Comment discipline
+
+Default to no comments. When you do write one, it states a hidden constraint or non-obvious WHY in one line. Specifically:
+
+- ❌ Don't justify what the script *doesn't* do, or narrate history ("we deliberately don't use X", "changed from Y after spike #N").
+- ❌ Don't echo what cmdlet names already say. `# Get-VMHost returns the host` is noise.
+- ✅ One short sentence stating the load-bearing fact: a 5.1/7+ portability gotcha, a cmdlet quirk, a documented workaround.
+
+The PR description and commit message own narrative. Pester tests pin behavior. Comments should be terse.
+
 ## What NOT to do
 - ❌ String-concatenate PowerShell from Go — script bodies always pass through `-EncodedCommand`
 - ❌ Reference `$args` as a hashtable — that's the auto-variable for unbound function arguments. Use `$obj` or `$data` for parsed input

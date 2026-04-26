@@ -173,6 +173,16 @@ Use `plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)` to as
 
 Unit tests follow Go convention: `TestClient_GetVirtualSwitch_NotFound`, `TestSchema_TimeoutsAttribute`.
 
+## Comment discipline (in test files too)
+
+Default to no comments. When you do write one, it states a hidden constraint or non-obvious WHY in one line. Specifically:
+
+- ❌ Don't write narrative test comments justifying what the test *doesn't* assert, or referencing past iterations ("regression test for the bug where we used to drop _x lines").
+- ❌ Don't echo what test names already say. The test name is `TestStripCLIXML_PreservesXPrefix` — it doesn't need a paragraph above it explaining what that means.
+- ✅ Test name + table-driven `name:` field carry the intent. If you need a comment, one short line stating the *invariant* the test pins.
+
+Tests are documentation. The *test* is the artifact future readers find when grepping; the comment is a footnote.
+
 ## What NOT to do
 - ❌ Write tests after the implementation. The Pester-first ordering is non-negotiable for new resources — the contract design is the load-bearing decision.
 - ❌ Use `helper/resource` from SDKv2. Always `terraform-plugin-testing/helper/resource`.
