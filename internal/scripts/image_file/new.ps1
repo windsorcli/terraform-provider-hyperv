@@ -11,14 +11,63 @@
 #   stdout JSON : same shape as get.ps1 (Path, SizeBytes, Sha256).
 #
 # Mode semantics:
-#   url       - download via Start-BitsTransfer to a sibling .part file in
-#               the destination directory, verify SHA-256 against
+#   url       - download via HttpClient to a sibling .part file in the
+#               destination directory, verify SHA-256 against
 #               expected_sha256, then atomic-rename (Move-Item) to
 #               destination_path. NTFS rename within a volume is atomic; the
 #               .part-in-destination-dir layout keeps it that way.
 #   host_path - verify-only: the user attests the file already exists at
 #               destination_path. No copy. Missing-file surfaces as
 #               ObjectNotFound -> ErrNotFound, same as Read.
+#
+# Why HttpClient (not BITS or Invoke-WebRequest):
+#   - Start-BitsTransfer requires an interactive user session (HRESULT
+#     0x800704DD over SSH/WinRM "Network" logon).
+#   - Invoke-WebRequest -OutFile on PS 5.1 buffers the response body in
+#     memory before writing to disk -- fine for small files, OOMs on the
+#     multi-GB VHDX images this resource exists to fetch.
+#   - HttpClient streams via CopyToAsync, runs in any session type, and is
+#     Microsoft's recommended primitive in 2026 (WebClient is [Obsolete]
+#     since .NET 6 even though still functional on .NET Framework).
+
+# Save-HypervHttpFile downloads $Url to $OutFile via System.Net.Http.HttpClient
+# with a streamed response copy. ResponseHeadersRead returns as soon as the
+# headers arrive so the body is consumed via the stream without buffering;
+# CopyTo writes to disk incrementally. EnsureSuccessStatusCode raises on any
+# non-2xx so transport-level failures surface through the catch in the
+# entry block.
+#
+# TLS 1.2 is pinned because PS 5.1 / .NET Framework 4.7.2 on older Server
+# 2019 builds can default to TLS 1.0/1.1, which most modern HTTPS endpoints
+# now reject. No-op on PS 7+ where SystemDefault already includes 1.2/1.3.
+function Save-HypervHttpFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Url,
+        [Parameter(Mandatory)] [string] $OutFile
+    )
+    # System.Net.Http isn't auto-loaded on Windows PowerShell 5.1 (the
+    # Server 2019 floor); Add-Type with -AssemblyName is a no-op when the
+    # assembly is already loaded (PS 7+) so it's safe to call unconditionally.
+    Add-Type -AssemblyName System.Net.Http
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+        [System.Net.SecurityProtocolType]::Tls12
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $response = $client.GetAsync(
+            $Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        ).GetAwaiter().GetResult()
+        try {
+            $response.EnsureSuccessStatusCode() | Out-Null
+            $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+            try {
+                $file = [System.IO.File]::Create($OutFile)
+                try   { $stream.CopyTo($file) }
+                finally { $file.Dispose() }
+            } finally { $stream.Dispose() }
+        } finally { $response.Dispose() }
+    } finally { $client.Dispose() }
+}
 
 # Read-HypervImageFileResult emits the canonical three-field result shape.
 # Inline duplicate of get.ps1's tail because the runtime concatenates only
@@ -37,11 +86,11 @@ function Read-HypervImageFileResult {
     } | Write-HypervResult
 }
 
-# New-HypervImageFileFromUrl downloads via BITS to a sibling .part file in
-# the destination directory, verifies the hash, and atomic-renames into place.
-# A finally-block removes the .part on any failure path (BITS error, hash
-# mismatch, rename failure) so a half-baked file never lingers under the
-# canonical name or as a stale .part.
+# New-HypervImageFileFromUrl downloads via Save-HypervHttpFile to a sibling
+# .part file in the destination directory, verifies the hash, and atomic-
+# renames into place. A finally-block removes the .part on any failure path
+# (transport error, hash mismatch, rename failure) so a half-baked file
+# never lingers under the canonical name or as a stale .part.
 function New-HypervImageFileFromUrl {
     [CmdletBinding()]
     param(
@@ -51,7 +100,7 @@ function New-HypervImageFileFromUrl {
     )
     $tempPath = "$DestinationPath.part-$([guid]::NewGuid().ToString('n'))"
     try {
-        Start-BitsTransfer -Source $Url -Destination $tempPath -ErrorAction Stop
+        Save-HypervHttpFile -Url $Url -OutFile $tempPath
         $actualHash   = (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expectedHash = $ExpectedSha256.ToLowerInvariant()
         if ($actualHash -ne $expectedHash) {

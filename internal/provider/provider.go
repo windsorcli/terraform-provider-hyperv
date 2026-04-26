@@ -20,6 +20,7 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/datasources/host"
 	dsvswitch "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vswitch"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
 )
 
@@ -210,6 +211,7 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		vswitch.New,
+		image_file.New,
 	}
 }
 

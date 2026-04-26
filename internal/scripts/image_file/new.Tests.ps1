@@ -1,6 +1,7 @@
 # Locks the JSON contract for New-HypervImageFile{FromUrl,FromHostPath}.
-# URL mode: BITS-to-.part, hash check, atomic Move-Item; .part is cleaned
-# up on every failure path. host_path mode: verify-only, no copy.
+# URL mode: Save-HypervHttpFile to .part, hash check, atomic Move-Item;
+# .part is cleaned up on every failure path. host_path mode: verify-only,
+# no copy.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -12,11 +13,11 @@ Describe 'New-HypervImageFileFromUrl' {
 
     Context 'happy path (url mode)' {
 
-        It 'BITS-downloads to a sibling .part file in the destination directory' {
+        It 'downloads to a sibling .part file in the destination directory' {
             # The .part lives next to the destination on purpose: NTFS Move-Item
             # is atomic only within a volume, so staging in the destination
             # directory keeps the rename atomic regardless of TEMP location.
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
             Mock Move-Item { }
             Mock Test-Path { $false }
@@ -28,14 +29,14 @@ Describe 'New-HypervImageFileFromUrl' {
                 -Url 'https://example.com/ubuntu.vhdx' `
                 -ExpectedSha256 'expected' | Out-Null
 
-            Should -Invoke Start-BitsTransfer -Times 1 -Exactly -ParameterFilter {
-                $Source -eq 'https://example.com/ubuntu.vhdx' -and
-                $Destination -like 'C:\images\ubuntu.vhdx.part-*'
+            Should -Invoke Save-HypervHttpFile -Times 1 -Exactly -ParameterFilter {
+                $Url -eq 'https://example.com/ubuntu.vhdx' -and
+                $OutFile -like 'C:\images\ubuntu.vhdx.part-*'
             }
         }
 
         It 'atomic-renames the .part to the destination on hash match' {
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
             Mock Move-Item { }
             Mock Test-Path { $false }
@@ -57,7 +58,7 @@ Describe 'New-HypervImageFileFromUrl' {
         It 'compares hashes case-insensitively (lowercases both sides)' {
             # User-supplied checksums in the wild come in mixed case; canonical
             # form is lowercase. Both sides must lowercase before compare.
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'ABCDEF' }
             Mock Move-Item { }
             Mock Test-Path { $false }
@@ -73,7 +74,7 @@ Describe 'New-HypervImageFileFromUrl' {
         }
 
         It 'emits the canonical three-field shape after rename (matches get.ps1)' {
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
             Mock Move-Item { }
             Mock Test-Path { $false }
@@ -99,7 +100,7 @@ Describe 'New-HypervImageFileFromUrl' {
         It 'throws InvalidData with ImageFileChecksumMismatch on hash mismatch (skips Move-Item, cleans up .part)' {
             # Asserts on CategoryInfo.Category because that's what the Go side
             # will key on for the typed ErrChecksumMismatch sentinel.
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'WRONGHASH' }
             Mock Move-Item { }
             Mock Test-Path { $true }
@@ -121,10 +122,10 @@ Describe 'New-HypervImageFileFromUrl' {
             Should -Invoke Remove-Item -Times 1 -Exactly
         }
 
-        It 'cleans up the .part file when BITS itself fails' {
+        It 'cleans up the .part file when the transport itself fails' {
             # The finally block must run on transport failure so a partial
             # download never lingers as a stale .part file.
-            Mock Start-BitsTransfer { throw 'simulated transport failure' }
+            Mock Save-HypervHttpFile { throw 'simulated transport failure' }
             Mock Get-FileHash { }
             Mock Move-Item { }
             Mock Test-Path { $true }
@@ -142,9 +143,9 @@ Describe 'New-HypervImageFileFromUrl' {
 
         It 'skips .part cleanup when Test-Path reports no file (already moved or never created)' {
             # Avoids a spurious Remove-Item invocation when the .part is gone --
-            # both the success path (Move-Item consumed it) and the BITS-failed-
+            # both the success path (Move-Item consumed it) and the IWR-failed-
             # before-creating-the-file path land here.
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
             Mock Move-Item { }
             Mock Test-Path { $false }
@@ -177,19 +178,19 @@ Describe 'New-HypervImageFileFromHostPath' {
             $parsed.Sha256    | Should -Be 'expected'
         }
 
-        It 'never invokes Start-BitsTransfer or Move-Item (verify-only contract)' {
+        It 'never invokes Save-HypervHttpFile or Move-Item (verify-only contract)' {
             # Locks the load-bearing semantic distinction between url and
             # host_path modes: host_path attests, it never copies or fetches.
             Mock Test-Path { $true }
             Mock Get-Item { New-HypervImageFileSample }
             Mock Get-FileHash { New-HypervImageFileHashSample }
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
             Mock Move-Item { }
 
             New-HypervImageFileFromHostPath -DestinationPath 'C:\share\foo.vhdx' | Out-Null
 
-            Should -Invoke Start-BitsTransfer -Times 0 -Exactly
-            Should -Invoke Move-Item          -Times 0 -Exactly
+            Should -Invoke Save-HypervHttpFile -Times 0 -Exactly
+            Should -Invoke Move-Item           -Times 0 -Exactly
         }
     }
 
@@ -199,7 +200,7 @@ Describe 'New-HypervImageFileFromHostPath' {
             Mock Test-Path { $false }
             Mock Get-Item { }
             Mock Get-FileHash { }
-            Mock Start-BitsTransfer { }
+            Mock Save-HypervHttpFile { }
 
             $captured = $null
             try { New-HypervImageFileFromHostPath -DestinationPath 'C:\nope.vhdx' } catch { $captured = $_ }
@@ -207,7 +208,7 @@ Describe 'New-HypervImageFileFromHostPath' {
             $captured | Should -Not -BeNullOrEmpty
             $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
             $captured.FullyQualifiedErrorId | Should -Match 'ImageFileNotFound'
-            Should -Invoke Start-BitsTransfer -Times 0 -Exactly
+            Should -Invoke Save-HypervHttpFile -Times 0 -Exactly
         }
 
         It 'propagates non-ObjectNotFound errors from Test-Path (e.g. permission denied)' {

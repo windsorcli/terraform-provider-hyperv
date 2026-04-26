@@ -1,25 +1,19 @@
 # _test_helpers.ps1 -- shared Pester setup for the image_file verb scripts.
 # Underscore prefix keeps it out of Pester's *.Tests.ps1 discovery glob.
 #
-# Stubs for the cmdlets the image_file scripts call. Start-BitsTransfer is
-# the load-bearing reason for this file -- the BitsTransfer module ships only
-# with Windows PowerShell and is not present in macOS/Linux Pester runs, so
-# the suite would fail to load without a stub. The file/IO cmdlets (Test-Path,
-# Get-Item, Get-FileHash, Move-Item, Remove-Item) exist everywhere but are
-# stubbed for the same reason vswitch stubs Hyper-V cmdlets: simple parameter
-# sets sidestep the parameter-binding/Pester-mock interaction that drops
-# bound values on PS 5.1.
+# Stubs for the cmdlets the image_file scripts call. Stubbed for the same
+# reason vswitch stubs Hyper-V cmdlets: simple parameter sets sidestep the
+# parameter-binding/Pester-mock interaction that drops bound values on
+# PS 5.1.
+#
+# Note Save-HypervHttpFile (the System.Net.Http.HttpClient wrapper that
+# new.ps1 uses for url-mode downloads) is NOT stubbed here -- it's defined
+# in new.ps1 itself, so dot-sourcing makes it available for direct Pester
+# mocking. Wrapping the .NET call in a function is what makes it mockable
+# at all (Pester can't intercept .NET method invocations).
 #
 # In production scripts run via -EncodedCommand in a fresh runspace, so the
 # real cmdlets are still used; this shadow only applies to test execution.
-
-function Start-BitsTransfer {
-    [CmdletBinding()]
-    param(
-        [string] $Source,
-        [string] $Destination
-    )
-}
 
 function Get-FileHash {
     [CmdletBinding()]
