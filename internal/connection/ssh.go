@@ -173,11 +173,19 @@ func (b *sshBackend) Open(ctx context.Context) error {
 		b.client = ssh.NewClient(r.sshConn, r.chans, r.reqs)
 		return nil
 	case <-ctx.Done():
-		// Closing the underlying TCP conn forces the in-flight read in
-		// NewClientConn to return with an error; the goroutine then sends
-		// to `done` (buffered, so no leak) and exits.
-		_ = tcpConn.Close()
-		<-done
+		select {
+		case r := <-done:
+			// Race: handshake completed before we observed ctx-cancel.
+			// Close the ssh.Conn to send SSH_MSG_DISCONNECT, not just TCP.
+			if r.err == nil && r.sshConn != nil {
+				_ = r.sshConn.Close()
+			} else {
+				_ = tcpConn.Close()
+			}
+		default:
+			_ = tcpConn.Close()
+			<-done
+		}
 		return fmt.Errorf("ssh: handshake canceled: %w", ctx.Err())
 	}
 }
@@ -229,9 +237,6 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 	defer func() { _ = session.Close() }()
 
 	encoded := base64.StdEncoding.EncodeToString(utf16leBytes(script))
-	// The remote shell parses this single string. Default shell on Windows
-	// OpenSSH is cmd.exe; either way, the args after the binary name are
-	// passed unmodified to powershell.exe / pwsh.exe.
 	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand %s",
 		b.opts.PwshPath, encoded)
 
@@ -242,10 +247,6 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
-	// Run the command with ctx-cancel support. session.Run doesn't take a
-	// context, so we race ctx.Done() against the run completion in a
-	// goroutine; ctx-cancel triggers session.Signal then session.Close to
-	// terminate the remote process.
 	start := time.Now()
 	runErr := runSessionWithCtx(ctx, session, cmd)
 	duration := time.Since(start)
