@@ -213,7 +213,18 @@ func TestSanitizeURLForLog(t *testing.T) {
 		{"with userinfo, no password", "https://user@cdn.example.com/image.vhdx", "https://REDACTED@cdn.example.com/image.vhdx"},
 		{"http", "http://internal.lan/foo.iso", "http://internal.lan/foo.iso"},
 		{"unparsable returns sentinel", "://not a url", "(unparsable url)"},
-		{"querystring preserved", "https://cdn.example.com/foo.vhdx?token=abc", "https://cdn.example.com/foo.vhdx?token=abc"},
+		// Any query string is redacted wholesale -- pre-signed URLs across
+		// every cloud carry their auth in the query, and a known-keys
+		// allowlist can't keep up. A bare ?token=abc, an AWS S3 X-Amz-*
+		// bundle, an Azure SAS sig/se/sp/sv, a GCP Signature -- all collapse
+		// to the same "?REDACTED" output. Even harmless cache-busters get
+		// dropped, which is the right tradeoff for fail-closed logging.
+		{"generic token query redacted", "https://cdn.example.com/foo.vhdx?token=abc", "https://cdn.example.com/foo.vhdx?REDACTED"},
+		{"AWS S3 pre-signed URL redacted", "https://bucket.s3.amazonaws.com/key.vhdx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20260427%2Fus-east-1&X-Amz-Signature=deadbeef", "https://bucket.s3.amazonaws.com/key.vhdx?REDACTED"},
+		{"Azure Blob SAS token redacted", "https://account.blob.core.windows.net/container/file.vhdx?sv=2024-01-01&se=2026-04-27T00:00:00Z&sp=r&sig=deadbeef%3D", "https://account.blob.core.windows.net/container/file.vhdx?REDACTED"},
+		{"GCP signed URL redacted", "https://storage.googleapis.com/bucket/file.vhdx?GoogleAccessId=acc&Expires=1777000000&Signature=deadbeef", "https://storage.googleapis.com/bucket/file.vhdx?REDACTED"},
+		{"harmless cache-buster also redacted (acceptable tradeoff)", "https://cdn.example.com/foo.vhdx?v=2", "https://cdn.example.com/foo.vhdx?REDACTED"},
+		{"userinfo and query redacted together", "https://user:pass@cdn.example.com/foo.vhdx?sig=abc", "https://REDACTED@cdn.example.com/foo.vhdx?REDACTED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

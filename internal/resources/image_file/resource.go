@@ -252,10 +252,18 @@ func stripSha256Prefix(checksum string) string {
 	return checksum
 }
 
-// sanitizeURLForLog redacts the userinfo component of a URL so credentials
-// embedded as `https://user:pass@host/...` don't reach tflog output. The
-// schema regex on `url.url` doesn't (and shouldn't) reject userinfo --
-// some private CDNs require it -- so the leak guard lives at the log site.
+// sanitizeURLForLog redacts credential-bearing components of a URL before
+// it reaches tflog output. Two redactions:
+//
+//   - userinfo (`https://user:pass@host/...`) -- replaced with `REDACTED`.
+//   - query string (any `?...`) -- replaced wholesale with `?REDACTED`,
+//     because pre-signed URLs embed single-use credentials there: AWS S3
+//     (X-Amz-Signature/X-Amz-Credential), Azure Blob SAS (sig/se/sp/sv),
+//     GCP Signed URLs (Signature), and the generic ?token=/?access_token=
+//     patterns. A specific-key allowlist would need indefinite maintenance
+//     and still leak any provider not on the list; the host/path/scheme
+//     is enough to identify the request in logs.
+//
 // Returns "(unparsable url)" when url.Parse can't make sense of the input,
 // to fail closed.
 func sanitizeURLForLog(raw string) string {
@@ -265,6 +273,9 @@ func sanitizeURLForLog(raw string) string {
 	}
 	if u.User != nil {
 		u.User = url.User("REDACTED")
+	}
+	if u.RawQuery != "" {
+		u.RawQuery = "REDACTED"
 	}
 	return u.String()
 }
