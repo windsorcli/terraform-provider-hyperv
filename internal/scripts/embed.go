@@ -43,3 +43,16 @@ func Preamble() ([]byte, error) {
 func VswitchScript(verb string) ([]byte, error) {
 	return Vswitch.ReadFile("vswitch/" + verb + ".ps1")
 }
+
+// ImageFile holds the verb scripts for hyperv_image_file (M4). No "set"
+// verb -- every image_file schema field is RequiresReplace, so Update is a
+// Go-side no-op with no PS round-trip.
+//
+//go:embed image_file/get.ps1 image_file/new.ps1 image_file/remove.ps1
+var ImageFile embed.FS
+
+// ImageFileScript returns the contents of image_file/<verb>.ps1 (verb in
+// {get, new, remove}).
+func ImageFileScript(verb string) ([]byte, error) {
+	return ImageFile.ReadFile("image_file/" + verb + ".ps1")
+}

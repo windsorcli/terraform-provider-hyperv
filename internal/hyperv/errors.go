@@ -23,6 +23,7 @@ var (
 	ErrUnavailable       = errors.New("hyperv: resource temporarily unavailable")
 	ErrUnauthorized      = errors.New("hyperv: permission denied")
 	ErrInvalidParentPath = errors.New("hyperv: invalid parent path")
+	ErrChecksumMismatch  = errors.New("hyperv: image file checksum mismatch")
 	ErrPSExecution       = errors.New("hyperv: powershell execution failed")
 )
 
@@ -69,6 +70,14 @@ func mapCategory(env errorEnvelope) error {
 	case "InvalidArgument":
 		if strings.HasPrefix(env.FullyQualifiedErrorId, "InvalidParameter,Microsoft.Vhd.") {
 			return ErrInvalidParentPath
+		}
+		return ErrPSExecution
+	case "InvalidData":
+		// image_file/new.ps1 throws this category with FQId
+		// "ImageFileChecksumMismatch" on a hash-verify failure. Other
+		// InvalidData uses fall through to ErrPSExecution.
+		if strings.HasPrefix(env.FullyQualifiedErrorId, "ImageFileChecksumMismatch") {
+			return ErrChecksumMismatch
 		}
 		return ErrPSExecution
 	default:
