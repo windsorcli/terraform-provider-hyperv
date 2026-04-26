@@ -68,7 +68,9 @@ function Write-HypervResult {
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
         $Object
     )
-    # process block required -- see Write-HypervError above for the rationale.
+    # Single-object contract: piping multiple items emits multiple top-level
+    # JSON values, which Go's json.Unmarshal rejects. For collections, call
+    # ConvertTo-Json directly on the array.
     process {
         $Object | ConvertTo-Json -Depth 10 -Compress
     }
