@@ -125,9 +125,9 @@ func TestReadHost_HappyPath(t *testing.T) {
 
 func TestReadHost_NotFoundGetsRoleSpecificDiagnostic(t *testing.T) {
 	// On a singleton like Get-VMHost, ErrNotFound means the Hyper-V role
-	// isn't installed — distinct from a transient transport failure.
-	// Surface it with a category-specific summary so operators don't
-	// confuse it with auth/network problems.
+	// isn't installed (cmdlet itself unrecognized). Surface it with a
+	// role-specific summary so operators don't confuse it with vmms or
+	// auth/network problems.
 	t.Parallel()
 
 	envelope := `{"category":"ObjectNotFound","message":"Get-VMHost : term not recognized","cmdlet":"Get-VMHost"}`
@@ -138,8 +138,28 @@ func TestReadHost_NotFoundGetsRoleSpecificDiagnostic(t *testing.T) {
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}
-	if !strings.Contains(diags[0].Summary(), "Hyper-V is not available") {
-		t.Errorf("diag summary should call out the unavailability; got %q", diags[0].Summary())
+	if !strings.Contains(diags[0].Summary(), "Hyper-V role is not installed") {
+		t.Errorf("diag summary should call out the missing role; got %q", diags[0].Summary())
+	}
+}
+
+func TestReadHost_UnavailableGetsServiceSpecificDiagnostic(t *testing.T) {
+	// ResourceUnavailable on Get-VMHost means the role is installed but
+	// vmms (or the cluster node) is unreachable. This must NOT collapse
+	// into the not-found path — for future VM/VSwitch resources that
+	// would trigger destroy-and-recreate on a transient service blip.
+	t.Parallel()
+
+	envelope := `{"category":"ResourceUnavailable","message":"The Virtual Machine Management service is not running","cmdlet":"Get-VMHost"}`
+	fr := testutil.NewFakeRunner().On("Get-VMHost").Return("", envelope, 1)
+	c := hyperv.NewClient(fr)
+
+	_, diags := readHost(t.Context(), c)
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic")
+	}
+	if !strings.Contains(diags[0].Summary(), "management service is unavailable") {
+		t.Errorf("diag summary should call out the unavailable service; got %q", diags[0].Summary())
 	}
 }
 

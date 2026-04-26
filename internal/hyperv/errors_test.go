@@ -24,11 +24,11 @@ func TestParseErrorEnvelope(t *testing.T) {
 			wantMsg:   "VM not found",
 		},
 		{
-			name:      "ResourceUnavailable also maps to ErrNotFound",
-			stderr:    `{"category":"ResourceUnavailable","message":"resource gone","cmdlet":"Get-VMSwitch"}`,
+			name:      "ResourceUnavailable maps to ErrUnavailable (transient, not deleted)",
+			stderr:    `{"category":"ResourceUnavailable","message":"vmms not running","cmdlet":"Get-VMSwitch"}`,
 			exitCode:  1,
-			wantErrIs: ErrNotFound,
-			wantMsg:   "resource gone",
+			wantErrIs: ErrUnavailable,
+			wantMsg:   "vmms not running",
 		},
 		{
 			name:      "PermissionDenied maps to ErrUnauthorized",

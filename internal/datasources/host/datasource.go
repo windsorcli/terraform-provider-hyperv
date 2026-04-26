@@ -112,18 +112,27 @@ func readHost(ctx context.Context, c *hyperv.Client) (Model, diag.Diagnostics) {
 
 	h, err := c.GetVMHost(ctx)
 	if err != nil {
-		// ObjectNotFound on a singleton like Get-VMHost means the host
-		// can't satisfy the cmdlet. Two real-world causes: role isn't
-		// installed (cmdlet missing entirely), or the role IS installed
-		// but the Virtual Machine Management service (vmms) is stopped.
-		// Both surface as ErrNotFound; the underlying PS message
-		// distinguishes them for the operator.
+		// ObjectNotFound on a singleton like Get-VMHost means the cmdlet
+		// itself isn't recognized — the Hyper-V role isn't installed.
+		// ResourceUnavailable means the role is installed but the Virtual
+		// Machine Management service (vmms) is stopped or otherwise
+		// unreachable. The two need distinct sentinels because future VM
+		// and VSwitch resources will RemoveResource on ErrNotFound; we
+		// don't want a vmms restart to look like a delete.
 		if errors.Is(err, hyperv.ErrNotFound) {
 			diags.AddError(
-				"Hyper-V is not available on host",
-				fmt.Sprintf("Get-VMHost could not reach Hyper-V. Confirm the Hyper-V role is "+
-					"installed AND the Virtual Machine Management service (vmms) is running. "+
-					"Underlying error: %s", err),
+				"Hyper-V role is not installed",
+				fmt.Sprintf("Get-VMHost was not recognized on this host. Install the "+
+					"Hyper-V role and try again. Underlying error: %s", err),
+			)
+			return Model{}, diags
+		}
+		if errors.Is(err, hyperv.ErrUnavailable) {
+			diags.AddError(
+				"Hyper-V management service is unavailable",
+				fmt.Sprintf("Get-VMHost reached the host but Hyper-V is not responding. "+
+					"Confirm the Virtual Machine Management service (vmms) is running and "+
+					"the host is not in a fenced cluster state. Underlying error: %s", err),
 			)
 			return Model{}, diags
 		}
