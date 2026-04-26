@@ -127,6 +127,8 @@ func TestMinifyPS_PreservesRequiresDirective(t *testing.T) {
 	}
 }
 
+// runScript forwards the caller's input JSON to the runner unchanged --
+// scripts read it via [Console]::In.ReadToEnd() per the wire contract.
 func TestRunScript_StdinIsForwarded(t *testing.T) {
 	t.Parallel()
 

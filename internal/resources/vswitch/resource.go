@@ -47,6 +47,7 @@ func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
 	return []resource.ConfigValidator{
 		privateAllowMgmtOSValidator{},
+		externalRequiresAdapterNamesValidator{},
 	}
 }
 
@@ -56,14 +57,22 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 // anchored to the offending attribute.
 type privateAllowMgmtOSValidator struct{}
 
+// Description is a one-line summary the framework surfaces in `terraform
+// validate -json` output and on schema-introspection paths.
 func (v privateAllowMgmtOSValidator) Description(_ context.Context) string {
 	return "allow_management_os is not valid for switch_type 'Private'"
 }
 
+// MarkdownDescription mirrors Description -- the rule has no markdown-only
+// formatting beyond the plain string.
 func (v privateAllowMgmtOSValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
+// ValidateResource fires the diagnostic when both attributes are known and
+// the combination is invalid. Unknown values mean a deferred dependency
+// hasn't resolved yet; the next plan pass with concrete values gets the
+// chance to validate.
 func (v privateAllowMgmtOSValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -81,6 +90,63 @@ func (v privateAllowMgmtOSValidator) ValidateResource(ctx context.Context, req r
 			"allow_management_os not valid for Private switch",
 			"Private switches don't bind to a host NIC, so allow_management_os has no effect. "+
 				"Remove the attribute or change switch_type to External or Internal.",
+		)
+	}
+}
+
+// externalRequiresAdapterNamesValidator rejects External switches that don't
+// supply at least one host NIC name. New-VMSwitch errors at apply time with
+// "Cannot bind argument to parameter 'NetAdapterName'" otherwise; rejecting
+// at plan time gives a clearer diagnostic anchored to the offending attribute.
+type externalRequiresAdapterNamesValidator struct{}
+
+// Description is a one-line summary the framework surfaces in `terraform
+// validate -json` output and on schema-introspection paths.
+func (v externalRequiresAdapterNamesValidator) Description(_ context.Context) string {
+	return "net_adapter_names is required when switch_type = 'External'"
+}
+
+// MarkdownDescription mirrors Description -- the rule has no markdown-only
+// formatting beyond the plain string.
+func (v externalRequiresAdapterNamesValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateResource fires when switch_type is External and net_adapter_names
+// is null or an empty list. Distinct messages for "missing" vs "empty" so
+// the diagnostic points at the exact line the user needs to fix.
+func (v externalRequiresAdapterNamesValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if data.SwitchType.IsUnknown() || data.NetAdapterNames.IsUnknown() {
+		return
+	}
+	if data.SwitchType.ValueString() != "External" {
+		return
+	}
+	if data.NetAdapterNames.IsNull() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("net_adapter_names"),
+			"net_adapter_names required for External switch",
+			"External switches must bind to one or more host NICs. Set net_adapter_names "+
+				"to a non-empty list, or change switch_type to Internal or Private.",
+		)
+		return
+	}
+	var names []string
+	resp.Diagnostics.Append(data.NetAdapterNames.ElementsAs(ctx, &names, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if len(names) == 0 {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("net_adapter_names"),
+			"net_adapter_names must be non-empty for External switch",
+			"External switches must bind to at least one host NIC. Either supply one or "+
+				"more adapter names, or change switch_type to Internal or Private.",
 		)
 	}
 }

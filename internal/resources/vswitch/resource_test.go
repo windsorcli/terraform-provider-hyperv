@@ -126,6 +126,8 @@ func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	}
 }
 
+// Metadata pins the resource's TF type name. Any change here is a
+// user-visible breaking rename.
 func TestResource_Metadata(t *testing.T) {
 	t.Parallel()
 
@@ -157,6 +159,9 @@ func TestResource_Configure_NilProviderDataIsNoop(t *testing.T) {
 	}
 }
 
+// Configure with the wrong ProviderData concrete type must produce a
+// diagnostic that names *hyperv.Client so the operator can correct the
+// provider wiring without spelunking the framework internals.
 func TestResource_Configure_WrongTypeIsClearError(t *testing.T) {
 	t.Parallel()
 
