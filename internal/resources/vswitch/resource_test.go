@@ -252,12 +252,12 @@ func TestBuildSetInput_SourcesSwitchTypeFromState(t *testing.T) {
 	t.Parallel()
 
 	state := Model{
-		Name:       types.StringValue("priv0"),
-		SwitchType: types.StringValue("Private"),
+		Name:       types.StringValue("ext0"),
+		SwitchType: types.StringValue("External"),
 	}
 	plan := Model{
-		Name:              types.StringValue("priv0"),
-		SwitchType:        types.StringValue("Private"),
+		Name:              types.StringValue("ext0"),
+		SwitchType:        types.StringValue("External"),
 		AllowManagementOS: types.BoolValue(true),
 	}
 
@@ -265,11 +265,42 @@ func TestBuildSetInput_SourcesSwitchTypeFromState(t *testing.T) {
 	if diags.HasError() {
 		t.Fatalf("diags: %v", diags)
 	}
-	if in.SwitchType != "Private" {
-		t.Errorf("SwitchType = %q, want \"Private\" (sourced from state)", in.SwitchType)
+	if in.SwitchType != "External" {
+		t.Errorf("SwitchType = %q, want \"External\" (sourced from state)", in.SwitchType)
 	}
 	if in.AllowManagementOS == nil || *in.AllowManagementOS != true {
 		t.Errorf("AllowManagementOS = %v, want pointer to true", in.AllowManagementOS)
+	}
+}
+
+// For Private switches, allow_management_os must NOT be forwarded even
+// when plan carries a (Computed read-back) value. Forwarding it would trip
+// set.ps1's Private + AllowManagementOS guard on every Update of a Private
+// switch, since the attribute is Optional+Computed and plan inherits the
+// prior-state value.
+func TestBuildSetInput_OmitsAllowManagementOSForPrivate(t *testing.T) {
+	t.Parallel()
+
+	state := Model{
+		Name:       types.StringValue("priv0"),
+		SwitchType: types.StringValue("Private"),
+	}
+	plan := Model{
+		Name:              types.StringValue("priv0"),
+		SwitchType:        types.StringValue("Private"),
+		AllowManagementOS: types.BoolValue(false), // Computed read-back
+		Notes:             types.StringValue("updated notes"),
+	}
+
+	in, diags := buildSetInput(t.Context(), plan, state)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if in.AllowManagementOS != nil {
+		t.Errorf("AllowManagementOS should be omitted for Private; got %v", *in.AllowManagementOS)
+	}
+	if in.Notes == nil || *in.Notes != "updated notes" {
+		t.Error("Notes should still be forwarded for Private switches")
 	}
 }
 

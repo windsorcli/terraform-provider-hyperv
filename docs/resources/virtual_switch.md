@@ -59,7 +59,7 @@ resource "hyperv_virtual_switch" "external" {
 ### Read-Only
 
 - `id` (String) Resource identifier. Mirrors `name` -- Hyper-V switch names are unique per host.
-- `net_adapter_interface_description` (String) Read-only: the Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private.
+- `net_adapter_interface_description` (String) Read-only: the Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private. For NIC-teamed External switches this is the team adapter's description, not any individual member NIC's.
 
 ## Import
 

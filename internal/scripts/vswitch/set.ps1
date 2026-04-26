@@ -32,6 +32,20 @@ function Set-HypervSwitch {
         [string]         $Notes
     )
 
+    # Existence pre-check. Symmetric with get.ps1 / remove.ps1: Set-VMSwitch
+    # on a missing switch raises an InvalidArgument error which the Go side
+    # would map to ErrPSExecution -- losing the ErrNotFound semantics that
+    # let Update recover gracefully from out-of-band deletion.
+    $existing = Get-VMSwitch -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $existing) {
+        $exception = [System.Management.Automation.ItemNotFoundException]::new(
+            "Hyper-V was unable to find a virtual switch with name '$Name'.")
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+            $exception, 'VMSwitchNotFound',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+        throw $errorRecord
+    }
+
     # Symmetric with new.ps1: AllowManagementOS is invalid for Private switches.
     # SwitchType is optional in the set contract; when the caller supplies it
     # (e.g. populated from prior state by the Go-side Update), an invalid

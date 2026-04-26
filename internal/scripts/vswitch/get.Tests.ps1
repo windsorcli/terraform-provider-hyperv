@@ -62,17 +62,19 @@ Describe 'Get-HypervSwitch' {
 
     Context 'error propagation' {
 
-        It 'lets cmdlet terminating errors propagate to the entry block' {
-            Mock Get-VMSwitch {
-                $exception = [System.Management.Automation.ItemNotFoundException]::new(
-                    "Hyper-V was unable to find a virtual switch with name 'missing'.")
-                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-                    $exception, 'VMSwitchNotFound',
-                    [System.Management.Automation.ErrorCategory]::ObjectNotFound,
-                    'missing')
-                throw $errorRecord
-            }
-            { Get-HypervSwitch -Name 'missing' } | Should -Throw -ErrorId 'VMSwitchNotFound'
+        It 'throws ObjectNotFound when the switch is missing' {
+            # The Go side keys on CategoryInfo.Category (the wire envelope's
+            # `category` field), so assert on Category, not just ErrorId --
+            # ErrorId drifting wouldn't break the typed-error mapping but a
+            # category drift would silently mis-route ErrNotFound.
+            Mock Get-VMSwitch { $null }
+
+            $captured = $null
+            try { Get-HypervSwitch -Name 'missing' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
         }
     }
 }

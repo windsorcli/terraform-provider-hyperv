@@ -80,8 +80,10 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			"net_adapter_interface_description": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Read-only: the Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private.",
+				Computed: true,
+				MarkdownDescription: "Read-only: the Hyper-V-reported description of the bound NIC (External switches only). " +
+					"Empty for Internal/Private. For NIC-teamed External switches this is the team adapter's description, " +
+					"not any individual member NIC's.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},

@@ -2,7 +2,7 @@ module github.com/windsorcli/terraform-provider-hyperv
 
 go 1.24.0
 
-toolchain go1.26.2
+toolchain go1.25.9
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.16.1

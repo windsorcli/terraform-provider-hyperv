@@ -19,16 +19,28 @@
 # preamble + a single verb script per call, so cross-script helpers aren't
 # visible at runtime.
 
-# Get-HypervSwitch wraps Get-VMSwitch with -ErrorAction Stop so the missing-
-# switch case raises a terminating error the entry block can convert into the
-# PLAN.md S5 envelope. Output goes through Write-HypervResult per the single-object
-# contract.
+# Get-HypervSwitch fetches a switch by name. Missing-switch case throws an
+# explicit ObjectNotFound so the Go-side typed client maps it to ErrNotFound
+# (resource Read calls RemoveResource; data-source Read produces a clear
+# attribute-anchored diagnostic). Get-VMSwitch -Name <missing> emits a
+# *non-terminating* error and returns $null; -ErrorAction SilentlyContinue
+# suppresses it cleanly. Without the explicit re-throw the empty-result case
+# would silently produce an empty-stdout failure on the Go side.
 function Get-HypervSwitch {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name
     )
-    Get-VMSwitch -Name $Name -ErrorAction Stop |
+    $sw = Get-VMSwitch -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $sw) {
+        $exception = [System.Management.Automation.ItemNotFoundException]::new(
+            "Hyper-V was unable to find a virtual switch with name '$Name'.")
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+            $exception, 'VMSwitchNotFound',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+        throw $errorRecord
+    }
+    $sw |
         Select-Object `
             Name,
             @{ N = 'SwitchType';                      E = { $_.SwitchType.ToString() } },
