@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/datasources/host"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
 
 var _ provider.Provider = (*HypervProvider)(nil)
@@ -196,11 +197,12 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		"backend": conn.Backend(),
 	})
 
-	// Stash on both — resources and data sources both pull from req.ProviderData
-	// in their respective Configure methods. Future PRs swap this for a
-	// typed *hyperv.Client wrapping the connection.
-	resp.ResourceData = conn
-	resp.DataSourceData = conn
+	// Wrap the transport in the typed client. Resources and data sources
+	// receive *hyperv.Client via req.ProviderData and never touch the raw
+	// connection.Runner directly.
+	client := hyperv.NewClient(conn)
+	resp.ResourceData = client
+	resp.DataSourceData = client
 }
 
 func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource {
