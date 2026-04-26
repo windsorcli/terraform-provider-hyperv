@@ -1,6 +1,7 @@
 package vswitch
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,20 @@ import (
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
+
+// hasPlanModifier checks if any plan-modifier in `mods` has a type whose
+// package-qualified name contains `keyword`. Used by schema tests to assert
+// presence of RequiresReplace / UseStateForUnknown without depending on
+// the framework's user-facing Description() text, which is localizable
+// and prone to wording tweaks.
+func hasPlanModifier[M any](mods []M, keyword string) bool {
+	for _, pm := range mods {
+		if strings.Contains(strings.ToLower(reflect.TypeOf(pm).String()), strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
+}
 
 // Schema test: every locked-in attribute is present and the plan-modifier
 // invariants (RequiresReplace on name + switch_type, UseStateForUnknown on
@@ -44,10 +59,6 @@ func TestResource_Schema(t *testing.T) {
 // RequiresReplace must be on name + switch_type. Hyper-V can't rename a
 // switch in place, and switch_type is also immutable -- changing either
 // must trigger destroy+recreate, not a Set-VMSwitch attempt.
-//
-// Plan-modifier instances don't have stable identity (each call to
-// stringplanmodifier.RequiresReplace() returns a new pointer), so we check
-// via the modifier's Description text instead.
 func TestResource_Schema_RequiresReplaceOnImmutableAttrs(t *testing.T) {
 	t.Parallel()
 
@@ -65,45 +76,53 @@ func TestResource_Schema_RequiresReplaceOnImmutableAttrs(t *testing.T) {
 			t.Errorf("%q is not a StringAttribute (got %T)", attrName, raw)
 			continue
 		}
-		var found bool
-		for _, pm := range strAttr.PlanModifiers {
-			if strings.Contains(pm.Description(t.Context()), "destroy and recreate") {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !hasPlanModifier(strAttr.PlanModifiers, "RequiresReplace") {
 			t.Errorf("%q must carry the RequiresReplace plan modifier", attrName)
 		}
 	}
 }
 
-// id should carry UseStateForUnknown so refreshes don't cause a phantom
-// `(known after apply)` flag and trigger noisy plan output.
-func TestResource_Schema_IdUsesStateForUnknown(t *testing.T) {
+// id and the Optional+Computed mutable attributes should all carry
+// UseStateForUnknown so refreshes don't show phantom (known after apply)
+// diffs when the user hasn't set the value in config.
+func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	t.Parallel()
 
 	r := New()
 	resp := &resource.SchemaResponse{}
 	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
 
-	raw, ok := resp.Schema.Attributes["id"]
-	if !ok {
-		t.Fatal("missing id attribute")
-	}
-	strAttr, ok := raw.(schema.StringAttribute)
-	if !ok {
-		t.Fatalf("id is not a StringAttribute (got %T)", raw)
-	}
-	var found bool
-	for _, pm := range strAttr.PlanModifiers {
-		if strings.Contains(pm.Description(t.Context()), "Once set") {
-			found = true
-			break
+	checkString := func(attrName string) {
+		raw, ok := resp.Schema.Attributes[attrName]
+		if !ok {
+			t.Fatalf("missing attribute %q", attrName)
+		}
+		strAttr, ok := raw.(schema.StringAttribute)
+		if !ok {
+			t.Fatalf("%q is not a StringAttribute (got %T)", attrName, raw)
+		}
+		if !hasPlanModifier(strAttr.PlanModifiers, "UseStateForUnknown") {
+			t.Errorf("%q must carry UseStateForUnknown", attrName)
 		}
 	}
-	if !found {
-		t.Error("id must carry UseStateForUnknown to avoid (known after apply) churn on refresh")
+	checkString("id")
+	checkString("notes")
+	checkString("net_adapter_interface_description")
+
+	// Bool / List variants
+	if boolAttr, ok := resp.Schema.Attributes["allow_management_os"].(schema.BoolAttribute); ok {
+		if !hasPlanModifier(boolAttr.PlanModifiers, "UseStateForUnknown") {
+			t.Error(`"allow_management_os" must carry UseStateForUnknown`)
+		}
+	} else {
+		t.Error(`"allow_management_os" missing or wrong type`)
+	}
+	if listAttr, ok := resp.Schema.Attributes["net_adapter_names"].(schema.ListAttribute); ok {
+		if !hasPlanModifier(listAttr.PlanModifiers, "UseStateForUnknown") {
+			t.Error(`"net_adapter_names" must carry UseStateForUnknown`)
+		}
+	} else {
+		t.Error(`"net_adapter_names" missing or wrong type`)
 	}
 }
 

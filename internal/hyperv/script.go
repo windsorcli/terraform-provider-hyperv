@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
 )
@@ -75,7 +76,12 @@ func minifyPS(s string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "#") {
-			head, _, _ := strings.Cut(trimmed, " ")
+			// Split on the first run of any whitespace so `#Requires\t-Version 5.1`
+			// is recognized alongside the space-separated form.
+			head := trimmed
+			if i := strings.IndexFunc(trimmed, unicode.IsSpace); i > 0 {
+				head = trimmed[:i]
+			}
 			if !strings.EqualFold(head, "#requires") {
 				continue
 			}

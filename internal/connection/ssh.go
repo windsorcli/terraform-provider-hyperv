@@ -293,7 +293,12 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 // command runs with garbled args, stdout empty). cmd.exe's 8191-char limit
 // is a higher ceiling but the SSH layer is the bottleneck. Staging the
 // body as a file removes the wire-size constraint entirely.
-func stageScript(_ context.Context, client *ssh.Client, script string) (string, func(), error) {
+//
+// The body is prefixed with a UTF-8 BOM so PS 5.1's `-File` reader picks
+// the right encoding -- without it, 5.1 defaults to the system codepage
+// (Windows-1252 on en-US) and corrupts any non-ASCII content. All current
+// scripts are pure ASCII, but the BOM future-proofs.
+func stageScript(ctx context.Context, client *ssh.Client, script string) (string, func(), error) {
 	name := fmt.Sprintf("hyperv-%d.ps1", time.Now().UnixNano())
 	remotePath := `C:/Windows/Temp/` + name
 
@@ -315,7 +320,7 @@ func stageScript(_ context.Context, client *ssh.Client, script string) (string, 
 	}
 
 	// SCP sink protocol: `Cmmmm <size> <name>\n` then bytes then `\0`.
-	body := []byte(script)
+	body := append([]byte{0xEF, 0xBB, 0xBF}, script...)
 	if _, err := fmt.Fprintf(stdinPipe, "C0644 %d %s\n", len(body), name); err != nil {
 		_ = session.Close()
 		return "", nil, fmt.Errorf("scp header: %w", err)
@@ -330,9 +335,20 @@ func stageScript(_ context.Context, client *ssh.Client, script string) (string, 
 	}
 	_ = stdinPipe.Close()
 
-	if err := session.Wait(); err != nil {
+	// Race session.Wait against ctx so an apply-time cancel doesn't hang
+	// on a slow remote write. Same pattern as Open's handshake guard.
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- session.Wait() }()
+	select {
+	case err := <-waitErr:
+		if err != nil {
+			_ = session.Close()
+			return "", nil, fmt.Errorf("scp wait: %w (stderr=%s)", err, scpStderr.String())
+		}
+	case <-ctx.Done():
 		_ = session.Close()
-		return "", nil, fmt.Errorf("scp wait: %w (stderr=%s)", err, scpStderr.String())
+		<-waitErr
+		return "", nil, fmt.Errorf("scp canceled: %w", ctx.Err())
 	}
 	_ = session.Close()
 

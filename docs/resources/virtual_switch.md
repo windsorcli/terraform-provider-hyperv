@@ -4,11 +4,14 @@ page_title: "hyperv_virtual_switch Resource - hyperv"
 subcategory: ""
 description: |-
   Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract; see docs/PLAN.md S5 https://github.com/windsorcli/terraform-provider-hyperv/blob/main/docs/PLAN.md for the wire shape this resource locks in.
+  Recovery from partial-create failure: if New-VMSwitch succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent terraform apply will fail with switch already exists. Recover with terraform import hyperv_virtual_switch.<name> <switch-name> and re-plan.
 ---
 
 # hyperv_virtual_switch (Resource)
 
 Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract; see [docs/PLAN.md S5](https://github.com/windsorcli/terraform-provider-hyperv/blob/main/docs/PLAN.md) for the wire shape this resource locks in.
+
+**Recovery from partial-create failure:** if `New-VMSwitch` succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent `terraform apply` will fail with `switch already exists`. Recover with `terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.
 
 ## Example Usage
 
@@ -49,7 +52,7 @@ resource "hyperv_virtual_switch" "external" {
 
 ### Optional
 
-- `allow_management_os` (Boolean) Whether the host OS can use the bound NIC alongside VMs. Defaults to `true` on `External` and `Internal` switches. **Not valid for `Private` switches** -- the script-side guard rejects this combination at apply time.
+- `allow_management_os` (Boolean) Whether the host OS can use the bound NIC alongside VMs. Defaults to `true` on `External` and `Internal` switches. **Not valid for `Private` switches** -- a config validator rejects this combination at plan time.
 - `net_adapter_names` (List of String) List of host NIC names to bind the switch to. Required when `switch_type = "External"`; ignored otherwise. Multiple names form a NIC team.
 - `notes` (String) Free-form description stored on the switch by Hyper-V. Setting to an empty string clears it.
 

@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*Resource)(nil)
-	_ resource.ResourceWithConfigure   = (*Resource)(nil)
-	_ resource.ResourceWithImportState = (*Resource)(nil)
+	_ resource.Resource                     = (*Resource)(nil)
+	_ resource.ResourceWithConfigure        = (*Resource)(nil)
+	_ resource.ResourceWithConfigValidators = (*Resource)(nil)
+	_ resource.ResourceWithImportState      = (*Resource)(nil)
 )
 
 // Resource implements hyperv_virtual_switch.
@@ -36,6 +37,52 @@ func (r *Resource) Metadata(_ context.Context, req resource.MetadataRequest, res
 // Schema returns the locked-in schema (see schema.go).
 func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = resourceSchema()
+}
+
+// ConfigValidators surfaces cross-attribute checks at plan time. The script
+// layer still enforces the same invariants as defense-in-depth (direct script
+// invocation in tests bypasses the framework), but plan-time rejection is
+// the better UX -- `terraform validate` and `plan` catch the bad config
+// before any cmdlet runs.
+func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		privateAllowMgmtOSValidator{},
+	}
+}
+
+// privateAllowMgmtOSValidator rejects allow_management_os when switch_type
+// is Private. New-VMSwitch errors with "parameter is not applicable" for
+// that combination; rejecting at plan time gives a clearer diagnostic
+// anchored to the offending attribute.
+type privateAllowMgmtOSValidator struct{}
+
+func (v privateAllowMgmtOSValidator) Description(_ context.Context) string {
+	return "allow_management_os is not valid for switch_type 'Private'"
+}
+
+func (v privateAllowMgmtOSValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v privateAllowMgmtOSValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// Skip if any input is unknown -- a deferred dep hasn't resolved yet;
+	// the next plan pass will validate with concrete values.
+	if data.SwitchType.IsUnknown() || data.AllowManagementOS.IsUnknown() {
+		return
+	}
+	if data.SwitchType.ValueString() == "Private" && !data.AllowManagementOS.IsNull() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("allow_management_os"),
+			"allow_management_os not valid for Private switch",
+			"Private switches don't bind to a host NIC, so allow_management_os has no effect. "+
+				"Remove the attribute or change switch_type to External or Internal.",
+		)
+	}
 }
 
 // Configure stashes the typed Hyper-V client built by the provider's
