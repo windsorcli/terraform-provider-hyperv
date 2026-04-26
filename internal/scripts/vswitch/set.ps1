@@ -42,6 +42,16 @@ function Set-HypervSwitch {
         $setArgs.Notes = $Notes
     }
 
+    # Set-VMSwitch errors with "You must specify at least one parameter" when
+    # called with only -Name. The Go-side Update should never trigger this
+    # (Update only runs when there's a diff), but guard explicitly so a
+    # contract violation produces a clear error instead of the cmdlet's
+    # confusing one. $setArgs always carries Name + ErrorAction; anything
+    # beyond those is a mutable attribute.
+    if ($setArgs.Count -le 2) {
+        throw "Set-HypervSwitch requires at least one mutable attribute (net_adapter_names, allow_management_os, or notes)"
+    }
+
     Set-VMSwitch @setArgs
 
     Get-VMSwitch -Name $Name -ErrorAction Stop |

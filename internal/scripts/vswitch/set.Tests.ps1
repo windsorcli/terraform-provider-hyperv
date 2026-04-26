@@ -50,6 +50,17 @@ Describe 'Set-HypervSwitch' {
             }
         }
 
+        It 'rejects a no-mutable-fields call with a clear error before reaching the cmdlet' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample }
+
+            { Set-HypervSwitch -Name 'sw0' } |
+                Should -Throw -ExpectedMessage '*requires at least one mutable attribute*'
+
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+            Should -Invoke Get-VMSwitch -Times 0 -Exactly
+        }
+
         It 'forwards all three when all three are specified' {
             Mock Set-VMSwitch { }
             Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
