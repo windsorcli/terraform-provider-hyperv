@@ -106,6 +106,11 @@ func TestMinifyPS_PreservesRequiresDirective(t *testing.T) {
 			want: "#requires -Version 5.1\n$x = 1\n",
 		},
 		{
+			name: "tab-separated #Requires is preserved (PS accepts any whitespace)",
+			in:   "#Requires\t-Version\t5.1\n$x = 1\n",
+			want: "#Requires\t-Version\t5.1\n$x = 1\n",
+		},
+		{
 			name: "regular hash comments still stripped",
 			in:   "# only a comment\n$x = 1\n# trailing comment-only line\n",
 			want: "$x = 1\n",
@@ -122,6 +127,8 @@ func TestMinifyPS_PreservesRequiresDirective(t *testing.T) {
 	}
 }
 
+// runScript forwards the caller's input JSON to the runner unchanged --
+// scripts read it via [Console]::In.ReadToEnd() per the wire contract.
 func TestRunScript_StdinIsForwarded(t *testing.T) {
 	t.Parallel()
 

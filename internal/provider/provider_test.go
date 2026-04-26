@@ -53,10 +53,11 @@ func TestProvider_Resources(t *testing.T) {
 	p := New("test")()
 	got := p.Resources(t.Context())
 
-	// No resources in this PR yet — first lands in M1's vswitch PR. Pin
-	// at zero so accidental wiring doesn't slip in unnoticed.
-	if len(got) != 0 {
-		t.Errorf("got %d resources, want 0 — resources land in subsequent PRs per PLAN §12 M1", len(got))
+	// Currently hyperv_virtual_switch -- the first mutating resource (PLAN
+	// M1c). Pin the count so accidental wiring of additional resources
+	// doesn't slip in unnoticed before their schema is reviewed.
+	if len(got) != 1 {
+		t.Errorf("got %d resources, want 1 (hyperv_virtual_switch only at this milestone)", len(got))
 	}
 }
 

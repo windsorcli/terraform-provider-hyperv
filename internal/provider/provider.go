@@ -19,6 +19,7 @@ import (
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/datasources/host"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
 )
 
 var _ provider.Provider = (*HypervProvider)(nil)
@@ -206,7 +207,9 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 }
 
 func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		vswitch.New,
+	}
 }
 
 func (p *HypervProvider) DataSources(_ context.Context) []func() datasource.DataSource {

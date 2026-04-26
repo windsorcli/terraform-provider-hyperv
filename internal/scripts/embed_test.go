@@ -58,3 +58,35 @@ func TestPreamble_LoadsTheLockedInContractStrings(t *testing.T) {
 		}
 	}
 }
+
+// VswitchScript surfaces typos in the verb name (or a missing file) at
+// startup rather than at first terraform apply. Each verb maps to the
+// .ps1 the corresponding typed Client method invokes; if any of these
+// can't be loaded, the resource is broken.
+func TestVswitchScript_LoadsAllFourVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"get", "new", "set", "remove"} {
+		body, err := VswitchScript(verb)
+		if err != nil {
+			t.Errorf("VswitchScript(%q): %v", verb, err)
+			continue
+		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			t.Errorf("VswitchScript(%q) returned empty body", verb)
+		}
+	}
+}
+
+// Sanity-check that the *.Tests.ps1 helper files are NOT bundled into the
+// production binary — they're test infrastructure only and would bloat the
+// embed and the binary.
+func TestVswitchScript_TestFilesNotEmbedded(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"vswitch/get.Tests.ps1", "vswitch/_test_helpers.ps1"} {
+		if _, err := Vswitch.ReadFile(name); err == nil {
+			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
+		}
+	}
+}
