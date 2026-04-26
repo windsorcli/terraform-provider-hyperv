@@ -39,8 +39,15 @@ function New-HypervSwitch {
     else {
         $newArgs.SwitchType = $SwitchType
     }
-    if ($null -ne $AllowManagementOS) {
+    # AllowManagementOS is meaningful only for External/Internal -- New-VMSwitch
+    # rejects it on Private with "parameter is not applicable given the current
+    # switch type" which would surface as ErrPSExecution. Gate here so the
+    # contract violation produces a clear PS error instead.
+    if ($null -ne $AllowManagementOS -and $SwitchType -ne 'Private') {
         $newArgs.AllowManagementOS = [bool]$AllowManagementOS
+    }
+    elseif ($null -ne $AllowManagementOS -and $SwitchType -eq 'Private') {
+        throw "allow_management_os is not valid for switch_type 'Private' (External/Internal only)"
     }
     if ($PSBoundParameters.ContainsKey('Notes')) {
         $newArgs.Notes = $Notes

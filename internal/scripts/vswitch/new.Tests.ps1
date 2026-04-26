@@ -57,6 +57,15 @@ Describe 'New-HypervSwitch' {
                 $SwitchType -eq 'Private' -and $null -eq $NetAdapterName
             }
         }
+
+        It 'Private + AllowManagementOS rejects with a clear error before reaching the cmdlet' {
+            Mock New-VMSwitch { New-HypervSwitchSample -SwitchType 'Private' }
+
+            { New-HypervSwitch -Name 'priv0' -SwitchType 'Private' -AllowManagementOS $true } |
+                Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Private''*'
+
+            Should -Invoke New-VMSwitch -Times 0 -Exactly
+        }
     }
 
     Context 'optional parameters' {
