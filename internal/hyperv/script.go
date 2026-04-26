@@ -40,7 +40,7 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 		return fmt.Errorf("%w: exit 0 but empty stdout (preamble or encoding pin failed?)", ErrPSExecution)
 	}
 	if err := json.Unmarshal(res.Stdout, dst); err != nil {
-		return fmt.Errorf("decode result: %w; stdout=%s", err, string(res.Stdout))
+		return fmt.Errorf("%w: decode result: %w; stdout=%s", ErrPSExecution, err, string(res.Stdout))
 	}
 	return nil
 }

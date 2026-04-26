@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -47,6 +48,34 @@ func TestRunScript_NilDstSkipsDecode(t *testing.T) {
 
 	if err := c.runScript(t.Context(), `# MARKER`, nil, nil); err != nil {
 		t.Errorf("runScript with dst=nil and empty stdout should succeed; got %v", err)
+	}
+}
+
+func TestRunScript_DecodeFailureWrapsErrPSExecution(t *testing.T) {
+	// Decode failures sit in the same "script ran but output is wrong"
+	// bucket as the empty-stdout case above and must carry the same
+	// sentinel so callers that check errors.Is(err, ErrPSExecution) as a
+	// catch-all for malformed output don't silently miss this path.
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().On("MARKER").Return(`{not valid json`, "", 0)
+	c := NewClient(fr)
+	var dst struct {
+		Name string `json:"name"`
+	}
+
+	err := c.runScript(t.Context(), `# MARKER`, nil, &dst)
+	if err == nil {
+		t.Fatal("expected an error from malformed JSON")
+	}
+	if !errors.Is(err, ErrPSExecution) {
+		t.Errorf("err = %v, want errors.Is(_, ErrPSExecution)", err)
+	}
+	if !strings.Contains(err.Error(), "decode result") {
+		t.Errorf("err = %q, want substring 'decode result'", err.Error())
+	}
+	if !strings.Contains(err.Error(), `{not valid json`) {
+		t.Errorf("err = %q, want stdout echoed for debugging", err.Error())
 	}
 }
 
