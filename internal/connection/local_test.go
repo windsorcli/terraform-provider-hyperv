@@ -91,6 +91,16 @@ func TestStripCLIXML(t *testing.T) {
 			in:   "real-error\n\n",
 			want: "real-error",
 		},
+		{
+			name: "lines starting with _x are NOT dropped",
+			in:   "_xBadState: invalid input from cmdlet",
+			want: "_xBadState: invalid input from cmdlet",
+		},
+		{
+			name: "_x-prefixed continuation line is preserved",
+			in:   "first error line\n_xPolicyViolation: deeper detail\n",
+			want: "first error line\n_xPolicyViolation: deeper detail",
+		},
 	}
 
 	for _, tc := range cases {

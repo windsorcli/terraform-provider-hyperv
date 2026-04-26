@@ -158,10 +158,8 @@ func utf16leBytes(s string) []byte {
 	return out
 }
 
-// stripCLIXML removes the `#< CLIXML` progress envelopes that PS 5.1 emits
-// on stderr regardless of $ProgressPreference (some cmdlets bypass the
-// preference). Real PS errors don't use the CLIXML prefix, so dropping
-// these lines defensively is safe.
+// stripCLIXML drops PS 5.1 stderr progress noise: lines starting with
+// `#< CLIXML` or `<Objs `.
 func stripCLIXML(b []byte) []byte {
 	if len(b) == 0 {
 		return b
@@ -173,8 +171,7 @@ func stripCLIXML(b []byte) []byte {
 		if bytes.HasPrefix(trimmed, []byte("#< CLIXML")) {
 			continue
 		}
-		// CLIXML envelope continuation lines start with the XML tag itself.
-		if bytes.HasPrefix(trimmed, []byte("<Objs ")) || bytes.HasPrefix(trimmed, []byte("_x")) {
+		if bytes.HasPrefix(trimmed, []byte("<Objs ")) {
 			continue
 		}
 		out = append(out, line)
