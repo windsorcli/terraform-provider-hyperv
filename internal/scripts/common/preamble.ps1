@@ -29,12 +29,17 @@ $OutputEncoding           = [System.Text.Encoding]::UTF8
 # Write-HypervError emits the structured error envelope on stderr. The
 # Go-side hyperv/errors.go maps fields to typed errors per PLAN.md section 5:
 #
-#   category=ObjectNotFound|ResourceUnavailable      -> ErrNotFound
+#   category=ObjectNotFound                          -> ErrNotFound
+#   category=ResourceUnavailable                     -> ErrUnavailable
 #   category=PermissionDenied                        -> ErrUnauthorized
 #   category=InvalidArgument
 #     and fullyQualifiedErrorId starts with
 #     "InvalidParameter,Microsoft.Vhd.*"             -> ErrInvalidParentPath
 #   everything else                                  -> ErrPSExecution
+#
+# ErrNotFound vs ErrUnavailable is load-bearing on the Go side: ErrNotFound
+# triggers RemoveResource (resource is gone), ErrUnavailable surfaces a
+# transient error so a vmms restart doesn't cause destroy-and-recreate.
 #
 # Always pair with `exit 1` so the connection layer sees a non-zero exit
 # code as the primary signal; the JSON envelope provides detail.
