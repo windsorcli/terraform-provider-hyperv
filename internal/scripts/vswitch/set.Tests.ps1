@@ -50,6 +50,39 @@ Describe 'Set-HypervSwitch' {
             }
         }
 
+        It 'Private + AllowManagementOS rejects with a clear error before reaching the cmdlet (symmetric with new.ps1)' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample -SwitchType 'Private' }
+
+            { Set-HypervSwitch -Name 'priv0' -SwitchType 'Private' -AllowManagementOS $true } |
+                Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Private''*'
+
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+            Should -Invoke Get-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'External + AllowManagementOS is allowed (no false positive on the Private guard)' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample -SwitchType 'External' -AllowManagementOS $false }
+
+            Set-HypervSwitch -Name 'ext0' -SwitchType 'External' -AllowManagementOS $false | Out-Null
+
+            Should -Invoke Set-VMSwitch -Times 1 -Exactly -ParameterFilter {
+                $null -ne $AllowManagementOS -and $AllowManagementOS -eq $false
+            }
+        }
+
+        It 'omits SwitchType from the Set-VMSwitch splat (it is validation-only, not mutable)' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample -SwitchType 'External' }
+
+            Set-HypervSwitch -Name 'ext0' -SwitchType 'External' -AllowManagementOS $true | Out-Null
+
+            Should -Invoke Set-VMSwitch -Times 1 -Exactly -ParameterFilter {
+                $null -eq $SwitchType
+            }
+        }
+
         It 'rejects a no-mutable-fields call with a clear error before reaching the cmdlet' {
             Mock Set-VMSwitch { }
             Mock Get-VMSwitch { New-HypervSwitchSample }

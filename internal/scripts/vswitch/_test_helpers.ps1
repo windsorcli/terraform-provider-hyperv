@@ -1,56 +1,55 @@
 # _test_helpers.ps1 -- shared Pester setup for the vswitch verb scripts.
 # Underscore prefix keeps it out of Pester's *.Tests.ps1 discovery glob.
 #
-# Pester's Mock requires the command being mocked to exist in scope. On a
-# Windows host with Hyper-V loaded, Get-VMSwitch / New-VMSwitch / etc. are
-# already defined by the Hyper-V module. On a Linux/macOS dev box (where we
-# still want fast contract tests) those cmdlets are absent, so we stub them
-# with `[CmdletBinding()]` shells that match the real cmdlets' relevant param
-# surface. The stub bodies are intentionally empty -- Pester's Mock replaces
-# them in each It block.
+# Stubs for the Hyper-V cmdlets the vswitch scripts call. Defined
+# unconditionally (not gated on `Get-Command`) on purpose: when the real
+# Hyper-V module is present (Windows runners), its Set-VMSwitch parameter
+# sets require certain combinations -- e.g. -Name + -NetAdapterName without
+# -SwitchType doesn't resolve to a complete parameter set on PS 5.1 and the
+# binder rejects the call before Pester's mock body runs, returning a
+# zero-call count. Defining stubs in this script's scope shadows the module
+# cmdlets in the BeforeAll dot-source scope, so Pester mocks the simple
+# stub surface (no parameter sets, no validators) and ParameterFilters see
+# the bound values consistently across PS 5.1 and 7.x.
+#
+# In production scripts run via -EncodedCommand in a fresh runspace, so the
+# real Hyper-V cmdlets are still used; this shadow only applies to test
+# execution.
 
-if (-not (Get-Command -Name Get-VMSwitch -ErrorAction SilentlyContinue)) {
-    function Get-VMSwitch {
-        [CmdletBinding()]
-        param(
-            [Parameter(Position = 0)] [string] $Name
-        )
-    }
+function Get-VMSwitch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] [string] $Name
+    )
 }
 
-if (-not (Get-Command -Name New-VMSwitch -ErrorAction SilentlyContinue)) {
-    function New-VMSwitch {
-        [CmdletBinding()]
-        param(
-            [string]   $Name,
-            [string]   $SwitchType,
-            [string[]] $NetAdapterName,
-            [bool]     $AllowManagementOS,
-            [string]   $Notes
-        )
-    }
+function New-VMSwitch {
+    [CmdletBinding()]
+    param(
+        [string]   $Name,
+        [string]   $SwitchType,
+        [string[]] $NetAdapterName,
+        [bool]     $AllowManagementOS,
+        [string]   $Notes
+    )
 }
 
-if (-not (Get-Command -Name Set-VMSwitch -ErrorAction SilentlyContinue)) {
-    function Set-VMSwitch {
-        [CmdletBinding()]
-        param(
-            [string]   $Name,
-            [string[]] $NetAdapterName,
-            [bool]     $AllowManagementOS,
-            [string]   $Notes
-        )
-    }
+function Set-VMSwitch {
+    [CmdletBinding()]
+    param(
+        [string]   $Name,
+        [string[]] $NetAdapterName,
+        [bool]     $AllowManagementOS,
+        [string]   $Notes
+    )
 }
 
-if (-not (Get-Command -Name Remove-VMSwitch -ErrorAction SilentlyContinue)) {
-    function Remove-VMSwitch {
-        [CmdletBinding()]
-        param(
-            [string] $Name,
-            [switch] $Force
-        )
-    }
+function Remove-VMSwitch {
+    [CmdletBinding()]
+    param(
+        [string] $Name,
+        [switch] $Force
+    )
 }
 
 # New-HypervSwitchSample builds a PSCustomObject shaped like a real

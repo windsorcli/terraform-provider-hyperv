@@ -4,6 +4,7 @@
 #
 #   stdin JSON  : {
 #                   "name":                "<string>",                       # required (target switch)
+#                   "switch_type":         "External"|"Internal"|"Private",  # optional, validation hint only
 #                   "net_adapter_names":   ["<string>", ...],                # External only, optional
 #                   "allow_management_os": <bool>,                            # optional
 #                   "notes":               "<string>"                         # optional
@@ -12,8 +13,10 @@
 #                 as get.ps1 -- emitted by re-reading after the mutation lands).
 #
 # Only keys present in the input are touched. switch_type is immutable
-# (RequiresReplace plan modifier on the Go side); attempts to send it here
-# are silently ignored.
+# (RequiresReplace plan modifier on the Go side) and is NOT forwarded to
+# Set-VMSwitch -- when present in the payload it's used purely to mirror
+# new.ps1's Private + AllowManagementOS reject path. The Go-side Update
+# should populate it from prior state so the validation kicks in.
 
 # Set-HypervSwitch applies a partial update via Set-VMSwitch, then re-reads
 # via Get-VMSwitch so the emitted shape matches Read exactly. Two-step instead
@@ -23,10 +26,21 @@ function Set-HypervSwitch {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name,
+        [ValidateSet('External', 'Internal', 'Private')] [string] $SwitchType,
         [string[]]       $NetAdapterNames,
         [Nullable[bool]] $AllowManagementOS,
         [string]         $Notes
     )
+
+    # Symmetric with new.ps1: AllowManagementOS is invalid for Private switches.
+    # SwitchType is optional in the set contract; when the caller supplies it
+    # (e.g. populated from prior state by the Go-side Update), an invalid
+    # combination produces a clear error instead of Set-VMSwitch's opaque
+    # "parameter is not applicable given the current switch type" message.
+    # When SwitchType is absent the guard no-ops and the cmdlet error surfaces.
+    if ($null -ne $AllowManagementOS -and $SwitchType -eq 'Private') {
+        throw "allow_management_os is not valid for switch_type 'Private' (External/Internal only)"
+    }
 
     $setArgs = @{
         Name        = $Name
@@ -72,6 +86,9 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         $callArgs = @{
             Name = $params.name
+        }
+        if ($params.PSObject.Properties.Name -contains 'switch_type' -and $null -ne $params.switch_type) {
+            $callArgs.SwitchType = $params.switch_type
         }
         if ($params.PSObject.Properties.Name -contains 'net_adapter_names' -and $null -ne $params.net_adapter_names) {
             $callArgs.NetAdapterNames = @($params.net_adapter_names)
