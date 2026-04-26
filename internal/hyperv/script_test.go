@@ -17,7 +17,7 @@ func TestRunScript_PreambleIsPrepended(t *testing.T) {
 	c := NewClient(fr)
 	var dst string
 
-	if err := c.runScript(t.Context(), `# MARKER`+"\nWrite-HypervResult 'ok'", nil, &dst); err != nil {
+	if err := c.runScript(t.Context(), `$null = 'MARKER'`+"\nWrite-HypervResult 'ok'", nil, &dst); err != nil {
 		t.Fatalf("runScript: %v", err)
 	}
 
@@ -30,7 +30,7 @@ func TestRunScript_PreambleIsPrepended(t *testing.T) {
 		`Set-StrictMode -Version 3.0`,
 		`$ProgressPreference    = 'SilentlyContinue'`,
 		`function Write-HypervError`,
-		`# MARKER`, // body still appears after preamble
+		`$null = 'MARKER'`, // body survives runScript's minifier (code, not a comment)
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("script body missing %q", want)
@@ -46,7 +46,7 @@ func TestRunScript_NilDstSkipsDecode(t *testing.T) {
 	fr := testutil.NewFakeRunner().On("MARKER").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.runScript(t.Context(), `# MARKER`, nil, nil); err != nil {
+	if err := c.runScript(t.Context(), `$null = 'MARKER'`, nil, nil); err != nil {
 		t.Errorf("runScript with dst=nil and empty stdout should succeed; got %v", err)
 	}
 }
@@ -64,7 +64,7 @@ func TestRunScript_DecodeFailureWrapsErrPSExecution(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	err := c.runScript(t.Context(), `# MARKER`, nil, &dst)
+	err := c.runScript(t.Context(), `$null = 'MARKER'`, nil, &dst)
 	if err == nil {
 		t.Fatal("expected an error from malformed JSON")
 	}
@@ -79,6 +79,49 @@ func TestRunScript_DecodeFailureWrapsErrPSExecution(t *testing.T) {
 	}
 }
 
+// minifyPS strips comment-only lines but must preserve PowerShell's
+// #Requires directives -- those are parsed by the PS engine before
+// execution and silently dropping them bypasses version/privilege checks.
+func TestMinifyPS_PreservesRequiresDirective(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "Requires -Version is preserved",
+			in:   "#Requires -Version 5.1\n# regular comment\n$x = 1\n",
+			want: "#Requires -Version 5.1\n$x = 1\n",
+		},
+		{
+			name: "Requires -RunAsAdministrator is preserved",
+			in:   "#Requires -RunAsAdministrator\n$x = 1\n",
+			want: "#Requires -RunAsAdministrator\n$x = 1\n",
+		},
+		{
+			name: "case-insensitive match (#requires lowercase)",
+			in:   "#requires -Version 5.1\n# drop me\n$x = 1\n",
+			want: "#requires -Version 5.1\n$x = 1\n",
+		},
+		{
+			name: "regular hash comments still stripped",
+			in:   "# only a comment\n$x = 1\n# trailing comment-only line\n",
+			want: "$x = 1\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := minifyPS(tc.in)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunScript_StdinIsForwarded(t *testing.T) {
 	t.Parallel()
 
@@ -87,7 +130,7 @@ func TestRunScript_StdinIsForwarded(t *testing.T) {
 	var dst string
 
 	in := []byte(`{"k":"v"}`)
-	if err := c.runScript(t.Context(), `# MARKER`, in, &dst); err != nil {
+	if err := c.runScript(t.Context(), `$null = 'MARKER'`, in, &dst); err != nil {
 		t.Fatalf("runScript: %v", err)
 	}
 	if string(fr.Calls()[0].StdinJSON) != string(in) {
