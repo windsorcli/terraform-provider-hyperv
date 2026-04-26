@@ -132,6 +132,13 @@ func (b *sshBackend) Backend() string { return "ssh" }
 
 // Open establishes the persistent ssh.Client. Idempotent -- subsequent
 // calls return nil if the client is already up.
+//
+// Both phases honor ctx cancellation: net.Dialer.DialContext makes the TCP
+// dial cancelable; ssh.NewClientConn doesn't accept a context, so we race
+// it against ctx.Done() in a goroutine and close the underlying TCP conn
+// to force the handshake to unblock if ctx fires (otherwise an operator
+// Ctrl+C during `terraform apply`'s provider-configure phase would hang
+// for many seconds while the OS-level read times out).
 func (b *sshBackend) Open(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -139,21 +146,40 @@ func (b *sshBackend) Open(ctx context.Context) error {
 		return nil
 	}
 
-	// Honor ctx cancellation by dialing in a goroutine and racing the ctx.
-	// ssh.Dial doesn't accept a context directly; net.Dialer{}.DialContext
-	// gets us cancelable TCP dial, then NewClientConn does the SSH handshake.
 	dialer := &net.Dialer{Timeout: b.config.Timeout}
 	tcpConn, err := dialer.DialContext(ctx, "tcp", b.addr)
 	if err != nil {
 		return fmt.Errorf("ssh: dial %s: %w", b.addr, err)
 	}
-	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, b.addr, b.config)
-	if err != nil {
-		_ = tcpConn.Close()
-		return fmt.Errorf("ssh: handshake with %s: %w", b.addr, err)
+
+	type handshakeResult struct {
+		sshConn ssh.Conn
+		chans   <-chan ssh.NewChannel
+		reqs    <-chan *ssh.Request
+		err     error
 	}
-	b.client = ssh.NewClient(sshConn, chans, reqs)
-	return nil
+	done := make(chan handshakeResult, 1)
+	go func() {
+		c, ch, rq, err := ssh.NewClientConn(tcpConn, b.addr, b.config)
+		done <- handshakeResult{c, ch, rq, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			_ = tcpConn.Close()
+			return fmt.Errorf("ssh: handshake with %s: %w", b.addr, r.err)
+		}
+		b.client = ssh.NewClient(r.sshConn, r.chans, r.reqs)
+		return nil
+	case <-ctx.Done():
+		// Closing the underlying TCP conn forces the in-flight read in
+		// NewClientConn to return with an error; the goroutine then sends
+		// to `done` (buffered, so no leak) and exits.
+		_ = tcpConn.Close()
+		<-done
+		return fmt.Errorf("ssh: handshake canceled: %w", ctx.Err())
+	}
 }
 
 // Close shuts down the persistent client. Idempotent.

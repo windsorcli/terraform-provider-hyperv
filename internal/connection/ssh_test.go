@@ -1,11 +1,14 @@
 package connection
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -330,6 +333,78 @@ func TestSSHBackend_CloseBeforeOpenIsIdempotent(t *testing.T) {
 	}
 	if err := conn.Close(); err != nil {
 		t.Errorf("Close before Open should be a no-op; got %v", err)
+	}
+}
+
+// Open must honor ctx cancellation during the SSH handshake, not just the
+// TCP dial. Spin up a TCP listener that accepts connections but never sends
+// the SSH greeting -- ssh.NewClientConn would otherwise block at its first
+// read until the OS-level read times out (many seconds). With the goroutine
+// race in place, ctx.Done() must short-circuit promptly.
+func TestSSHBackend_OpenRespectsContextCancelDuringHandshake(t *testing.T) {
+	t.Parallel()
+
+	// Silent TCP listener: accept connections, hold them open, never write.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	accepted := make(chan net.Conn, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	defer func() {
+		_ = ln.Close()
+		<-done
+		close(accepted)
+		for c := range accepted {
+			_ = c.Close()
+		}
+	}()
+
+	addr := ln.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+
+	conn, err := NewSSH(SSHOptions{
+		Host:           host,
+		Port:           port,
+		Username:       "u",
+		PrivateKey:     generateTestKey(t),
+		KnownHostsPath: writeKnownHostsFile(t),
+		Timeout:        30 * time.Second, // dial timeout -- not what's being tested
+	})
+	if err != nil {
+		t.Fatalf("NewSSH: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = conn.Open(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from canceled handshake")
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Errorf("error = %v, want \"canceled\" hint", err)
+	}
+	// Generous bound: we asked for 200ms; anything past 2s would mean
+	// ctx-cancel didn't break the handshake's read.
+	if elapsed > 2*time.Second {
+		t.Errorf("Open took %v after 200ms ctx; ctx-cancel didn't propagate to the handshake", elapsed)
 	}
 }
 
