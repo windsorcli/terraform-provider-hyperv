@@ -3,6 +3,8 @@ package connection
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -299,7 +301,15 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 // (Windows-1252 on en-US) and corrupts any non-ASCII content. All current
 // scripts are pure ASCII, but the BOM future-proofs.
 func stageScript(ctx context.Context, client *ssh.Client, script string) (string, func(), error) {
-	name := fmt.Sprintf("hyperv-%d.ps1", time.Now().UnixNano())
+	// 8 random bytes -- 64 bits of entropy is more than enough to avoid
+	// collision when multiple resources apply concurrently against the same
+	// backend. UnixNano() can collide if two goroutines hit it within the
+	// same nanosecond; crypto/rand removes the wall-clock dependency.
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", nil, fmt.Errorf("ssh: generate temp filename: %w", err)
+	}
+	name := "hyperv-" + hex.EncodeToString(suffix[:]) + ".ps1"
 	remotePath := `C:/Windows/Temp/` + name
 
 	session, err := client.NewSession()

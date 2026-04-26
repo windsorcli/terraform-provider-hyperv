@@ -100,21 +100,14 @@ func (v privateAllowMgmtOSValidator) ValidateResource(ctx context.Context, req r
 // at plan time gives a clearer diagnostic anchored to the offending attribute.
 type externalRequiresAdapterNamesValidator struct{}
 
-// Description is a one-line summary the framework surfaces in `terraform
-// validate -json` output and on schema-introspection paths.
 func (v externalRequiresAdapterNamesValidator) Description(_ context.Context) string {
 	return "net_adapter_names is required when switch_type = 'External'"
 }
 
-// MarkdownDescription mirrors Description -- the rule has no markdown-only
-// formatting beyond the plain string.
 func (v externalRequiresAdapterNamesValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
-// ValidateResource fires when switch_type is External and net_adapter_names
-// is null or an empty list. Distinct messages for "missing" vs "empty" so
-// the diagnostic points at the exact line the user needs to fix.
 func (v externalRequiresAdapterNamesValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
