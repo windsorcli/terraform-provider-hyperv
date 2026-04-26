@@ -1,9 +1,29 @@
 package scripts
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
+
+// Pin: preamble.ps1 must NOT carry a UTF-8 BOM. The file is concatenated
+// to every resource script body and re-encoded as UTF-16LE for
+// `-EncodedCommand`; a BOM would land as U+FEFF at position 0 of the
+// script, breaking any future guard like strings.HasPrefix(preamble, "#")
+// and adding three bytes of noise to every script we ship.
+func TestPreamble_HasNoUTF8BOM(t *testing.T) {
+	t.Parallel()
+
+	body, err := Preamble()
+	if err != nil {
+		t.Fatalf("Preamble: %v", err)
+	}
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	if bytes.HasPrefix(body, bom) {
+		t.Errorf("preamble.ps1 has a UTF-8 BOM; re-save without BOM " +
+			"(or run: sed -i '' '1s/^\\xef\\xbb\\xbf//' internal/scripts/common/preamble.ps1)")
+	}
+}
 
 // Pin the §5 contract pieces that MUST appear in common/preamble.ps1. If
 // the preamble is ever edited and one of these strings disappears, this

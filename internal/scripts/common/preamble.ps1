@@ -1,4 +1,4 @@
-﻿# common/preamble.ps1 -- concatenated to the top of every resource script at
+# common/preamble.ps1 -- concatenated to the top of every resource script at
 # runtime.
 #
 # Three load-bearing facts here:
