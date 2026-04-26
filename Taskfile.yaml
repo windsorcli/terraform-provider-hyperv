@@ -176,12 +176,35 @@ tasks:
       Skips examples/provider/ — that example references the published
       provider address which isn't resolvable until we ship to the registry.
       Syntax checking on examples/provider/ is covered by `task fmt:check`.
+
+      Builds the provider into a temp dir and uses dev_overrides so
+      `terraform validate` can resolve windsorcli/hyperv against the local
+      binary (the provider isn't on the public registry yet).
     cmds:
       - |
+        set -e
+        BIN_DIR=$(mktemp -d)
+        CLI_CFG=$(mktemp)
+        trap "rm -rf $BIN_DIR $CLI_CFG" EXIT
+
+        go build {{.GO_BUILD_FLAGS}} -o "$BIN_DIR/terraform-provider-{{.PROVIDER_NAME}}" .
+        cat > "$CLI_CFG" <<EOF
+        provider_installation {
+          dev_overrides {
+            "windsorcli/{{.PROVIDER_NAME}}" = "$BIN_DIR"
+          }
+          direct {}
+        }
+        EOF
+        export TF_CLI_CONFIG_FILE="$CLI_CFG"
+
         for dir in examples/resources/*/ examples/data-sources/*/; do
           [ -d "$dir" ] || continue
           echo "validating $dir"
-          (cd "$dir" && terraform init -backend=false -no-color > /dev/null && terraform validate -no-color)
+          # dev_overrides skips init, so go straight to validate. The 2>&1
+          # filter drops the harmless "dev override" warning.
+          (cd "$dir" && terraform validate -no-color 2>&1 | grep -v "dev_overrides" | grep -v "^Warning:" | grep -v "^$" || true)
+          (cd "$dir" && terraform validate -no-color > /dev/null)
         done
 
   # ---------- Release ----------
