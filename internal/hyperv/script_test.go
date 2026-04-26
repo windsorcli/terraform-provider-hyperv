@@ -17,7 +17,7 @@ func TestRunScript_PreambleIsPrepended(t *testing.T) {
 	c := NewClient(fr)
 	var dst string
 
-	if err := c.runScript(t.Context(), `# MARKER`+"\nWrite-HypervResult 'ok'", nil, &dst); err != nil {
+	if err := c.runScript(t.Context(), `$null = 'MARKER'`+"\nWrite-HypervResult 'ok'", nil, &dst); err != nil {
 		t.Fatalf("runScript: %v", err)
 	}
 
@@ -30,7 +30,7 @@ func TestRunScript_PreambleIsPrepended(t *testing.T) {
 		`Set-StrictMode -Version 3.0`,
 		`$ProgressPreference    = 'SilentlyContinue'`,
 		`function Write-HypervError`,
-		`# MARKER`, // body still appears after preamble
+		`$null = 'MARKER'`, // body survives runScript's minifier (code, not a comment)
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("script body missing %q", want)
@@ -46,7 +46,7 @@ func TestRunScript_NilDstSkipsDecode(t *testing.T) {
 	fr := testutil.NewFakeRunner().On("MARKER").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.runScript(t.Context(), `# MARKER`, nil, nil); err != nil {
+	if err := c.runScript(t.Context(), `$null = 'MARKER'`, nil, nil); err != nil {
 		t.Errorf("runScript with dst=nil and empty stdout should succeed; got %v", err)
 	}
 }
@@ -64,7 +64,7 @@ func TestRunScript_DecodeFailureWrapsErrPSExecution(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	err := c.runScript(t.Context(), `# MARKER`, nil, &dst)
+	err := c.runScript(t.Context(), `$null = 'MARKER'`, nil, &dst)
 	if err == nil {
 		t.Fatal("expected an error from malformed JSON")
 	}
@@ -87,7 +87,7 @@ func TestRunScript_StdinIsForwarded(t *testing.T) {
 	var dst string
 
 	in := []byte(`{"k":"v"}`)
-	if err := c.runScript(t.Context(), `# MARKER`, in, &dst); err != nil {
+	if err := c.runScript(t.Context(), `$null = 'MARKER'`, in, &dst); err != nil {
 		t.Fatalf("runScript: %v", err)
 	}
 	if string(fr.Calls()[0].StdinJSON) != string(in) {

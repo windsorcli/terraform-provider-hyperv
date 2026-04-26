@@ -25,8 +25,8 @@ type LocalConfig struct {
 	PwshPath types.String `tfsdk:"pwsh_path"`
 }
 
-// SSHConfig configures the SSH backend. Schema is defined now to lock the
-// attribute names per §13; the backend itself ships in M2.
+// SSHConfig configures the SSH backend. Attribute names locked per S13;
+// resolved into connection.SSHOptions by newSSHConnection.
 type SSHConfig struct {
 	PrivateKey     types.String `tfsdk:"private_key"`
 	PrivateKeyPath types.String `tfsdk:"private_key_path"`

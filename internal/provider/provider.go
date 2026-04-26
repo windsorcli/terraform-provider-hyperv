@@ -54,7 +54,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 				Optional: true,
 				MarkdownDescription: "Execution backend. One of `local`, `ssh`, `winrm`. " +
 					"Defaults to `HYPERV_BACKEND` env var, or `local` if neither is set. " +
-					"Currently only `local` is implemented; `ssh` ships in M2, `winrm` in M3.",
+					"`local` and `ssh` are implemented; `winrm` ships in M3.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("local", "ssh", "winrm"),
 				},
@@ -97,7 +97,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			},
 			"ssh": schema.SingleNestedAttribute{
 				Optional:            true,
-				MarkdownDescription: "SSH-backend-specific configuration. Backend ships in M2.",
+				MarkdownDescription: "SSH-backend-specific configuration.",
 				Attributes: map[string]schema.Attribute{
 					"private_key": schema.StringAttribute{
 						Optional:            true,

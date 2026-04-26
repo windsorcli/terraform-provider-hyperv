@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
 )
@@ -24,7 +25,7 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 	if err != nil {
 		return fmt.Errorf("read embedded preamble: %w", err)
 	}
-	full := string(preamble) + "\n" + body
+	full := minifyPS(string(preamble) + "\n" + body)
 
 	res, err := c.runner.RunScript(ctx, full, stdinJSON)
 	if err != nil {
@@ -43,4 +44,34 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 		return fmt.Errorf("%w: decode result: %w; stdout=%s", ErrPSExecution, err, string(res.Stdout))
 	}
 	return nil
+}
+
+// minifyPS strips comment-only lines (whitespace + leading `#`) and blank
+// lines from a PowerShell script before it goes on the wire. The source
+// preamble.ps1 is human-readable (~3.7 KB); after minification it's ~1.2 KB.
+//
+// This is load-bearing for the SSH backend: Windows OpenSSH server invokes
+// commands through cmd.exe whose CreateProcess command-line max is 8191
+// chars. The full preamble + base64 + UTF-16LE expansion (~10 KB) overflows
+// that. Minification gets us comfortably under the limit while preserving
+// every functional line of the §5 contract.
+//
+// Trailing inline comments (e.g. `$x = 1 # note`) are NOT stripped -- doing
+// so safely requires PS-string-literal awareness. The line-level strip alone
+// is sufficient and unambiguous.
+func minifyPS(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
