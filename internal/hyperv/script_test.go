@@ -38,12 +38,12 @@ func TestRunScript_PreambleIsPrepended(t *testing.T) {
 	}
 }
 
+// Command-only cmdlets (Remove-VMSwitch, Set-*) call runScript with dst=nil
+// and don't read stdout. Verify the chokepoint accepts that.
 func TestRunScript_NilDstSkipsDecode(t *testing.T) {
-	// Command-only cmdlets (Remove-VMSwitch, Set-*) call runScript with
-	// dst=nil and don't read stdout. Verify the chokepoint accepts that.
 	t.Parallel()
 
-	fr := testutil.NewFakeRunner().On("MARKER").Return("", "", 0) // empty stdout
+	fr := testutil.NewFakeRunner().On("MARKER").Return("", "", 0)
 	c := NewClient(fr)
 
 	if err := c.runScript(t.Context(), `# MARKER`, nil, nil); err != nil {
@@ -51,11 +51,11 @@ func TestRunScript_NilDstSkipsDecode(t *testing.T) {
 	}
 }
 
+// Decode failures sit in the same "script ran but output is wrong" bucket as
+// the empty-stdout case and must carry the same sentinel so callers that
+// check errors.Is(err, ErrPSExecution) as a catch-all for malformed output
+// don't silently miss this path.
 func TestRunScript_DecodeFailureWrapsErrPSExecution(t *testing.T) {
-	// Decode failures sit in the same "script ran but output is wrong"
-	// bucket as the empty-stdout case above and must carry the same
-	// sentinel so callers that check errors.Is(err, ErrPSExecution) as a
-	// catch-all for malformed output don't silently miss this path.
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().On("MARKER").Return(`{not valid json`, "", 0)

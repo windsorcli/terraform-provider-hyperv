@@ -123,11 +123,10 @@ func TestReadHost_HappyPath(t *testing.T) {
 	}
 }
 
+// On a singleton like Get-VMHost, ErrNotFound means the Hyper-V role isn't
+// installed (cmdlet itself unrecognized). Surface it with a role-specific
+// summary so operators don't confuse it with vmms or auth/network problems.
 func TestReadHost_NotFoundGetsRoleSpecificDiagnostic(t *testing.T) {
-	// On a singleton like Get-VMHost, ErrNotFound means the Hyper-V role
-	// isn't installed (cmdlet itself unrecognized). Surface it with a
-	// role-specific summary so operators don't confuse it with vmms or
-	// auth/network problems.
 	t.Parallel()
 
 	envelope := `{"category":"ObjectNotFound","message":"Get-VMHost : term not recognized","cmdlet":"Get-VMHost"}`
@@ -143,11 +142,11 @@ func TestReadHost_NotFoundGetsRoleSpecificDiagnostic(t *testing.T) {
 	}
 }
 
+// ResourceUnavailable on Get-VMHost means the role is installed but vmms
+// (or the cluster node) is unreachable. This must NOT collapse into the
+// not-found path — for future VM/VSwitch resources that would trigger
+// destroy-and-recreate on a transient service blip.
 func TestReadHost_UnavailableGetsServiceSpecificDiagnostic(t *testing.T) {
-	// ResourceUnavailable on Get-VMHost means the role is installed but
-	// vmms (or the cluster node) is unreachable. This must NOT collapse
-	// into the not-found path — for future VM/VSwitch resources that
-	// would trigger destroy-and-recreate on a transient service blip.
 	t.Parallel()
 
 	envelope := `{"category":"ResourceUnavailable","message":"The Virtual Machine Management service is not running","cmdlet":"Get-VMHost"}`

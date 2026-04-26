@@ -106,19 +106,15 @@ func (d *DataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *d
 }
 
 // readHost is the framework-detached core: easy to unit-test against a
-// hyperv.Client backed by a fakeRunner.
+// hyperv.Client backed by a fakeRunner. Maps Get-VMHost errors to
+// host-specific diagnostics — on this singleton ErrNotFound means the
+// Hyper-V role isn't installed (cmdlet unrecognized), and ErrUnavailable
+// means the role is installed but vmms is stopped or otherwise unreachable.
 func readHost(ctx context.Context, c *hyperv.Client) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	h, err := c.GetVMHost(ctx)
 	if err != nil {
-		// ObjectNotFound on a singleton like Get-VMHost means the cmdlet
-		// itself isn't recognized — the Hyper-V role isn't installed.
-		// ResourceUnavailable means the role is installed but the Virtual
-		// Machine Management service (vmms) is stopped or otherwise
-		// unreachable. The two need distinct sentinels because future VM
-		// and VSwitch resources will RemoveResource on ErrNotFound; we
-		// don't want a vmms restart to look like a delete.
 		if errors.Is(err, hyperv.ErrNotFound) {
 			diags.AddError(
 				"Hyper-V role is not installed",
