@@ -209,6 +209,47 @@ func TestNewConnection_SSHInvalidPortEnv(t *testing.T) {
 	}
 }
 
+// Out-of-range port values must fail at Configure time with an
+// attribute-anchored diagnostic, not silently propagate to net.Dial.
+func TestNewConnection_SSHPortOutOfRange(t *testing.T) {
+	cases := []struct {
+		name string
+		port int64
+	}{
+		{name: "zero", port: 0},
+		{name: "negative", port: -1},
+		{name: "above 65535", port: 65536},
+		{name: "way above", port: 99999},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HYPERV_BACKEND", "ssh")
+			t.Setenv("HYPERV_PORT", "")
+
+			m := HypervProviderModel{
+				Host:     types.StringValue("h"),
+				Username: types.StringValue("u"),
+				Port:     types.Int64Value(tc.port),
+				SSH: &SSHConfig{
+					PrivateKey:     types.StringValue(string(makeTestPrivateKey(t))),
+					KnownHostsPath: types.StringValue(makeKnownHostsForTest(t)),
+				},
+			}
+			_, diags := newConnection(t.Context(), m)
+			if !diags.HasError() {
+				t.Fatalf("port=%d: expected an error diagnostic", tc.port)
+			}
+			if !strings.Contains(diags[0].Summary(), "port") {
+				t.Errorf("port=%d: error summary = %q, want port-related", tc.port, diags[0].Summary())
+			}
+			if !strings.Contains(diags[0].Detail(), "1 and 65535") {
+				t.Errorf("port=%d: error detail should name the valid range; got %q",
+					tc.port, diags[0].Detail())
+			}
+		})
+	}
+}
+
 func TestNewConnection_WinRMReturnsClearDiagnostic(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
 

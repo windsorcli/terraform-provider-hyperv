@@ -84,6 +84,18 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 		)
 		return nil
 	}
+	// Bounds-check at Configure time so an operator misconfiguration
+	// (HYPERV_PORT=99999, or 0, or a negative attribute value) surfaces with
+	// a clear "which knob to turn" diagnostic rather than an opaque OS-level
+	// "invalid port" string from net.Dial later.
+	if port < 1 || port > 65535 {
+		diags.AddAttributeError(
+			path.Root("port"),
+			"Invalid SSH port",
+			fmt.Sprintf("port must be between 1 and 65535; got %d.", port),
+		)
+		return nil
+	}
 
 	password := resolveString(m.Password, "HYPERV_PASSWORD", "")
 
