@@ -56,6 +56,10 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 // that. Minification gets us comfortably under the limit while preserving
 // every functional line of the §5 contract.
 //
+// `#Requires` directives are preserved verbatim -- PowerShell parses them
+// before execution to enforce version/privilege checks, so silently
+// stripping them would bypass the check at runtime with no error.
+//
 // Trailing inline comments (e.g. `$x = 1 # note`) are NOT stripped -- doing
 // so safely requires PS-string-literal awareness. The line-level strip alone
 // is sufficient and unambiguous.
@@ -68,7 +72,10 @@ func minifyPS(s string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "#") {
-			continue
+			head, _, _ := strings.Cut(trimmed, " ")
+			if !strings.EqualFold(head, "#requires") {
+				continue
+			}
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')

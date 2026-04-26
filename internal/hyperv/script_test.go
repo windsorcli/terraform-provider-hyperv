@@ -79,6 +79,49 @@ func TestRunScript_DecodeFailureWrapsErrPSExecution(t *testing.T) {
 	}
 }
 
+// minifyPS strips comment-only lines but must preserve PowerShell's
+// #Requires directives -- those are parsed by the PS engine before
+// execution and silently dropping them bypasses version/privilege checks.
+func TestMinifyPS_PreservesRequiresDirective(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "Requires -Version is preserved",
+			in:   "#Requires -Version 5.1\n# regular comment\n$x = 1\n",
+			want: "#Requires -Version 5.1\n$x = 1\n",
+		},
+		{
+			name: "Requires -RunAsAdministrator is preserved",
+			in:   "#Requires -RunAsAdministrator\n$x = 1\n",
+			want: "#Requires -RunAsAdministrator\n$x = 1\n",
+		},
+		{
+			name: "case-insensitive match (#requires lowercase)",
+			in:   "#requires -Version 5.1\n# drop me\n$x = 1\n",
+			want: "#requires -Version 5.1\n$x = 1\n",
+		},
+		{
+			name: "regular hash comments still stripped",
+			in:   "# only a comment\n$x = 1\n# trailing comment-only line\n",
+			want: "$x = 1\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := minifyPS(tc.in)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunScript_StdinIsForwarded(t *testing.T) {
 	t.Parallel()
 
