@@ -46,6 +46,7 @@ func TestPreamble_LoadsTheLockedInContractStrings(t *testing.T) {
 		`$ErrorActionPreference = 'Stop'`,
 		`$ProgressPreference    = 'SilentlyContinue'`,
 		`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
+		`[Console]::InputEncoding  = [System.Text.Encoding]::UTF8`,
 		`function Write-HypervError`,
 		`function Write-HypervResult`,
 		`ConvertTo-Json -Depth 10 -Compress`,

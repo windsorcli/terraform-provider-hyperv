@@ -1,23 +1,10 @@
 // Package host implements the hyperv_host data source — read-only information
-// about the Hyper-V host (computer name, logical processor count, memory,
-// default VM and VHD paths). Useful in for_each patterns and for capability
-// detection. See docs/PLAN.md §7 catalog.
-//
-// This is the first consumer of the connection abstraction (PLAN §4) and
-// the simplest end-to-end demonstration of the contract:
-//
-//	provider.Configure → newConnection (PLAN §6) → localBackend / sshBackend / winrmBackend
-//	  ↓
-//	data.hyperv_host.Read → embeds preamble.ps1 → connection.RunScript → Get-VMHost → JSON → typed model
-//
-// In a future PR, the inline JSON unmarshal here moves into a typed
-// hyperv.Client.GetVMHost(ctx) method (PLAN §3 layout).
+// about the Hyper-V host. See docs/PLAN.md §7.
 package host
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -26,8 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
 
 var (
@@ -37,7 +23,7 @@ var (
 
 // DataSource implements data.hyperv_host.
 type DataSource struct {
-	runner connection.Runner
+	client *hyperv.Client
 }
 
 // New is the framework factory.
@@ -77,20 +63,18 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 }
 
 func (d *DataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Validation passes call Configure with nil ProviderData; missing this
-	// guard panics. (PLAN §11 anti-pattern checklist.)
 	if req.ProviderData == nil {
 		return
 	}
-	conn, ok := req.ProviderData.(connection.Connection)
+	client, ok := req.ProviderData.(*hyperv.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected provider data type",
-			fmt.Sprintf("data.hyperv_host expected connection.Connection, got %T", req.ProviderData),
+			fmt.Sprintf("data.hyperv_host expected *hyperv.Client, got %T", req.ProviderData),
 		)
 		return
 	}
-	d.runner = conn
+	d.client = client
 }
 
 // Model is the tfsdk-bound state struct.
@@ -102,29 +86,18 @@ type Model struct {
 	VirtualHardDiskPath   types.String `tfsdk:"virtual_hard_disk_path"`
 }
 
-// vmHostJSON mirrors the subset of Get-VMHost output we read. Fields use Go
-// types not pointers because Get-VMHost always returns these values for a
-// healthy host (per spike #2's characterization).
-type vmHostJSON struct {
-	ComputerName          string `json:"ComputerName"`
-	LogicalProcessorCount int64  `json:"LogicalProcessorCount"`
-	MemoryCapacity        int64  `json:"MemoryCapacity"`
-	VirtualMachinePath    string `json:"VirtualMachinePath"`
-	VirtualHardDiskPath   string `json:"VirtualHardDiskPath"`
-}
-
 func (d *DataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
-	if d.runner == nil {
+	if d.client == nil {
 		resp.Diagnostics.AddError(
 			"Hyper-V provider not configured",
-			"Read was invoked before the provider stashed a runner. This usually means a "+
+			"Read was invoked before the provider stashed a client. Usually means a "+
 				"required provider attribute was unknown at plan time and Configure returned early. "+
 				"Re-run once the dependency resolves.",
 		)
 		return
 	}
 	tflog.Debug(ctx, "reading hyperv_host", nil)
-	state, diags := readHost(ctx, d.runner)
+	state, diags := readHost(ctx, d.client)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -132,59 +105,36 @@ func (d *DataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *d
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// readHost executes Get-VMHost via the Runner and parses the result. Split
-// out from Read so every branch (happy / non-zero exit / transport error /
-// bad JSON) is unit-testable with a fake Runner — Read itself becomes a
-// thin glue layer to the framework state.
-//
-// In a future PR the inline body moves into internal/scripts/host/get.ps1
-// and a typed hyperv.Client.GetVMHost wraps this whole function.
-func readHost(ctx context.Context, runner connection.Runner) (Model, diag.Diagnostics) {
+// readHost is the framework-detached core: easy to unit-test against a
+// hyperv.Client backed by a fakeRunner. Maps Get-VMHost errors to
+// host-specific diagnostics — on this singleton ErrNotFound means the
+// Hyper-V role isn't installed (cmdlet unrecognized), and ErrUnavailable
+// means the role is installed but vmms is stopped or otherwise unreachable.
+func readHost(ctx context.Context, c *hyperv.Client) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	preamble, err := scripts.Preamble()
+	h, err := c.GetVMHost(ctx)
 	if err != nil {
-		diags.AddError("Embedded preamble read failed", err.Error())
+		if errors.Is(err, hyperv.ErrNotFound) {
+			diags.AddError(
+				"Hyper-V role is not installed",
+				fmt.Sprintf("Get-VMHost was not recognized on this host. Install the "+
+					"Hyper-V role and try again. Underlying error: %s", err),
+			)
+			return Model{}, diags
+		}
+		if errors.Is(err, hyperv.ErrUnavailable) {
+			diags.AddError(
+				"Hyper-V management service is unavailable",
+				fmt.Sprintf("Get-VMHost reached the host but Hyper-V is not responding. "+
+					"Confirm the Virtual Machine Management service (vmms) is running and "+
+					"the host is not in a fenced cluster state. Underlying error: %s", err),
+			)
+			return Model{}, diags
+		}
+		diags.AddError("Hyper-V host read failed", err.Error())
 		return Model{}, diags
 	}
-
-	body := string(preamble) + "\n" +
-		`Get-VMHost | Select-Object ComputerName,LogicalProcessorCount,MemoryCapacity,VirtualMachinePath,VirtualHardDiskPath | Write-HypervResult`
-
-	res, err := runner.RunScript(ctx, body, nil)
-	if err != nil {
-		diags.AddError(
-			"Hyper-V host read failed",
-			fmt.Sprintf("Transport error from connection layer: %s", err),
-		)
-		return Model{}, diags
-	}
-	if res.ExitCode != 0 {
-		diags.AddError(
-			"Hyper-V host read failed",
-			fmt.Sprintf("Get-VMHost exited %d. Stderr: %s", res.ExitCode, string(res.Stderr)),
-		)
-		return Model{}, diags
-	}
-	if len(bytes.TrimSpace(res.Stdout)) == 0 {
-		diags.AddError(
-			"Hyper-V host read failed",
-			"Get-VMHost returned exit 0 but empty stdout. This usually means the preamble's "+
-				"$ProgressPreference / encoding pin didn't apply — check that `Write-HypervResult` "+
-				"reached stdout.",
-		)
-		return Model{}, diags
-	}
-
-	var h vmHostJSON
-	if err := json.Unmarshal(res.Stdout, &h); err != nil {
-		diags.AddError(
-			"Hyper-V host JSON parse failed",
-			fmt.Sprintf("Could not unmarshal Get-VMHost output: %s\nStdout: %s", err, string(res.Stdout)),
-		)
-		return Model{}, diags
-	}
-
 	return Model{
 		ComputerName:          types.StringValue(h.ComputerName),
 		LogicalProcessorCount: types.Int64Value(h.LogicalProcessorCount),
