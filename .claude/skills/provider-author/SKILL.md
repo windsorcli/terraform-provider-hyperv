@@ -102,6 +102,17 @@ Pull the timeout in CRUD, `context.WithTimeout`, `defer cancel()`. The framework
 2. Unmarshal PS output into typed DTOs in `hyperv/types.go`. Use `[]T` for collection fields, `*T` for nullable scalars (e.g., `IovSupportReasons *string`).
 3. Map `Write-HypervError` envelopes to typed Go errors in `hyperv/errors.go`. The `category` + `fullyQualifiedErrorId` pair disambiguates — see [PLAN.md §5](../../../docs/PLAN.md) error categorization.
 
+## Comment discipline
+
+Default to no comments. When you do write one, it states a hidden constraint or non-obvious WHY in one line. Specifically:
+
+- ❌ Don't justify what the code *doesn't* do ("we deliberately don't X because…", "the earlier version did Y but…"). That belongs in the PR description or commit message, not source.
+- ❌ Don't narrate history ("changed from X after spike #N", "used to do Y until…"). Reasoning rots; tests pin behavior.
+- ❌ Don't echo what well-named identifiers already say. `// stripCLIXML drops CLIXML lines` is noise.
+- ✅ One short sentence stating the load-bearing fact: hidden invariant, surprising behavior, workaround for a specific bug.
+
+If a reviewer wonders "why doesn't this filter more aggressively?" the test cases answer that. Write the test, not the apology.
+
 ## Anti-patterns to avoid
 
 - ❌ `d.SetId("")` to delete state → ✅ `resp.State.RemoveResource(ctx)`
