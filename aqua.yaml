@@ -14,5 +14,5 @@ packages:
   - name: golangci/golangci-lint@v2.11.4
   - name: goreleaser/goreleaser@v2.15.4
   - name: securego/gosec@v2.25.0
-  - name: hashicorp/terraform@v1.9.8
+  - name: hashicorp/terraform@v1.14.9
   - name: mikefarah/yq@v4.53.2
