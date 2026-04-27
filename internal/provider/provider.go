@@ -22,6 +22,7 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vhd"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vm"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
 )
 
@@ -214,6 +215,7 @@ func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource
 		vswitch.New,
 		image_file.New,
 		vhd.New,
+		vm.New,
 	}
 }
 

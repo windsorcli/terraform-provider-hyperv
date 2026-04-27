@@ -14,7 +14,11 @@ Describe 'New-HypervVM' {
 
     Context 'minimal create (gen 2, no optionals)' {
 
-        It 'forwards -Name -Generation -MemoryStartupBytes -BootDevice None -NoVHD to New-VM' {
+        It 'forwards -Name -Generation -MemoryStartupBytes -NoVHD to New-VM (no -BootDevice)' {
+            # -BootDevice is intentionally omitted: Hyper-V's enum has no
+            # "None" value (verified against Server 2019 in the M4 smoke
+            # test), so we let the cmdlet's default apply. The VM has
+            # nothing to boot from until storage is attached separately.
             Mock New-VM { }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
@@ -29,8 +33,8 @@ Describe 'New-HypervVM' {
                 $Name -eq 'vm01' -and
                 $Generation -eq 2 -and
                 $MemoryStartupBytes -eq 4294967296 -and
-                $BootDevice -eq 'None' -and
-                $NoVHD -eq $true
+                $NoVHD -eq $true -and
+                -not $PSBoundParameters.ContainsKey('BootDevice')
             }
         }
 

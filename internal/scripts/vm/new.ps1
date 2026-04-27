@@ -12,11 +12,14 @@
 #                 }
 #   stdout JSON : same 10-field shape as get.ps1.
 #
-# Sequence: New-VM (with -NoVHD -BootDevice None so we don't auto-attach
-# anything), Set-VMMemory (with DynamicMemoryEnabled=false to lock static),
-# Set-VMProcessor, Set-VMFirmware (gen 2 + secure_boot only), Set-VM Notes.
-# Each Set-* is its own cmdlet call -- New-VM doesn't accept all of these
-# in one shot.
+# Sequence: New-VM (with -NoVHD so we don't auto-attach storage; the
+# BootDevice enum on this Hyper-V module has no "None" value, so we
+# simply omit -BootDevice and let Hyper-V's default apply -- the VM has
+# nothing to boot from until storage is attached separately, which is
+# expected for the minimal slice), Set-VMMemory (with DynamicMemoryEnabled
+# =false to lock static), Set-VMProcessor, Set-VMFirmware (gen 2 +
+# secure_boot only), Set-VM Notes. Each Set-* is its own cmdlet call --
+# New-VM doesn't accept all of these in one shot.
 
 # Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
 # of get.ps1's tail because the runtime concatenates only preamble + a
@@ -46,9 +49,10 @@ function Read-HypervVMResult {
 }
 
 # New-HypervVM creates a VM and applies the post-create Set-* tail. -NoVHD
-# and -BootDevice None mean New-VM doesn't auto-attach a VHD or pick a
-# boot device -- those are the user's job via separate resources (or, for
-# now, manually via the Hyper-V Manager).
+# means New-VM doesn't auto-attach a VHD; -BootDevice is intentionally
+# omitted because the enum has no "None" value (see header comment) --
+# Hyper-V's default applies and the VM has nothing to boot from until
+# storage is attached separately via hyperv_vm_hard_disk_drive et al.
 function New-HypervVM {
     [CmdletBinding()]
     param(
@@ -61,7 +65,7 @@ function New-HypervVM {
     )
     New-VM -Name $Name -Generation $Generation `
         -MemoryStartupBytes $MemoryBytes `
-        -BootDevice 'None' -NoVHD -ErrorAction Stop | Out-Null
+        -NoVHD -ErrorAction Stop | Out-Null
 
     # DynamicMemoryEnabled=$false MUST land in the same call as StartupBytes;
     # otherwise the cmdlet rejects the StartupBytes value as out-of-range
