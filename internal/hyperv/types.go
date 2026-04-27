@@ -123,3 +123,54 @@ type NewVHDDifferencingInput struct {
 	Path       string `json:"path"`
 	ParentPath string `json:"parent_path"`
 }
+
+// VM is the canonical read shape emitted by vm/{get,new,set}.ps1.
+// SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
+// no Secure Boot concept); gen 2 always returns a real bool.
+type VM struct {
+	Name                string `json:"Name"`
+	ID                  string `json:"Id"`
+	Generation          int    `json:"Generation"`
+	ProcessorCount      int    `json:"ProcessorCount"`
+	MemoryStartupBytes  int64  `json:"MemoryStartupBytes"`
+	MemoryAssignedBytes int64  `json:"MemoryAssignedBytes"`
+	State               string `json:"State"`
+	Notes               string `json:"Notes"`
+	Path                string `json:"Path"`
+	SecureBootEnabled   *bool  `json:"SecureBootEnabled"`
+}
+
+// NewVMInput is the stdin JSON shape for vm/new.ps1.
+//
+// Required fields: Name, Generation, Vcpu, MemoryBytes. Optionals use
+// pointer types so missing-vs-explicit-false round-trips correctly through
+// the wire contract: the entry block in new.ps1 treats absent keys and
+// explicit null as equivalent (both skip the corresponding Set-*), so
+// omitempty + nil pointer yields the "use cmdlet default" behavior.
+type NewVMInput struct {
+	Name        string  `json:"name"`
+	Generation  int     `json:"generation"`
+	Vcpu        int     `json:"vcpu"`
+	MemoryBytes int64   `json:"memory_bytes"`
+	SecureBoot  *bool   `json:"secure_boot,omitempty"`
+	Notes       *string `json:"notes,omitempty"`
+}
+
+// SetVMInput is the stdin JSON shape for vm/set.ps1.
+//
+// Same pattern as NewVMInput, with two differences:
+//   - Vcpu and MemoryBytes are *int / *int64 because Set is a partial
+//     update -- only changed fields are forwarded; nil drops them from
+//     the JSON (omitempty) so the script's "key present?" check skips
+//     the corresponding Set-* cmdlet.
+//   - Generation is OPTIONAL on the schema but ALWAYS forwarded by the
+//     Update path; it's a validation hint for set.ps1's gen-2-only
+//     SecureBoot guard, not a mutation.
+type SetVMInput struct {
+	Name        string  `json:"name"`
+	Generation  int     `json:"generation"`
+	Vcpu        *int    `json:"vcpu,omitempty"`
+	MemoryBytes *int64  `json:"memory_bytes,omitempty"`
+	SecureBoot  *bool   `json:"secure_boot,omitempty"`
+	Notes       *string `json:"notes,omitempty"`
+}
