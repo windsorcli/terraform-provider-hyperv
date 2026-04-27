@@ -57,7 +57,7 @@ type secureBootRejectedForGen1Validator struct{}
 // Description is the one-line summary surfaced by `terraform validate -json`
 // and schema-introspection paths.
 func (v secureBootRejectedForGen1Validator) Description(_ context.Context) string {
-	return "secure_boot is not valid for vhd_type=gen 1 VMs (BIOS, no Secure Boot)"
+	return "secure_boot is not valid for generation 1 VMs (BIOS, no Secure Boot)"
 }
 
 // MarkdownDescription mirrors Description -- no markdown-only formatting.
