@@ -26,8 +26,14 @@ func resourceSchema() schema.Schema {
 			"**Power transitions:** the operational lifecycle (start/stop/save/pause) belongs to the " +
 			"separate `hyperv_vm_state` resource. Mutations to `vcpu`, `memory_bytes`, and `secure_boot` " +
 			"generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather " +
-			"than auto-stopping. Destroy is the one exception -- the script stops the VM before removing " +
-			"it (Remove-VM errors on a running VM).\n\n" +
+			"than auto-stopping.\n\n" +
+			"**`terraform destroy` performs a hard power-off** of any running VM (`Stop-VM -Force " +
+			"-TurnOff`, equivalent to pulling the plug) before calling `Remove-VM -Force`. This avoids " +
+			"the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration " +
+			"services are absent or unresponsive, and matches the destroy semantics other IaC providers " +
+			"(AWS, Azure, libvirt) use. **If a clean shutdown matters** -- e.g., decoupled VHDXs the " +
+			"user is keeping after destroy -- drive the graceful shutdown via `hyperv_vm_state` (when " +
+			"available) or out-of-band before running `terraform destroy`.\n\n" +
 			"**Static memory only.** This slice configures memory via `Set-VMMemory -DynamicMemoryEnabled $false`. " +
 			"Dynamic memory ships in a follow-up.",
 		Attributes: map[string]schema.Attribute{

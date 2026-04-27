@@ -232,9 +232,13 @@ func setInputHasChanges(in hyperv.SetVMInput) bool {
 }
 
 // Delete runs remove.ps1. ErrNotFound is treated as success (the VM is
-// already gone). The script stops the VM first if it's running -- this
-// is the one place the PS layer drives a power transition (Remove-VM
-// errors on a running VM, and destroy is destructive by definition).
+// already gone). The script hard-stops the VM first if it's running --
+// this is the one place the PS layer drives a power transition. Hard
+// stop (Stop-VM -Force -TurnOff) instead of graceful for the reasons
+// documented in the resource MarkdownDescription: graceful shutdown
+// hangs indefinitely on guests with absent / unresponsive integration
+// services, and destroy semantics across IaC providers consistently
+// match the "destroy means destroy" expectation.
 func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",

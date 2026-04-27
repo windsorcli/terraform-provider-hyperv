@@ -12,7 +12,12 @@ Describe 'Remove-HypervVM' {
 
     Context 'happy paths' {
 
-        It 'calls Stop-VM -Force then Remove-VM -Force when the VM is Running' {
+        It 'calls Stop-VM -Force -TurnOff then Remove-VM -Force when the VM is Running' {
+            # -TurnOff is the hard-power-off flag (vs the default graceful
+            # Stop-VM which can hang indefinitely on guests with absent /
+            # unresponsive integration services). Locks the destroy-as-
+            # hard-stop convention -- documented in the resource's
+            # MarkdownDescription.
             Mock Get-VM { New-HypervVMSample -State 'Running' }
             Mock Stop-VM { }
             Mock Remove-VM { }
@@ -20,7 +25,7 @@ Describe 'Remove-HypervVM' {
             Remove-HypervVM -Name 'vm01'
 
             Should -Invoke Stop-VM -Times 1 -Exactly -ParameterFilter {
-                $Name -eq 'vm01' -and $Force -eq $true
+                $Name -eq 'vm01' -and $Force -eq $true -and $TurnOff -eq $true
             }
             Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
                 $Name -eq 'vm01' -and $Force -eq $true

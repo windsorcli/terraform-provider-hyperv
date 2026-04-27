@@ -5,7 +5,8 @@ subcategory: ""
 description: |-
   Manages a Hyper-V virtual machine. Minimal first slice -- ships with name, generation, vcpu, memory_bytes, secure_boot (gen 2), and notes. Dynamic memory, integration services, automatic start/stop actions, checkpoints, boot_order, and VM path overrides land in follow-up PRs.
   Boot order is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands; pair with a separate hyperv_vm_dvd_drive / hyperv_vm_hard_disk_drive in the meantime to attach storage.
-  Power transitions: the operational lifecycle (start/stop/save/pause) belongs to the separate hyperv_vm_state resource. Mutations to vcpu, memory_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping. Destroy is the one exception -- the script stops the VM before removing it (Remove-VM errors on a running VM).
+  Power transitions: the operational lifecycle (start/stop/save/pause) belongs to the separate hyperv_vm_state resource. Mutations to vcpu, memory_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping.
+  terraform destroy performs a hard power-off of any running VM (Stop-VM -Force -TurnOff, equivalent to pulling the plug) before calling Remove-VM -Force. This avoids the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration services are absent or unresponsive, and matches the destroy semantics other IaC providers (AWS, Azure, libvirt) use. If a clean shutdown matters -- e.g., decoupled VHDXs the user is keeping after destroy -- drive the graceful shutdown via hyperv_vm_state (when available) or out-of-band before running terraform destroy.
   Static memory only. This slice configures memory via Set-VMMemory -DynamicMemoryEnabled $false. Dynamic memory ships in a follow-up.
 ---
 
@@ -15,7 +16,9 @@ Manages a Hyper-V virtual machine. **Minimal first slice** -- ships with `name`,
 
 **Boot order** is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands; pair with a separate `hyperv_vm_dvd_drive` / `hyperv_vm_hard_disk_drive` in the meantime to attach storage.
 
-**Power transitions:** the operational lifecycle (start/stop/save/pause) belongs to the separate `hyperv_vm_state` resource. Mutations to `vcpu`, `memory_bytes`, and `secure_boot` generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather than auto-stopping. Destroy is the one exception -- the script stops the VM before removing it (Remove-VM errors on a running VM).
+**Power transitions:** the operational lifecycle (start/stop/save/pause) belongs to the separate `hyperv_vm_state` resource. Mutations to `vcpu`, `memory_bytes`, and `secure_boot` generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather than auto-stopping.
+
+**`terraform destroy` performs a hard power-off** of any running VM (`Stop-VM -Force -TurnOff`, equivalent to pulling the plug) before calling `Remove-VM -Force`. This avoids the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration services are absent or unresponsive, and matches the destroy semantics other IaC providers (AWS, Azure, libvirt) use. **If a clean shutdown matters** -- e.g., decoupled VHDXs the user is keeping after destroy -- drive the graceful shutdown via `hyperv_vm_state` (when available) or out-of-band before running `terraform destroy`.
 
 **Static memory only.** This slice configures memory via `Set-VMMemory -DynamicMemoryEnabled $false`. Dynamic memory ships in a follow-up.
 

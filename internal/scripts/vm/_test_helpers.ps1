@@ -72,7 +72,8 @@ function Stop-VM {
     [CmdletBinding()]
     param(
         [string] $Name,
-        [switch] $Force
+        [switch] $Force,
+        [switch] $TurnOff
     )
 }
 

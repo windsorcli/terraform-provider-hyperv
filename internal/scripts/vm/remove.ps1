@@ -14,6 +14,18 @@
 # power transition -- destroy is destructive by definition, so power-off-
 # to-delete is acceptable. Non-destroy power transitions belong to
 # hyperv_vm_state.
+#
+# -Force -TurnOff: hard power-off, equivalent to "pulling the plug." We
+# do NOT attempt a graceful shutdown via the integration services
+# Shutdown ICs because:
+#   1. Graceful Stop-VM has no built-in timeout -- a guest with absent
+#      or unresponsive integration services hangs the apply indefinitely.
+#   2. Convention across IaC providers (AWS, Azure, libvirt) is hard-stop
+#      on destroy; operators expect that semantic.
+#   3. If a clean shutdown matters (decoupled VHDXs the user is keeping),
+#      they should drive it via hyperv_vm_state before `terraform
+#      destroy` -- not relying on the destroy path itself.
+# Documented in the resource's MarkdownDescription.
 
 # Remove-HypervVM stops the VM (if running) and removes it. Same Stop +
 # selective ObjectNotFound catch pattern as get/set: a missing VM raises
@@ -40,8 +52,9 @@ function Remove-HypervVM {
     }
 
     # Stop only if not already off. Stop-VM on an already-off VM errors.
+    # -TurnOff makes this a hard power-off; see header comment for rationale.
     if ($vm.State.ToString() -ne 'Off') {
-        Stop-VM -Name $Name -Force -ErrorAction Stop
+        Stop-VM -Name $Name -Force -TurnOff -ErrorAction Stop
     }
     Remove-VM -Name $Name -Force -ErrorAction Stop
 }
