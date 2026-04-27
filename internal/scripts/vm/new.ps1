@@ -106,11 +106,14 @@ function New-HypervVM {
             Remove-VM -Name $Name -Force -ErrorAction Stop
         }
         catch {
-            # Best-effort cleanup; original Set-* error is what surfaces.
-            # Emit at Verbose so the swallowed cleanup error is recoverable
-            # via TF_LOG_PROVIDER=TRACE for forensics, without bothering
-            # operators in the normal failure path.
-            Write-Verbose "Cleanup of partial VM '$Name' failed: $($_.Exception.Message)"
+            # Best-effort cleanup; the original Set-* error is what we want
+            # the operator to see -- it's the actionable one. The cleanup
+            # failure is intentionally discarded: there is no warning channel
+            # the runner currently captures (stdout = result JSON, stderr =
+            # error envelope JSON, and Write-Verbose / stream 4 is not piped
+            # through the connection layer). If cleanup fails the worst case
+            # is the same orphan VM we'd have without the guard, and the next
+            # apply trips a name-collision that IS surfaced.
         }
         throw
     }
