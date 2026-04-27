@@ -77,6 +77,35 @@ Describe 'New-HypervVHDDynamic' {
             $Dynamic -eq $true
         }
     }
+
+    It 'forwards -BlockSizeBytes when supplied' {
+        # Mirrors the equivalent New-HypervVHDFixed test: dynamic shares
+        # the same BlockSizeBytes splat logic, and a regression in the
+        # dynamic path would otherwise go undetected.
+        Mock New-VHD { }
+        Mock Get-VHD { New-HypervVHDSample -VhdType 'Dynamic' }
+
+        New-HypervVHDDynamic -Path 'C:\vhds\dyn.vhdx' -SizeBytes 34359738368 -BlockSizeBytes 33554432 | Out-Null
+
+        Should -Invoke New-VHD -Times 1 -Exactly -ParameterFilter {
+            $BlockSizeBytes -eq 33554432
+        }
+    }
+
+    It 'omits -BlockSizeBytes when not supplied (lets Hyper-V default apply)' {
+        # Asserting via $PSBoundParameters.ContainsKey because an unbound
+        # [int64] under StrictMode 3.0 references an undefined variable in
+        # the filter context, which silently fails the match. (Same gotcha
+        # as the New-HypervVHDFixed counterpart -- documented there.)
+        Mock New-VHD { }
+        Mock Get-VHD { New-HypervVHDSample -VhdType 'Dynamic' }
+
+        New-HypervVHDDynamic -Path 'C:\vhds\dyn.vhdx' -SizeBytes 34359738368 | Out-Null
+
+        Should -Invoke New-VHD -Times 1 -Exactly -ParameterFilter {
+            -not $PSBoundParameters.ContainsKey('BlockSizeBytes')
+        }
+    }
 }
 
 Describe 'New-HypervVHDDifferencing' {
