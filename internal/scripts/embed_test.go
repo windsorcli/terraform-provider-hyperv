@@ -90,3 +90,37 @@ func TestVswitchScript_TestFilesNotEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// ImageFileScript counterpart to TestVswitchScript_LoadsAllFourVerbs. Note
+// the verb set is {get, new, remove} only -- no "set" because every
+// image_file schema field is RequiresReplace.
+func TestImageFileScript_LoadsAllVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"get", "new", "remove"} {
+		body, err := ImageFileScript(verb)
+		if err != nil {
+			t.Errorf("ImageFileScript(%q): %v", verb, err)
+			continue
+		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			t.Errorf("ImageFileScript(%q) returned empty body", verb)
+		}
+	}
+}
+
+// Same anti-bloat sanity check as the vswitch counterpart.
+func TestImageFileScript_TestFilesNotEmbedded(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"image_file/get.Tests.ps1",
+		"image_file/new.Tests.ps1",
+		"image_file/remove.Tests.ps1",
+		"image_file/_test_helpers.ps1",
+	} {
+		if _, err := ImageFile.ReadFile(name); err == nil {
+			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
+		}
+	}
+}

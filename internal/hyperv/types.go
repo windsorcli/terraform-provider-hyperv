@@ -62,3 +62,22 @@ type SetVMSwitchInput struct {
 	AllowManagementOS *bool    `json:"allow_management_os,omitempty"`
 	Notes             *string  `json:"notes,omitempty"`
 }
+
+// ImageFile is the canonical read shape emitted by image_file/{get,new}.ps1.
+// Sha256 is lowercase hex (the wire contract); SizeBytes is int64 because
+// VHDX/ISO files routinely exceed 2^31 bytes.
+type ImageFile struct {
+	Path      string `json:"Path"`
+	SizeBytes int64  `json:"SizeBytes"`
+	Sha256    string `json:"Sha256"`
+}
+
+// NewImageFileFromURLInput is the public input shape for the URL source
+// mode of image_file/new.ps1. The discriminator field (source_mode) is
+// not on the public struct -- the typed-client method sets it internally
+// so callers can't pass the wrong value for the method they invoke.
+type NewImageFileFromURLInput struct {
+	DestinationPath string `json:"destination_path"`
+	URL             string `json:"url"`
+	ExpectedSha256  string `json:"expected_sha256"`
+}

@@ -36,3 +36,14 @@ const VMSwitchPrivateFixtureJSON = `{
 	"Notes": "",
 	"Id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 }`
+
+// ImageFileFixtureJSON is the canonical three-field shape that
+// image_file/{get,new}.ps1 emit. SizeBytes is deliberately above 2^31
+// (5 GiB) so int64 round-tripping is exercised -- a default-precision
+// JSON number would land in float64 and lose precision above 2^53, but
+// a careless int32 decode would overflow well before that.
+const ImageFileFixtureJSON = `{
+	"Path": "C:\\hyperv\\images\\ubuntu-22.04.vhdx",
+	"SizeBytes": 5368709120,
+	"Sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+}`

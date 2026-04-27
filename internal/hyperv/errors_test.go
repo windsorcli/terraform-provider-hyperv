@@ -52,6 +52,20 @@ func TestParseErrorEnvelope(t *testing.T) {
 			wantMsg:   "bad arg",
 		},
 		{
+			name:      "InvalidData with ImageFileChecksumMismatch FQId maps to ErrChecksumMismatch",
+			stderr:    `{"category":"InvalidData","fullyQualifiedErrorId":"ImageFileChecksumMismatch","message":"checksum mismatch: expected sha256=abc, got sha256=def","cmdlet":""}`,
+			exitCode:  1,
+			wantErrIs: ErrChecksumMismatch,
+			wantMsg:   "checksum mismatch",
+		},
+		{
+			name:      "InvalidData without ImageFileChecksumMismatch FQId maps to ErrPSExecution",
+			stderr:    `{"category":"InvalidData","fullyQualifiedErrorId":"SomethingElse","message":"other invalid data","cmdlet":"Foo"}`,
+			exitCode:  1,
+			wantErrIs: ErrPSExecution,
+			wantMsg:   "other invalid data",
+		},
+		{
 			name:      "unknown category maps to ErrPSExecution",
 			stderr:    `{"category":"WriteError","message":"weird","cmdlet":"Foo"}`,
 			exitCode:  1,
