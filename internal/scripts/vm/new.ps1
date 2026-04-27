@@ -1,0 +1,113 @@
+# vm/new.ps1 -- create a new VM (minimal first slice).
+#
+# Wire contract (locked in by Tests.ps1):
+#
+#   stdin JSON  : {
+#                   "name":         "<string>",        # required
+#                   "generation":   1|2,               # required
+#                   "vcpu":         <int>,             # required
+#                   "memory_bytes": <int64>,           # required
+#                   "secure_boot":  <bool>,            # optional, gen 2 only
+#                   "notes":        "<string>"         # optional
+#                 }
+#   stdout JSON : same 10-field shape as get.ps1.
+#
+# Sequence: New-VM (with -NoVHD -BootDevice None so we don't auto-attach
+# anything), Set-VMMemory (with DynamicMemoryEnabled=false to lock static),
+# Set-VMProcessor, Set-VMFirmware (gen 2 + secure_boot only), Set-VM Notes.
+# Each Set-* is its own cmdlet call -- New-VM doesn't accept all of these
+# in one shot.
+
+# Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
+# of get.ps1's tail because the runtime concatenates only preamble + a
+# single verb script per call.
+function Read-HypervVMResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Vm
+    )
+    $secureBoot = $null
+    if ($Vm.Generation -eq 2) {
+        $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
+        $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
+    }
+    [pscustomobject]@{
+        Name                = $Vm.Name
+        Id                  = $Vm.Id.ToString()
+        Generation          = [int] $Vm.Generation
+        ProcessorCount      = [int] $Vm.ProcessorCount
+        MemoryStartupBytes  = [int64] $Vm.MemoryStartup
+        MemoryAssignedBytes = [int64] $Vm.MemoryAssigned
+        State               = $Vm.State.ToString()
+        Notes               = $Vm.Notes
+        Path                = $Vm.Path
+        SecureBootEnabled   = $secureBoot
+    } | Write-HypervResult
+}
+
+# New-HypervVM creates a VM and applies the post-create Set-* tail. -NoVHD
+# and -BootDevice None mean New-VM doesn't auto-attach a VHD or pick a
+# boot device -- those are the user's job via separate resources (or, for
+# now, manually via the Hyper-V Manager).
+function New-HypervVM {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [int]    $Generation,
+        [Parameter(Mandatory)] [int]    $Vcpu,
+        [Parameter(Mandatory)] [int64]  $MemoryBytes,
+        [Nullable[bool]]                $SecureBoot,
+        [string]                        $Notes
+    )
+    New-VM -Name $Name -Generation $Generation `
+        -MemoryStartupBytes $MemoryBytes `
+        -BootDevice 'None' -NoVHD -ErrorAction Stop | Out-Null
+
+    # DynamicMemoryEnabled=$false MUST land in the same call as StartupBytes;
+    # otherwise the cmdlet rejects the StartupBytes value as out-of-range
+    # against the (still-default) dynamic min/max.
+    Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false `
+        -StartupBytes $MemoryBytes -ErrorAction Stop
+
+    Set-VMProcessor -VMName $Name -Count $Vcpu -ErrorAction Stop
+
+    if ($Generation -eq 2 -and $null -ne $SecureBoot) {
+        $sb = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
+        Set-VMFirmware -VMName $Name -EnableSecureBoot $sb -ErrorAction Stop
+    }
+
+    if ($PSBoundParameters.ContainsKey('Notes')) {
+        Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
+    }
+
+    $vm = Get-VM -Name $Name -ErrorAction Stop
+    Read-HypervVMResult -Vm $vm
+}
+
+# Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
+if ($MyInvocation.InvocationName -ne '.') {
+    try {
+        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+
+        $callArgs = @{
+            Name        = $params.name
+            Generation  = [int] $params.generation
+            Vcpu        = [int] $params.vcpu
+            MemoryBytes = [int64] $params.memory_bytes
+        }
+        if ($params.PSObject.Properties.Name -contains 'secure_boot' -and
+            $null -ne $params.secure_boot) {
+            $callArgs.SecureBoot = [bool] $params.secure_boot
+        }
+        if ($params.PSObject.Properties.Name -contains 'notes' -and
+            $null -ne $params.notes) {
+            $callArgs.Notes = [string] $params.notes
+        }
+
+        New-HypervVM @callArgs
+    }
+    catch {
+        Write-HypervError $_
+        exit 1
+    }
+}
