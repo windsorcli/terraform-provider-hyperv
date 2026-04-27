@@ -74,7 +74,13 @@ func resourceSchema() schema.Schema {
 				Computed: true,
 				MarkdownDescription: "Whether UEFI Secure Boot is enabled. **Valid only when `generation = 2`** -- " +
 					"a config validator rejects this on gen 1 at plan time. Defaults to Hyper-V's default " +
-					"(typically `true` for new gen 2 VMs). In-place updatable via `Set-VMFirmware`.",
+					"(typically `true` for new gen 2 VMs). In-place updatable via `Set-VMFirmware`.\n\n" +
+					"**Cannot be cleared in-place.** Once `secure_boot` has been set in config and applied, " +
+					"writing `secure_boot = null` (or removing the attribute and re-adding it later) will " +
+					"NOT revert to the host default -- the change isn't forwarded by the partial-update " +
+					"path, the host keeps the previous value, and every subsequent plan shows the same " +
+					"diff. To revert, either explicitly set the desired bool (e.g. `secure_boot = true`) " +
+					"or destroy and recreate the VM.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
@@ -82,10 +88,17 @@ func resourceSchema() schema.Schema {
 			"notes": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Free-form description stored on the VM by Hyper-V. **Empty-vs-omitted " +
-					"caveat:** the host represents \"no notes\" as an empty string; the provider collapses " +
-					"that to null in state so omitting `notes` from config is stable across plans. Setting " +
-					"`notes = \"\"` to explicitly clear would loop -- omit the attribute instead.",
+				MarkdownDescription: "Free-form description stored on the VM by Hyper-V.\n\n" +
+					"**Cannot be cleared in-place once set.** Three failure modes to be aware of:\n\n" +
+					"  * Omitting `notes` from config after a prior apply preserves the existing value via " +
+					"`UseStateForUnknown` (omit means \"don't care,\" not \"clear\").\n" +
+					"  * Writing `notes = null` explicitly does NOT clear the host's notes -- the change " +
+					"isn't forwarded by the partial-update path, and every subsequent plan shows the same " +
+					"`null -> \"<existing>\"` diff. **Destroy-and-recreate is the only escape.**\n" +
+					"  * Writing `notes = \"\"` explicitly also loops: the host stores empty, but the " +
+					"provider collapses that back to null in state to keep the omit-attribute case stable.\n\n" +
+					"To change `notes`, write a different non-empty value. To remove notes from a VM, " +
+					"destroy and recreate.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
