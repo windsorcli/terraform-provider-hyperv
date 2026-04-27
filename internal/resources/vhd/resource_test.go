@@ -236,9 +236,9 @@ func TestResource_Configure_WrongTypeIsClearError(t *testing.T) {
 	}
 }
 
-// ConfigValidators registers both cross-attribute checks. The validators
-// themselves are exercised in the ValidateResource tests below.
-func TestResource_ConfigValidators_RegistersBoth(t *testing.T) {
+// ConfigValidators registers all three cross-attribute checks. The
+// validators themselves are exercised in the ValidateResource tests below.
+func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 	t.Parallel()
 
 	r, ok := New().(*Resource)
@@ -246,8 +246,23 @@ func TestResource_ConfigValidators_RegistersBoth(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 2 {
-		t.Fatalf("got %d ConfigValidators, want 2 (parent_path, size_bytes)", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d ConfigValidators, want 3 (parent_path, size_bytes, block_size_bytes)", len(got))
+	}
+}
+
+// blockSizeBytesRejectedForDifferencingValidator must fire when the user
+// supplies block_size_bytes alongside vhd_type=differencing. Without this
+// the wire layer silently drops the value, the read-back stores the
+// parent-inherited block size, and the next plan fires a RequiresReplace
+// loop.
+func TestBlockSizeBytesRejectedForDifferencingValidator_FiresOnDifferencingPlusBlockSize(t *testing.T) {
+	t.Parallel()
+
+	v := blockSizeBytesRejectedForDifferencingValidator{}
+	got := v.Description(t.Context())
+	if !strings.Contains(got, "differencing") || !strings.Contains(got, "block_size_bytes") {
+		t.Errorf("Description should reference both vhd_type=differencing and block_size_bytes; got %q", got)
 	}
 }
 

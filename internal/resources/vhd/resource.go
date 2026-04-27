@@ -41,11 +41,14 @@ func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 
 // ConfigValidators rejects mode/attribute combinations at plan time so the
 // operator gets a clear, attribute-anchored diagnostic instead of the
-// cmdlet's opaque "wrong parameter set" error at apply time.
+// cmdlet's opaque "wrong parameter set" error at apply time -- or, in the
+// case of block_size_bytes on differencing, an infinite-replace loop where
+// the user's config value never matches the parent-inherited state value.
 func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
 	return []resource.ConfigValidator{
 		parentPathRequiresDifferencingValidator{},
 		sizeBytesRequiresFixedOrDynamicValidator{},
+		blockSizeBytesRejectedForDifferencingValidator{},
 	}
 }
 
@@ -54,14 +57,23 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 // AND extraneous parent_path on fixed/dynamic both fail the validator.
 type parentPathRequiresDifferencingValidator struct{}
 
+// Description is the one-line summary the framework surfaces in
+// `terraform validate -json` output and on schema-introspection paths.
 func (v parentPathRequiresDifferencingValidator) Description(_ context.Context) string {
 	return "parent_path is required for vhd_type=differencing and rejected otherwise"
 }
 
+// MarkdownDescription mirrors Description -- the rule has no markdown-only
+// formatting beyond the plain string.
 func (v parentPathRequiresDifferencingValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
+// ValidateResource fires the diagnostic when both vhd_type and parent_path
+// are known and the combination is invalid (one of: differencing without
+// parent, or non-differencing with parent). Unknown values mean a deferred
+// dependency hasn't resolved yet; the next plan pass with concrete values
+// gets the chance to validate.
 func (v parentPathRequiresDifferencingValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -101,14 +113,20 @@ func (v parentPathRequiresDifferencingValidator) ValidateResource(ctx context.Co
 // error at apply time.
 type sizeBytesRequiresFixedOrDynamicValidator struct{}
 
+// Description is the one-line summary surfaced by `terraform validate -json`
+// and schema-introspection paths.
 func (v sizeBytesRequiresFixedOrDynamicValidator) Description(_ context.Context) string {
 	return "size_bytes is required for vhd_type in (fixed, dynamic) and rejected for differencing"
 }
 
+// MarkdownDescription mirrors Description -- no markdown-only formatting.
 func (v sizeBytesRequiresFixedOrDynamicValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
+// ValidateResource fires when vhd_type and size_bytes disagree on the
+// "must / must not" rule for the chosen mode. Unknown values are skipped
+// so a deferred dep gets a second chance once it resolves.
 func (v sizeBytesRequiresFixedOrDynamicValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -140,6 +158,57 @@ func (v sizeBytesRequiresFixedOrDynamicValidator) ValidateResource(ctx context.C
 				"or change vhd_type to fixed or dynamic.",
 		)
 	}
+}
+
+// blockSizeBytesRejectedForDifferencingValidator rejects block_size_bytes
+// on differencing disks. Without this, the wire layer silently drops the
+// user's value (NewVHDDifferencingInput has no BlockSizeBytes field), the
+// post-create read-back stores the parent-inherited block size in state,
+// and every subsequent plan diffs config-vs-state on a RequiresReplace
+// attribute -- producing an infinite replace loop.
+//
+// One-directional unlike the size_bytes validator: block_size_bytes is
+// OPTIONAL for fixed/dynamic (Hyper-V's default applies when omitted), so
+// we only fire on the differencing+set case.
+type blockSizeBytesRejectedForDifferencingValidator struct{}
+
+// Description is the one-line summary surfaced by `terraform validate -json`
+// and schema-introspection paths.
+func (v blockSizeBytesRejectedForDifferencingValidator) Description(_ context.Context) string {
+	return "block_size_bytes is not valid for vhd_type=differencing (inherited from parent)"
+}
+
+// MarkdownDescription mirrors Description -- no markdown-only formatting.
+func (v blockSizeBytesRejectedForDifferencingValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateResource fires only on the differencing+set case. Unlike the
+// size_bytes validator this is one-directional: block_size_bytes is
+// optional for fixed/dynamic (Hyper-V's default applies when omitted), so
+// there's no "missing" branch to enforce.
+func (v blockSizeBytesRejectedForDifferencingValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if data.VhdType.IsUnknown() || data.BlockSizeBytes.IsUnknown() {
+		return
+	}
+	if data.VhdType.ValueString() != "differencing" {
+		return
+	}
+	if data.BlockSizeBytes.IsNull() {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(
+		path.Root("block_size_bytes"),
+		"block_size_bytes is not valid for differencing VHDs",
+		"Differencing disks inherit block_size_bytes from the parent. Supplying it would be silently "+
+			"dropped at create and then re-detected as drift on every subsequent plan, producing an "+
+			"infinite replace loop. Remove block_size_bytes from the config or change vhd_type to fixed or dynamic.",
+	)
 }
 
 // Configure stashes the typed Hyper-V client built by the provider's
