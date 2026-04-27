@@ -124,3 +124,37 @@ func TestImageFileScript_TestFilesNotEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// VHD counterpart to the vswitch / image_file script-loading tests. Verb
+// set is {get, new, set, remove} -- set is the resize-only mutation.
+func TestVHDScript_LoadsAllVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"get", "new", "set", "remove"} {
+		body, err := VHDScript(verb)
+		if err != nil {
+			t.Errorf("VHDScript(%q): %v", verb, err)
+			continue
+		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			t.Errorf("VHDScript(%q) returned empty body", verb)
+		}
+	}
+}
+
+// Same anti-bloat sanity check as the vswitch / image_file counterparts.
+func TestVHDScript_TestFilesNotEmbedded(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"vhd/get.Tests.ps1",
+		"vhd/new.Tests.ps1",
+		"vhd/set.Tests.ps1",
+		"vhd/remove.Tests.ps1",
+		"vhd/_test_helpers.ps1",
+	} {
+		if _, err := VHD.ReadFile(name); err == nil {
+			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
+		}
+	}
+}

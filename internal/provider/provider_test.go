@@ -54,11 +54,12 @@ func TestProvider_Resources(t *testing.T) {
 	got := p.Resources(t.Context())
 
 	// hyperv_virtual_switch (PLAN M1c) + hyperv_image_file (PLAN M4 first
-	// slice: url + host_path source modes). Pin the count so accidental
-	// wiring of additional resources doesn't slip in unnoticed before
-	// their schema is reviewed.
-	if len(got) != 2 {
-		t.Errorf("got %d resources, want 2 (hyperv_virtual_switch, hyperv_image_file)", len(got))
+	// slice: url + host_path source modes) + hyperv_vhd (PLAN M4: fixed/
+	// dynamic/differencing). Pin the count so accidental wiring of
+	// additional resources doesn't slip in unnoticed before their schema
+	// is reviewed.
+	if len(got) != 3 {
+		t.Errorf("got %d resources, want 3 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd)", len(got))
 	}
 }
 
