@@ -247,9 +247,9 @@ func TestStripSha256Prefix(t *testing.T) {
 		in, want string
 	}{
 		{"sha256:abcdef", "abcdef"},
-		{"sha256:", "sha256:"},                                                       // too short to be a real prefix-stripped value; passthrough
-		{"abcdef", "abcdef"},                                                         // no prefix; passthrough
-		{"SHA256:abcdef", "SHA256:abcdef"},                                           // case-sensitive; the schema regex pins lowercase
+		{"sha256:", "sha256:"},             // too short to be a real prefix-stripped value; passthrough
+		{"abcdef", "abcdef"},               // no prefix; passthrough
+		{"SHA256:abcdef", "SHA256:abcdef"}, // case-sensitive; the schema regex pins lowercase
 		{"sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
 	}
 	for _, tc := range cases {
