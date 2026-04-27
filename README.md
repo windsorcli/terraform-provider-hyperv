@@ -10,17 +10,11 @@ Manage the lifecycle of Microsoft Hyper-V virtual machines, switches, disks, and
 > [!IMPORTANT]
 > This provider is pre-1.0. Schema, attribute names, and behavior may change between minor versions until `v1.0.0` ships. Pin to an exact version in production.
 
-## Background
+## Highlights
 
-[`taliesins/terraform-provider-hyperv`](https://github.com/taliesins/terraform-provider-hyperv) is the existing community Hyper-V provider. It is built on `terraform-plugin-sdk/v2` and reaches Hyper-V hosts over WinRM (HTTP or HTTPS). Like this provider, the binary itself runs on Linux, macOS, or Windows.
-
-This provider is a clean-room reimplementation on the modern [`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework). Differences worth knowing about:
-
-- **Pluggable execution backends.** `local` (provider already on the host), `ssh` (key- or password-auth into the host's OpenSSH), or `winrm` (HTTP/HTTPS, NTLM/Basic/Kerberos). The taliesins provider supports WinRM only.
-- **Plugin Framework idioms.** Strict typed schemas, plan modifiers, validators, custom semantic-equality types, and Terraform protocol v6.
+- **Pluggable execution backends.** `local` (provider already on the host), `ssh` (key- or password-auth into the host's OpenSSH), or `winrm` (HTTP/HTTPS, NTLM/Basic/Kerberos). The provider binary itself runs on Linux, macOS, or Windows.
+- **Built on [`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework).** Strict typed schemas, plan modifiers, validators, custom semantic-equality types, and Terraform protocol v6.
 - **Embedded PowerShell with a JSON contract.** Each operation ships an embedded `.ps1` through the chosen transport and round-trips JSON via stdin/stdout. Scripts are independently testable with [Pester](https://pester.dev/).
-
-This is a clean break — env var names and resource attribute names do not match `taliesins/`. A migration guide ships under [`docs/guides/migrating-from-taliesins.md`](docs/guides/migrating-from-taliesins.md).
 
 ## Supported resources and data sources
 
@@ -173,7 +167,6 @@ A complete `.env.example` is committed at the repository root.
   - [Configuring backends](docs/guides/backends.md) — local / SSH / WinRM in depth
   - [Hyper-V host setup](docs/guides/host-setup.md) — enabling SSH or WinRM on Server 2019/2022
   - [PowerShell version notes](docs/guides/powershell-versions.md) — 5.1 vs 7.4 behavior
-  - [Migrating from taliesins/terraform-provider-hyperv](docs/guides/migrating-from-taliesins.md)
 
 ## Building from source
 
