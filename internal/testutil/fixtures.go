@@ -79,3 +79,34 @@ const VHDDifferencingFixtureJSON = `{
 	"Format": "VHDX",
 	"Attached": false
 }`
+
+// VMGen2FixtureJSON is the canonical 10-field shape vm/{get,new,set}.ps1
+// emit for a small gen 2 VM. SecureBootEnabled is the gen-2-only field --
+// always non-null here to exercise the *bool unmarshal.
+const VMGen2FixtureJSON = `{
+	"Name": "sample-vm",
+	"Id": "12345678-1234-5678-1234-567812345678",
+	"Generation": 2,
+	"ProcessorCount": 2,
+	"MemoryStartupBytes": 4294967296,
+	"MemoryAssignedBytes": 4294967296,
+	"State": "Off",
+	"Notes": "production",
+	"Path": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V\\Virtual Machines",
+	"SecureBootEnabled": true
+}`
+
+// VMGen1FixtureJSON exercises the gen-1 case: SecureBootEnabled is null
+// because Get-VMFirmware doesn't apply on gen 1 (BIOS, not UEFI).
+const VMGen1FixtureJSON = `{
+	"Name": "legacy-vm",
+	"Id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+	"Generation": 1,
+	"ProcessorCount": 1,
+	"MemoryStartupBytes": 2147483648,
+	"MemoryAssignedBytes": 2147483648,
+	"State": "Off",
+	"Notes": "",
+	"Path": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V\\Virtual Machines",
+	"SecureBootEnabled": null
+}`

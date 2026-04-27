@@ -67,3 +67,15 @@ var VHD embed.FS
 func VHDScript(verb string) ([]byte, error) {
 	return VHD.ReadFile("vhd/" + verb + ".ps1")
 }
+
+// VM holds the verb scripts for hyperv_vm (M4 minimal slice -- name,
+// generation, vcpu, memory_bytes, secure_boot, notes; boot_order, dynamic
+// memory, integration services, etc. land in follow-up PRs).
+//
+//go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1
+var VM embed.FS
+
+// VMScript returns the contents of vm/<verb>.ps1 (verb in {get, new, set, remove}).
+func VMScript(verb string) ([]byte, error) {
+	return VM.ReadFile("vm/" + verb + ".ps1")
+}

@@ -158,3 +158,39 @@ func TestVHDScript_TestFilesNotEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// VM counterpart to the vswitch / image_file / vhd script-loading tests.
+// Verb set is {get, new, set, remove} -- set handles the in-place
+// mutations (vcpu, memory_bytes, secure_boot, notes); name/generation
+// are RequiresReplace at the schema layer.
+func TestVMScript_LoadsAllVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"get", "new", "set", "remove"} {
+		body, err := VMScript(verb)
+		if err != nil {
+			t.Errorf("VMScript(%q): %v", verb, err)
+			continue
+		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			t.Errorf("VMScript(%q) returned empty body", verb)
+		}
+	}
+}
+
+// Same anti-bloat sanity check as the other counterparts.
+func TestVMScript_TestFilesNotEmbedded(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"vm/get.Tests.ps1",
+		"vm/new.Tests.ps1",
+		"vm/set.Tests.ps1",
+		"vm/remove.Tests.ps1",
+		"vm/_test_helpers.ps1",
+	} {
+		if _, err := VM.ReadFile(name); err == nil {
+			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
+		}
+	}
+}
