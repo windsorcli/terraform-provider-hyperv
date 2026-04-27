@@ -308,7 +308,9 @@ Describe 'New-HypervVM' {
             { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 } |
                 Should -Throw -ExpectedMessage '*vcpu failure*'
 
-            Should -Invoke Remove-VM -Times 1 -Exactly
+            Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'vm01' -and $Force -eq $true
+            }
         }
 
         It 'cleans up the partial VM when Set-VMFirmware fails on gen 2 + secure_boot' {
@@ -324,7 +326,9 @@ Describe 'New-HypervVM' {
             { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -SecureBoot $true } |
                 Should -Throw -ExpectedMessage '*firmware configuration failure*'
 
-            Should -Invoke Remove-VM -Times 1 -Exactly
+            Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'vm01' -and $Force -eq $true
+            }
         }
 
         It 'cleans up the partial VM when Set-VM (notes) fails' {
@@ -340,7 +344,9 @@ Describe 'New-HypervVM' {
             { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -Notes 'production' } |
                 Should -Throw -ExpectedMessage '*notes failure*'
 
-            Should -Invoke Remove-VM -Times 1 -Exactly
+            Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'vm01' -and $Force -eq $true
+            }
         }
 
         It 'rethrows the ORIGINAL Set-* error (not the cleanup error) so the operator sees the real cause' {
