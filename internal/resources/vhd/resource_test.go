@@ -533,7 +533,7 @@ func TestModelFromVHD_LowercasesVhdType(t *testing.T) {
 		got := modelFromVHD(&hyperv.VHD{
 			Path:    "C:\\vhds\\foo.vhdx",
 			VhdType: tc.in,
-		})
+		}, types.StringNull(), types.StringNull())
 		if got.VhdType.ValueString() != tc.want {
 			t.Errorf("modelFromVHD VhdType=%q -> %q, want %q",
 				tc.in, got.VhdType.ValueString(), tc.want)
@@ -552,7 +552,7 @@ func TestModelFromVHD_EmptyParentPathBecomesNull(t *testing.T) {
 		Path:       "C:\\vhds\\dyn.vhdx",
 		VhdType:    "Dynamic",
 		ParentPath: "",
-	})
+	}, types.StringNull(), types.StringNull())
 	if !got.ParentPath.IsNull() {
 		t.Errorf("ParentPath = %v, want null when source is empty", got.ParentPath)
 	}
@@ -567,7 +567,7 @@ func TestModelFromVHD_DifferencingPreservesParentPath(t *testing.T) {
 		Path:       "C:\\vhds\\child.vhdx",
 		VhdType:    "Differencing",
 		ParentPath: "C:\\vhds\\parent.vhdx",
-	})
+	}, types.StringNull(), types.StringNull())
 	if got.ParentPath.ValueString() != "C:\\vhds\\parent.vhdx" {
 		t.Errorf("ParentPath = %q, want preserved", got.ParentPath.ValueString())
 	}
@@ -584,7 +584,7 @@ func TestModelFromVHD_PreservesInt64Sizes(t *testing.T) {
 		SizeBytes:      53687091200, // 50 GiB
 		FileSizeBytes:  21474836480, // 20 GiB sparse
 		BlockSizeBytes: 33554432,
-	})
+	}, types.StringNull(), types.StringNull())
 	if got.SizeBytes.ValueInt64() != 53687091200 {
 		t.Errorf("SizeBytes = %d, want 53687091200", got.SizeBytes.ValueInt64())
 	}
@@ -593,6 +593,113 @@ func TestModelFromVHD_PreservesInt64Sizes(t *testing.T) {
 	}
 	if got.BlockSizeBytes.ValueInt64() != 33554432 {
 		t.Errorf("BlockSizeBytes = %d, want 33554432", got.BlockSizeBytes.ValueInt64())
+	}
+}
+
+// preserveCaseOrNullify is the seam that defends against Windows path
+// canonicalization (Get-VHD returning "C:\..." for a config of "c:\...")
+// firing a perpetual destroy-recreate loop on the RequiresReplace path
+// and parent_path attributes.
+func TestPreserveCaseOrNullify(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		prior     types.String
+		fresh     string
+		wantValue string // ignored when wantNull
+		wantNull  bool
+	}{
+		{
+			name:     "fresh empty -> null (used for ParentPath on non-differencing)",
+			prior:    types.StringValue("C:\\anything.vhdx"),
+			fresh:    "",
+			wantNull: true,
+		},
+		{
+			name:      "prior null + fresh non-empty -> use fresh (first import)",
+			prior:     types.StringNull(),
+			fresh:     "C:\\vhds\\foo.vhdx",
+			wantValue: "C:\\vhds\\foo.vhdx",
+		},
+		{
+			name:      "prior unknown + fresh non-empty -> use fresh",
+			prior:     types.StringUnknown(),
+			fresh:     "C:\\vhds\\foo.vhdx",
+			wantValue: "C:\\vhds\\foo.vhdx",
+		},
+		{
+			name:      "case-insensitive match -> preserve prior casing (the load-bearing case)",
+			prior:     types.StringValue("c:\\vhds\\foo.vhdx"),
+			fresh:     "C:\\VHDS\\FOO.VHDX",
+			wantValue: "c:\\vhds\\foo.vhdx",
+		},
+		{
+			name:      "exact match -> preserve prior",
+			prior:     types.StringValue("C:\\vhds\\foo.vhdx"),
+			fresh:     "C:\\vhds\\foo.vhdx",
+			wantValue: "C:\\vhds\\foo.vhdx",
+		},
+		{
+			name:      "genuine path change -> use fresh",
+			prior:     types.StringValue("C:\\old.vhdx"),
+			fresh:     "C:\\new.vhdx",
+			wantValue: "C:\\new.vhdx",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := preserveCaseOrNullify(tc.prior, tc.fresh)
+			if tc.wantNull {
+				if !got.IsNull() {
+					t.Errorf("got %v, want null", got)
+				}
+				return
+			}
+			if got.ValueString() != tc.wantValue {
+				t.Errorf("got %q, want %q", got.ValueString(), tc.wantValue)
+			}
+		})
+	}
+}
+
+// modelFromVHD must preserve the user's configured path casing when the
+// cmdlet returns a case-different but case-insensitive-equal value.
+// Without this guard, Windows path canonicalization (uppercase drive
+// letter, junction-point resolution, short-filename expansion) would
+// surface as a perpetual destroy-recreate loop.
+func TestModelFromVHD_PreservesPriorPathCasing(t *testing.T) {
+	t.Parallel()
+
+	priorPath := types.StringValue("c:\\vhds\\foo.vhdx") // user wrote lowercase
+	got := modelFromVHD(&hyperv.VHD{
+		Path:    "C:\\vhds\\FOO.VHDX", // cmdlet canonicalized
+		VhdType: "Dynamic",
+	}, priorPath, types.StringNull())
+
+	if got.Path.ValueString() != "c:\\vhds\\foo.vhdx" {
+		t.Errorf("Path = %q, want prior casing preserved", got.Path.ValueString())
+	}
+	if got.ID.ValueString() != "c:\\vhds\\foo.vhdx" {
+		t.Errorf("ID = %q, must mirror Path (with prior casing)", got.ID.ValueString())
+	}
+}
+
+// modelFromVHD also preserves the user's parent_path casing for
+// differencing disks. Same canonicalization-loop hazard as path.
+func TestModelFromVHD_PreservesPriorParentPathCasing(t *testing.T) {
+	t.Parallel()
+
+	priorParent := types.StringValue("c:\\vhds\\parent.vhdx")
+	got := modelFromVHD(&hyperv.VHD{
+		Path:       "C:\\vhds\\child.vhdx",
+		VhdType:    "Differencing",
+		ParentPath: "C:\\VHDS\\PARENT.VHDX", // cmdlet canonicalized
+	}, types.StringNull(), priorParent)
+
+	if got.ParentPath.ValueString() != "c:\\vhds\\parent.vhdx" {
+		t.Errorf("ParentPath = %q, want prior casing preserved", got.ParentPath.ValueString())
 	}
 }
 

@@ -318,7 +318,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	state := modelFromVHD(v)
+	state := modelFromVHD(v, plan.Path, plan.ParentPath)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -353,7 +353,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	newState := modelFromVHD(v)
+	newState := modelFromVHD(v, state.Path, state.ParentPath)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -394,7 +394,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	newState := modelFromVHD(v)
+	newState := modelFromVHD(v, state.Path, state.ParentPath)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -435,22 +435,49 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // (Get-VHD emits PascalCase; the schema's stringvalidator.OneOf is
 // lowercase). Empty parent_path collapses to null so non-differencing
 // disks don't carry a phantom empty string.
-func modelFromVHD(v *hyperv.VHD) Model {
-	parent := types.StringValue(v.ParentPath)
-	if v.ParentPath == "" {
-		parent = types.StringNull()
-	}
+//
+// priorPath / priorParentPath carry the user's previously-stored values
+// (from plan in Create, from state in Read/Update). When the cmdlet's
+// returned value matches case-insensitively, the prior value is preserved
+// so Windows path canonicalization (uppercase drive letter, junction-point
+// resolution, short-filename expansion) doesn't surface as a perpetual
+// destroy-recreate loop on the RequiresReplace path / parent_path
+// attributes. PLAN.md S8 envisions a custom WindowsPath StringTypable for
+// this; the caller-preserve pattern here is the lighter interim solution
+// mirroring vswitch's net_adapter_names handling.
+func modelFromVHD(v *hyperv.VHD, priorPath, priorParentPath types.String) Model {
+	pathValue := preserveCaseOrNullify(priorPath, v.Path)
 	return Model{
-		ID:             types.StringValue(v.Path),
-		Path:           types.StringValue(v.Path),
+		ID:             pathValue,
+		Path:           pathValue,
 		VhdType:        types.StringValue(strings.ToLower(v.VhdType)),
 		SizeBytes:      types.Int64Value(v.SizeBytes),
-		ParentPath:     parent,
+		ParentPath:     preserveCaseOrNullify(priorParentPath, v.ParentPath),
 		BlockSizeBytes: types.Int64Value(v.BlockSizeBytes),
 		FileSizeBytes:  types.Int64Value(v.FileSizeBytes),
 		Format:         types.StringValue(v.Format),
 		Attached:       types.BoolValue(v.Attached),
 	}
+}
+
+// preserveCaseOrNullify produces the framework-typed string the caller
+// should write into state for a path attribute. Three cases:
+//
+//   - fresh is empty: return null. Used for parent_path on non-differencing.
+//   - prior matches fresh case-insensitively: return prior. Preserves the
+//     user's configured casing so Windows path canonicalization doesn't
+//     produce a phantom diff on a RequiresReplace attribute.
+//   - otherwise: return the cmdlet's value as-is. The path genuinely
+//     changed (or was never set in state) and should reflect reality.
+func preserveCaseOrNullify(prior types.String, fresh string) types.String {
+	if fresh == "" {
+		return types.StringNull()
+	}
+	if !prior.IsNull() && !prior.IsUnknown() &&
+		strings.EqualFold(prior.ValueString(), fresh) {
+		return prior
+	}
+	return types.StringValue(fresh)
 }
 
 // optionalInt64 turns a framework Int64 into *int64 -- nil if null/unknown,
