@@ -163,3 +163,86 @@ Describe 'New-HypervVHDDifferencing' {
         $captured.FullyQualifiedErrorId | Should -Match '^InvalidParameter,Microsoft\.Vhd\.'
     }
 }
+
+Describe 'Invoke-HypervVHDNew' {
+
+    Context 'size_bytes presence guard (defense in depth for the Go-side validator)' {
+
+        It 'throws a clear required-field error when size_bytes is absent for fixed mode' {
+            # Without this guard, [int64] $null coerces to 0 and New-VHD
+            # surfaces an opaque "The parameter is incorrect" message.
+            # Mock the inner function to confirm the guard fires before
+            # we reach it.
+            Mock New-HypervVHDFixed { }
+
+            $params = [pscustomobject]@{
+                path     = 'C:\vhds\foo.vhdx'
+                vhd_type = 'fixed'
+            }
+
+            { Invoke-HypervVHDNew -Params $params } |
+                Should -Throw -ExpectedMessage '*size_bytes is required for fixed VHDs*'
+
+            Should -Invoke New-HypervVHDFixed -Times 0 -Exactly
+        }
+
+        It 'throws a clear required-field error when size_bytes is absent for dynamic mode' {
+            Mock New-HypervVHDDynamic { }
+
+            $params = [pscustomobject]@{
+                path     = 'C:\vhds\foo.vhdx'
+                vhd_type = 'dynamic'
+            }
+
+            { Invoke-HypervVHDNew -Params $params } |
+                Should -Throw -ExpectedMessage '*size_bytes is required for dynamic VHDs*'
+
+            Should -Invoke New-HypervVHDDynamic -Times 0 -Exactly
+        }
+
+        It 'forwards size_bytes when present (fixed)' {
+            Mock New-HypervVHDFixed { }
+
+            $params = [pscustomobject]@{
+                path       = 'C:\vhds\foo.vhdx'
+                vhd_type   = 'fixed'
+                size_bytes = 1073741824
+            }
+
+            Invoke-HypervVHDNew -Params $params
+
+            Should -Invoke New-HypervVHDFixed -Times 1 -Exactly -ParameterFilter {
+                $Path -eq 'C:\vhds\foo.vhdx' -and $SizeBytes -eq 1073741824
+            }
+        }
+
+        It 'differencing dispatches without a size_bytes guard (Hyper-V inherits from parent)' {
+            # Differencing mode legitimately omits size_bytes. The dispatcher
+            # must NOT throw the required-field error in this branch.
+            Mock New-HypervVHDDifferencing { }
+
+            $params = [pscustomobject]@{
+                path        = 'C:\vhds\child.vhdx'
+                vhd_type    = 'differencing'
+                parent_path = 'C:\vhds\parent.vhdx'
+            }
+
+            { Invoke-HypervVHDNew -Params $params } | Should -Not -Throw
+
+            Should -Invoke New-HypervVHDDifferencing -Times 1 -Exactly
+        }
+    }
+
+    Context 'unknown vhd_type' {
+
+        It 'throws a clear error listing the accepted modes' {
+            $params = [pscustomobject]@{
+                path     = 'C:\vhds\foo.vhdx'
+                vhd_type = 'banana'
+            }
+
+            { Invoke-HypervVHDNew -Params $params } |
+                Should -Throw -ExpectedMessage "*Unknown vhd_type 'banana'*expected 'fixed', 'dynamic', or 'differencing'*"
+        }
+    }
+}

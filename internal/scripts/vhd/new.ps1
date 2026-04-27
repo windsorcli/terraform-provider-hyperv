@@ -103,43 +103,73 @@ function New-HypervVHDDifferencing {
     Read-HypervVHDResult -Path $Path
 }
 
+# Invoke-HypervVHDNew dispatches a parsed-JSON $Params object to
+# the correct New-HypervVHD* function. Extracted from the entry block so
+# the JSON-to-args translation (in particular the size_bytes presence
+# guard) is directly Pester-testable without spawning a subprocess.
+#
+# size_bytes presence guard: [int64] $null silently coerces to 0, which
+# New-VHD then rejects with the opaque "The parameter is incorrect"
+# message. Throwing here surfaces "size_bytes is required for <mode> VHDs"
+# instead. The Go-side validator catches this in normal operation; this
+# is the script-layer defense in depth (mirrors the explicit null check
+# already used for block_size_bytes).
+function Invoke-HypervVHDNew {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Params
+    )
+    switch ($Params.vhd_type) {
+        'fixed' {
+            # Two-stage check: the property-list guard is required because
+            # StrictMode 3.0 throws on access to undefined PSObject properties
+            # (omitted-from-JSON case). The null check then catches the
+            # explicit `"size_bytes": null` case.
+            if ($Params.PSObject.Properties.Name -notcontains 'size_bytes' -or
+                $null -eq $Params.size_bytes) {
+                throw "size_bytes is required for fixed VHDs"
+            }
+            $callArgs = @{
+                Path      = $Params.path
+                SizeBytes = [int64] $Params.size_bytes
+            }
+            if ($Params.PSObject.Properties.Name -contains 'block_size_bytes' -and
+                $null -ne $Params.block_size_bytes) {
+                $callArgs.BlockSizeBytes = [int64] $Params.block_size_bytes
+            }
+            New-HypervVHDFixed @callArgs
+        }
+        'dynamic' {
+            if ($Params.PSObject.Properties.Name -notcontains 'size_bytes' -or
+                $null -eq $Params.size_bytes) {
+                throw "size_bytes is required for dynamic VHDs"
+            }
+            $callArgs = @{
+                Path      = $Params.path
+                SizeBytes = [int64] $Params.size_bytes
+            }
+            if ($Params.PSObject.Properties.Name -contains 'block_size_bytes' -and
+                $null -ne $Params.block_size_bytes) {
+                $callArgs.BlockSizeBytes = [int64] $Params.block_size_bytes
+            }
+            New-HypervVHDDynamic @callArgs
+        }
+        'differencing' {
+            New-HypervVHDDifferencing `
+                -Path       $Params.path `
+                -ParentPath $Params.parent_path
+        }
+        default {
+            throw "Unknown vhd_type '$($Params.vhd_type)'; expected 'fixed', 'dynamic', or 'differencing'."
+        }
+    }
+}
+
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-
-        switch ($params.vhd_type) {
-            'fixed' {
-                $callArgs = @{
-                    Path      = $params.path
-                    SizeBytes = [int64] $params.size_bytes
-                }
-                if ($params.PSObject.Properties.Name -contains 'block_size_bytes' -and
-                    $null -ne $params.block_size_bytes) {
-                    $callArgs.BlockSizeBytes = [int64] $params.block_size_bytes
-                }
-                New-HypervVHDFixed @callArgs
-            }
-            'dynamic' {
-                $callArgs = @{
-                    Path      = $params.path
-                    SizeBytes = [int64] $params.size_bytes
-                }
-                if ($params.PSObject.Properties.Name -contains 'block_size_bytes' -and
-                    $null -ne $params.block_size_bytes) {
-                    $callArgs.BlockSizeBytes = [int64] $params.block_size_bytes
-                }
-                New-HypervVHDDynamic @callArgs
-            }
-            'differencing' {
-                New-HypervVHDDifferencing `
-                    -Path       $params.path `
-                    -ParentPath $params.parent_path
-            }
-            default {
-                throw "Unknown vhd_type '$($params.vhd_type)'; expected 'fixed', 'dynamic', or 'differencing'."
-            }
-        }
+        Invoke-HypervVHDNew -Params $params
     }
     catch {
         Write-HypervError $_
