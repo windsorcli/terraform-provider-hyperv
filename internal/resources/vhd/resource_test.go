@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -236,8 +237,9 @@ func TestResource_Configure_WrongTypeIsClearError(t *testing.T) {
 	}
 }
 
-// ConfigValidators registers all three cross-attribute checks. The
-// validators themselves are exercised in the ValidateResource tests below.
+// TestResource_ConfigValidators_RegistersAll confirms all three
+// cross-attribute checks are wired in. The validate() exercises that
+// follow lock the actual rule behavior for each.
 func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 	t.Parallel()
 
@@ -251,18 +253,253 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 	}
 }
 
-// blockSizeBytesRejectedForDifferencingValidator must fire when the user
-// supplies block_size_bytes alongside vhd_type=differencing. Without this
-// the wire layer silently drops the value, the read-back stores the
-// parent-inherited block size, and the next plan fires a RequiresReplace
-// loop.
-func TestBlockSizeBytesRejectedForDifferencingValidator_FiresOnDifferencingPlusBlockSize(t *testing.T) {
+// TestParentPathValidator exercises the symmetric rule: parent_path must
+// be set IFF vhd_type=differencing. Cases cover both fire directions and
+// both unknown-skip cases.
+func TestParentPathValidator(t *testing.T) {
 	t.Parallel()
 
+	cases := []struct {
+		name      string
+		model     Model
+		wantError bool
+		wantPath  string
+	}{
+		{
+			name: "differencing with parent_path -> ok",
+			model: Model{
+				VhdType:    types.StringValue("differencing"),
+				ParentPath: types.StringValue("C:\\parent.vhdx"),
+			},
+		},
+		{
+			name: "fixed without parent_path -> ok",
+			model: Model{
+				VhdType:    types.StringValue("fixed"),
+				ParentPath: types.StringNull(),
+			},
+		},
+		{
+			name: "differencing without parent_path -> fires (required)",
+			model: Model{
+				VhdType:    types.StringValue("differencing"),
+				ParentPath: types.StringNull(),
+			},
+			wantError: true,
+			wantPath:  "parent_path",
+		},
+		{
+			name: "fixed with parent_path -> fires (rejected)",
+			model: Model{
+				VhdType:    types.StringValue("fixed"),
+				ParentPath: types.StringValue("C:\\parent.vhdx"),
+			},
+			wantError: true,
+			wantPath:  "parent_path",
+		},
+		{
+			name: "differencing with empty-string parent_path -> fires (treated as unset)",
+			model: Model{
+				VhdType:    types.StringValue("differencing"),
+				ParentPath: types.StringValue(""),
+			},
+			wantError: true,
+			wantPath:  "parent_path",
+		},
+		{
+			name: "vhd_type unknown -> skip (deferred dep)",
+			model: Model{
+				VhdType:    types.StringUnknown(),
+				ParentPath: types.StringValue("C:\\parent.vhdx"),
+			},
+		},
+		{
+			name: "parent_path unknown -> skip (deferred dep)",
+			model: Model{
+				VhdType:    types.StringValue("differencing"),
+				ParentPath: types.StringUnknown(),
+			},
+		},
+	}
+	v := parentPathRequiresDifferencingValidator{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(tc.model)
+			assertValidatorDiags(t, diags, tc.wantError, tc.wantPath)
+		})
+	}
+}
+
+// TestSizeBytesValidator exercises the symmetric rule: size_bytes must be
+// set IFF vhd_type in (fixed, dynamic). Cases cover both fire directions
+// and both unknown-skip cases.
+func TestSizeBytesValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		model     Model
+		wantError bool
+		wantPath  string
+	}{
+		{
+			name: "fixed with size_bytes -> ok",
+			model: Model{
+				VhdType:   types.StringValue("fixed"),
+				SizeBytes: types.Int64Value(1073741824),
+			},
+		},
+		{
+			name: "dynamic with size_bytes -> ok",
+			model: Model{
+				VhdType:   types.StringValue("dynamic"),
+				SizeBytes: types.Int64Value(34359738368),
+			},
+		},
+		{
+			name: "differencing without size_bytes -> ok (inherited from parent)",
+			model: Model{
+				VhdType:   types.StringValue("differencing"),
+				SizeBytes: types.Int64Null(),
+			},
+		},
+		{
+			name: "fixed without size_bytes -> fires (required)",
+			model: Model{
+				VhdType:   types.StringValue("fixed"),
+				SizeBytes: types.Int64Null(),
+			},
+			wantError: true,
+			wantPath:  "size_bytes",
+		},
+		{
+			name: "differencing with size_bytes -> fires (rejected)",
+			model: Model{
+				VhdType:   types.StringValue("differencing"),
+				SizeBytes: types.Int64Value(1073741824),
+			},
+			wantError: true,
+			wantPath:  "size_bytes",
+		},
+		{
+			name: "vhd_type unknown -> skip (deferred dep)",
+			model: Model{
+				VhdType:   types.StringUnknown(),
+				SizeBytes: types.Int64Value(1073741824),
+			},
+		},
+		{
+			name: "size_bytes unknown -> skip (deferred dep)",
+			model: Model{
+				VhdType:   types.StringValue("fixed"),
+				SizeBytes: types.Int64Unknown(),
+			},
+		},
+	}
+	v := sizeBytesRequiresFixedOrDynamicValidator{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(tc.model)
+			assertValidatorDiags(t, diags, tc.wantError, tc.wantPath)
+		})
+	}
+}
+
+// TestBlockSizeBytesValidator exercises the one-directional rule:
+// block_size_bytes is rejected for vhd_type=differencing (where Hyper-V
+// would silently drop the user's value, then re-detect it as drift on
+// every subsequent plan, producing an infinite replace loop). Optional
+// for fixed/dynamic.
+func TestBlockSizeBytesValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		model     Model
+		wantError bool
+		wantPath  string
+	}{
+		{
+			name: "fixed without block_size_bytes -> ok (Hyper-V default)",
+			model: Model{
+				VhdType:        types.StringValue("fixed"),
+				BlockSizeBytes: types.Int64Null(),
+			},
+		},
+		{
+			name: "fixed with block_size_bytes -> ok",
+			model: Model{
+				VhdType:        types.StringValue("fixed"),
+				BlockSizeBytes: types.Int64Value(33554432),
+			},
+		},
+		{
+			name: "dynamic with block_size_bytes -> ok",
+			model: Model{
+				VhdType:        types.StringValue("dynamic"),
+				BlockSizeBytes: types.Int64Value(33554432),
+			},
+		},
+		{
+			name: "differencing without block_size_bytes -> ok (inherited)",
+			model: Model{
+				VhdType:        types.StringValue("differencing"),
+				BlockSizeBytes: types.Int64Null(),
+			},
+		},
+		{
+			name: "differencing with block_size_bytes -> fires (would loop replace)",
+			model: Model{
+				VhdType:        types.StringValue("differencing"),
+				BlockSizeBytes: types.Int64Value(33554432),
+			},
+			wantError: true,
+			wantPath:  "block_size_bytes",
+		},
+		{
+			name: "vhd_type unknown -> skip (deferred dep)",
+			model: Model{
+				VhdType:        types.StringUnknown(),
+				BlockSizeBytes: types.Int64Value(33554432),
+			},
+		},
+		{
+			name: "block_size_bytes unknown -> skip (deferred dep)",
+			model: Model{
+				VhdType:        types.StringValue("differencing"),
+				BlockSizeBytes: types.Int64Unknown(),
+			},
+		},
+	}
 	v := blockSizeBytesRejectedForDifferencingValidator{}
-	got := v.Description(t.Context())
-	if !strings.Contains(got, "differencing") || !strings.Contains(got, "block_size_bytes") {
-		t.Errorf("Description should reference both vhd_type=differencing and block_size_bytes; got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(tc.model)
+			assertValidatorDiags(t, diags, tc.wantError, tc.wantPath)
+		})
+	}
+}
+
+// assertValidatorDiags is the shared assertion shape for all three
+// validator-table tests. Verifies presence/absence of an error and, when
+// expected, that the error is anchored to the right attribute path.
+func assertValidatorDiags(t *testing.T, diags diag.Diagnostics, wantError bool, wantPath string) {
+	t.Helper()
+	if wantError {
+		if !diags.HasError() {
+			t.Fatalf("expected validator to fire on attribute %q; got no error", wantPath)
+		}
+		if !strings.Contains(diags.Errors()[0].Summary()+diags.Errors()[0].Detail(), wantPath) {
+			t.Errorf("expected diagnostic to reference attribute %q; got summary=%q detail=%q",
+				wantPath, diags.Errors()[0].Summary(), diags.Errors()[0].Detail())
+		}
+		return
+	}
+	if diags.HasError() {
+		t.Errorf("expected validator to pass; got error(s): %v", diags.Errors())
 	}
 }
 

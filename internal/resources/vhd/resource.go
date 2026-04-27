@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -69,28 +70,33 @@ func (v parentPathRequiresDifferencingValidator) MarkdownDescription(ctx context
 	return v.Description(ctx)
 }
 
-// ValidateResource fires the diagnostic when both vhd_type and parent_path
-// are known and the combination is invalid (one of: differencing without
-// parent, or non-differencing with parent). Unknown values mean a deferred
-// dependency hasn't resolved yet; the next plan pass with concrete values
-// gets the chance to validate.
+// ValidateResource pulls the typed Model from the Config and dispatches to
+// validate, which holds the actual rule logic. The split keeps the rule
+// directly unit-testable without tfsdk.Config plumbing in tests.
 func (v parentPathRequiresDifferencingValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// Skip if any input is unknown -- a deferred dep hasn't resolved yet;
-	// the next plan pass will validate with concrete values.
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate is the pure-Go core of the validator: takes a typed Model and
+// returns diagnostics. Skips on Unknown (deferred dep hasn't resolved).
+// Fires symmetrically on either misconfiguration: differencing without
+// parent_path, or non-differencing with parent_path.
+func (v parentPathRequiresDifferencingValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
 	if data.VhdType.IsUnknown() || data.ParentPath.IsUnknown() {
-		return
+		return diags
 	}
 	isDifferencing := data.VhdType.ValueString() == "differencing"
 	parentSet := !data.ParentPath.IsNull() && data.ParentPath.ValueString() != ""
 
 	switch {
 	case isDifferencing && !parentSet:
-		resp.Diagnostics.AddAttributeError(
+		diags.AddAttributeError(
 			path.Root("parent_path"),
 			"parent_path is required for differencing VHDs",
 			"Differencing disks read from a parent and write changes to a child. "+
@@ -98,13 +104,14 @@ func (v parentPathRequiresDifferencingValidator) ValidateResource(ctx context.Co
 				"vhd_type to fixed or dynamic.",
 		)
 	case !isDifferencing && parentSet:
-		resp.Diagnostics.AddAttributeError(
+		diags.AddAttributeError(
 			path.Root("parent_path"),
 			"parent_path is only valid for differencing VHDs",
 			fmt.Sprintf("vhd_type=%q does not accept a parent_path. Either remove parent_path or change vhd_type to differencing.",
 				data.VhdType.ValueString()),
 		)
 	}
+	return diags
 }
 
 // sizeBytesRequiresFixedOrDynamicValidator enforces size_bytes IFF
@@ -124,40 +131,48 @@ func (v sizeBytesRequiresFixedOrDynamicValidator) MarkdownDescription(ctx contex
 	return v.Description(ctx)
 }
 
-// ValidateResource fires when vhd_type and size_bytes disagree on the
-// "must / must not" rule for the chosen mode. Unknown values are skipped
-// so a deferred dep gets a second chance once it resolves.
+// ValidateResource pulls the typed Model from the Config and dispatches to
+// validate, which holds the actual rule logic. Split for direct unit
+// testing without tfsdk.Config plumbing.
 func (v sizeBytesRequiresFixedOrDynamicValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate is the pure-Go core: skips on Unknown, then fires on either
+// misconfiguration -- non-differencing without size_bytes, or differencing
+// with size_bytes. IsNull on Optional+Computed catches "user didn't set
+// it"; the Computed-back value from a prior Read is also Null at
+// config-parse time (config != state).
+func (v sizeBytesRequiresFixedOrDynamicValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
 	if data.VhdType.IsUnknown() || data.SizeBytes.IsUnknown() {
-		return
+		return diags
 	}
 	isDifferencing := data.VhdType.ValueString() == "differencing"
-	// IsNull on Optional+Computed catches "user didn't set it"; the
-	// Computed-back value from a prior Read is also Null at config-parse
-	// time (config != state).
 	sizeSet := !data.SizeBytes.IsNull()
 
 	switch {
 	case !isDifferencing && !sizeSet:
-		resp.Diagnostics.AddAttributeError(
+		diags.AddAttributeError(
 			path.Root("size_bytes"),
 			"size_bytes is required for fixed and dynamic VHDs",
 			fmt.Sprintf("vhd_type=%q requires an explicit size_bytes. Differencing disks alone inherit size from a parent.",
 				data.VhdType.ValueString()),
 		)
 	case isDifferencing && sizeSet:
-		resp.Diagnostics.AddAttributeError(
+		diags.AddAttributeError(
 			path.Root("size_bytes"),
 			"size_bytes is not valid for differencing VHDs",
 			"Differencing disks inherit size_bytes from the parent. Remove size_bytes from the config "+
 				"or change vhd_type to fixed or dynamic.",
 		)
 	}
+	return diags
 }
 
 // blockSizeBytesRejectedForDifferencingValidator rejects block_size_bytes
@@ -183,32 +198,41 @@ func (v blockSizeBytesRejectedForDifferencingValidator) MarkdownDescription(ctx 
 	return v.Description(ctx)
 }
 
-// ValidateResource fires only on the differencing+set case. Unlike the
-// size_bytes validator this is one-directional: block_size_bytes is
-// optional for fixed/dynamic (Hyper-V's default applies when omitted), so
-// there's no "missing" branch to enforce.
+// ValidateResource pulls the typed Model from the Config and dispatches to
+// validate, which holds the actual rule logic. Split for direct unit
+// testing without tfsdk.Config plumbing.
 func (v blockSizeBytesRejectedForDifferencingValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate is the pure-Go core: one-directional, fires only on the
+// differencing+set case. Unlike the size_bytes validator there's no
+// "missing" branch to enforce -- block_size_bytes is optional for
+// fixed/dynamic (Hyper-V's default applies when omitted).
+func (v blockSizeBytesRejectedForDifferencingValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
 	if data.VhdType.IsUnknown() || data.BlockSizeBytes.IsUnknown() {
-		return
+		return diags
 	}
 	if data.VhdType.ValueString() != "differencing" {
-		return
+		return diags
 	}
 	if data.BlockSizeBytes.IsNull() {
-		return
+		return diags
 	}
-	resp.Diagnostics.AddAttributeError(
+	diags.AddAttributeError(
 		path.Root("block_size_bytes"),
 		"block_size_bytes is not valid for differencing VHDs",
 		"Differencing disks inherit block_size_bytes from the parent. Supplying it would be silently "+
 			"dropped at create and then re-detected as drift on every subsequent plan, producing an "+
 			"infinite replace loop. Remove block_size_bytes from the config or change vhd_type to fixed or dynamic.",
 	)
+	return diags
 }
 
 // Configure stashes the typed Hyper-V client built by the provider's
