@@ -235,7 +235,10 @@ Describe 'New-HypervVM' {
 
     Context 'error propagation' {
 
-        It 'lets New-VM terminating errors propagate (e.g. duplicate name)' {
+        It 'lets New-VM terminating errors propagate (e.g. duplicate name) without calling Remove-VM' {
+            # If New-VM itself fails, there is no partial VM to clean up.
+            # Remove-VM on a name that doesn't exist would error and
+            # mask the real cause -- the cleanup must NOT fire here.
             Mock New-VM {
                 $exception = [System.InvalidOperationException]::new("VM 'vm01' already exists")
                 $errorRecord = [System.Management.Automation.ErrorRecord]::new(
@@ -245,6 +248,7 @@ Describe 'New-HypervVM' {
             }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
+            Mock Remove-VM { }
             Mock Get-VM { New-HypervVMSample }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
 
@@ -253,6 +257,105 @@ Describe 'New-HypervVM' {
 
             Should -Invoke Set-VMMemory   -Times 0 -Exactly
             Should -Invoke Set-VMProcessor -Times 0 -Exactly
+            Should -Invoke Remove-VM      -Times 0 -Exactly
+        }
+    }
+
+    Context 'atomicity (cleanup of partially-configured VM)' {
+
+        # The Set-* sequence runs after New-VM has committed the VM to
+        # the host. A failure in any of those Set-* calls would leave a
+        # partial-state VM lingering and trip a name-collision on the
+        # next apply (Go Create returns error -> Terraform records "not
+        # created" -> next apply tries New-VM with the same name).
+        # The catch-and-Remove-VM guard makes the operation appear
+        # atomic from Terraform's perspective.
+
+        It 'cleans up the partial VM when Set-VMMemory fails after New-VM' {
+            Mock New-VM { }
+            Mock Set-VMMemory {
+                $exception = [System.InvalidOperationException]::new('simulated memory configuration failure')
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'MemoryConfigFailed',
+                    [System.Management.Automation.ErrorCategory]::InvalidOperation, $VMName)
+                throw $errorRecord
+            }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Remove-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 } |
+                Should -Throw -ExpectedMessage '*memory configuration failure*'
+
+            Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'vm01' -and $Force -eq $true
+            }
+        }
+
+        It 'cleans up the partial VM when Set-VMProcessor fails' {
+            Mock New-VM { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { throw 'simulated vcpu failure' }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Remove-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 } |
+                Should -Throw -ExpectedMessage '*vcpu failure*'
+
+            Should -Invoke Remove-VM -Times 1 -Exactly
+        }
+
+        It 'cleans up the partial VM when Set-VMFirmware fails on gen 2 + secure_boot' {
+            Mock New-VM { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { throw 'simulated firmware configuration failure' }
+            Mock Set-VM { }
+            Mock Remove-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -SecureBoot $true } |
+                Should -Throw -ExpectedMessage '*firmware configuration failure*'
+
+            Should -Invoke Remove-VM -Times 1 -Exactly
+        }
+
+        It 'cleans up the partial VM when Set-VM (notes) fails' {
+            Mock New-VM { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { throw 'simulated notes failure' }
+            Mock Remove-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -Notes 'production' } |
+                Should -Throw -ExpectedMessage '*notes failure*'
+
+            Should -Invoke Remove-VM -Times 1 -Exactly
+        }
+
+        It 'rethrows the ORIGINAL Set-* error (not the cleanup error) so the operator sees the real cause' {
+            # Cleanup uses -ErrorAction SilentlyContinue specifically so the
+            # operator gets the configuration error, not whatever Remove-VM
+            # might fail with (e.g., "VM in use" if some other operation
+            # raced). This test pins that contract.
+            Mock New-VM { }
+            Mock Set-VMMemory { throw 'ORIGINAL configuration error' }
+            Mock Remove-VM { throw 'CLEANUP error -- should be swallowed' }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 } |
+                Should -Throw -ExpectedMessage '*ORIGINAL configuration error*'
         }
     }
 }

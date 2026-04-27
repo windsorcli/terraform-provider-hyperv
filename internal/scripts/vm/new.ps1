@@ -67,21 +67,52 @@ function New-HypervVM {
         -MemoryStartupBytes $MemoryBytes `
         -NoVHD -ErrorAction Stop | Out-Null
 
-    # DynamicMemoryEnabled=$false MUST land in the same call as StartupBytes;
-    # otherwise the cmdlet rejects the StartupBytes value as out-of-range
-    # against the (still-default) dynamic min/max.
-    Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false `
-        -StartupBytes $MemoryBytes -ErrorAction Stop
+    # Atomicity guard: New-VM has now committed the VM to the host. Any
+    # failure in the post-create Set-* sequence below would leave a
+    # partially-configured VM lingering -- the Go-side Create returns
+    # without writing state, Terraform records the resource as not created,
+    # and the next apply trips a name-collision until an operator manually
+    # removes the orphan. Wrap the Set-* sequence in a try/catch and
+    # best-effort Remove-VM on any failure so the operation appears
+    # atomic from Terraform's perspective. SilentlyContinue on the
+    # cleanup keeps the original Set-* error as the surfaced cause; if
+    # cleanup itself fails the worst case is the same orphan we'd have
+    # had without the guard, so no regression.
+    try {
+        # DynamicMemoryEnabled=$false MUST land in the same call as
+        # StartupBytes; otherwise the cmdlet rejects the StartupBytes
+        # value as out-of-range against the (still-default) dynamic
+        # min/max.
+        Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false `
+            -StartupBytes $MemoryBytes -ErrorAction Stop
 
-    Set-VMProcessor -VMName $Name -Count $Vcpu -ErrorAction Stop
+        Set-VMProcessor -VMName $Name -Count $Vcpu -ErrorAction Stop
 
-    if ($Generation -eq 2 -and $null -ne $SecureBoot) {
-        $sb = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
-        Set-VMFirmware -VMName $Name -EnableSecureBoot $sb -ErrorAction Stop
+        if ($Generation -eq 2 -and $null -ne $SecureBoot) {
+            $sb = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
+            Set-VMFirmware -VMName $Name -EnableSecureBoot $sb -ErrorAction Stop
+        }
+
+        if ($PSBoundParameters.ContainsKey('Notes')) {
+            Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
+        }
     }
-
-    if ($PSBoundParameters.ContainsKey('Notes')) {
-        Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
+    catch {
+        # Inner try/catch so a Remove-VM failure (terminating OR
+        # non-terminating) doesn't mask the original Set-* error.
+        # SilentlyContinue alone wouldn't catch a thrown terminating
+        # error from cleanup, hence the explicit try.
+        try {
+            Remove-VM -Name $Name -Force -ErrorAction Stop
+        }
+        catch {
+            # Best-effort cleanup; original Set-* error is what surfaces.
+            # Emit at Verbose so the swallowed cleanup error is recoverable
+            # via TF_LOG_PROVIDER=TRACE for forensics, without bothering
+            # operators in the normal failure path.
+            Write-Verbose "Cleanup of partial VM '$Name' failed: $($_.Exception.Message)"
+        }
+        throw
     }
 
     $vm = Get-VM -Name $Name -ErrorAction Stop
