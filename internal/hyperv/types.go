@@ -81,3 +81,45 @@ type NewImageFileFromURLInput struct {
 	URL             string `json:"url"`
 	ExpectedSha256  string `json:"expected_sha256"`
 }
+
+// VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.
+// SizeBytes is the declared logical size; FileSizeBytes is the actual
+// on-disk size (smaller than SizeBytes for dynamic and differencing).
+// ParentPath is empty unless VhdType is "Differencing".
+type VHD struct {
+	Path           string `json:"Path"`
+	VhdType        string `json:"VhdType"`
+	SizeBytes      int64  `json:"SizeBytes"`
+	FileSizeBytes  int64  `json:"FileSizeBytes"`
+	BlockSizeBytes int64  `json:"BlockSizeBytes"`
+	ParentPath     string `json:"ParentPath"`
+	Format         string `json:"Format"`
+	Attached       bool   `json:"Attached"`
+}
+
+// NewVHDFixedInput is the public input shape for the Fixed creation mode.
+// BlockSizeBytes is *int64 + omitempty so absent leaves the cmdlet
+// default. The discriminator (vhd_type) is set internally by the typed
+// client method, not on the public struct.
+type NewVHDFixedInput struct {
+	Path           string `json:"path"`
+	SizeBytes      int64  `json:"size_bytes"`
+	BlockSizeBytes *int64 `json:"block_size_bytes,omitempty"`
+}
+
+// NewVHDDynamicInput is the public input shape for the Dynamic creation
+// mode. Same field set as fixed -- the discriminator is what differs.
+type NewVHDDynamicInput struct {
+	Path           string `json:"path"`
+	SizeBytes      int64  `json:"size_bytes"`
+	BlockSizeBytes *int64 `json:"block_size_bytes,omitempty"`
+}
+
+// NewVHDDifferencingInput is the public input shape for the Differencing
+// creation mode. SizeBytes and BlockSizeBytes are inherited from the
+// parent and rejected by Hyper-V if supplied; the typed-client method
+// omits them from the wire payload.
+type NewVHDDifferencingInput struct {
+	Path       string `json:"path"`
+	ParentPath string `json:"parent_path"`
+}

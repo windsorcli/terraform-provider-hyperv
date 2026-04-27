@@ -47,3 +47,35 @@ const ImageFileFixtureJSON = `{
 	"SizeBytes": 5368709120,
 	"Sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 }`
+
+// VHDDynamicFixtureJSON is the canonical eight-field shape vhd/{get,new,set}.ps1
+// emit for a sparse dynamic VHDX. Size is the declared 32 GiB; FileSize is
+// the actual sparse on-disk size after creation (tiny). ParentPath is empty
+// because dynamic disks have no parent. Format is uppercase "VHDX" because
+// that's what Get-VHD's VhdFormat enum's ToString() emits on a real host
+// (verified against Server 2019 in the M4 smoke test); the Pester _test_helpers
+// stub mirrors this.
+const VHDDynamicFixtureJSON = `{
+	"Path": "C:\\hyperv\\vhds\\my-vm-system.vhdx",
+	"VhdType": "Dynamic",
+	"SizeBytes": 34359738368,
+	"FileSizeBytes": 4194304,
+	"BlockSizeBytes": 33554432,
+	"ParentPath": "",
+	"Format": "VHDX",
+	"Attached": false
+}`
+
+// VHDDifferencingFixtureJSON exercises the parent-path round-trip and the
+// "size inherited from parent" semantic (SizeBytes matches the parent's
+// declared size; FileSize is small because the child has no writes yet).
+const VHDDifferencingFixtureJSON = `{
+	"Path": "C:\\hyperv\\vhds\\child.vhdx",
+	"VhdType": "Differencing",
+	"SizeBytes": 34359738368,
+	"FileSizeBytes": 1048576,
+	"BlockSizeBytes": 33554432,
+	"ParentPath": "C:\\hyperv\\vhds\\parent.vhdx",
+	"Format": "VHDX",
+	"Attached": false
+}`
