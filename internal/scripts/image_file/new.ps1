@@ -37,9 +37,14 @@
 # non-2xx so transport-level failures surface through the catch in the
 # entry block.
 #
-# TLS 1.2 is pinned because PS 5.1 / .NET Framework 4.7.2 on older Server
-# 2019 builds can default to TLS 1.0/1.1, which most modern HTTPS endpoints
-# now reject. No-op on PS 7+ where SystemDefault already includes 1.2/1.3.
+# TLS 1.2 is OR'd into the protocol set as a floor because PS 5.1 / .NET
+# Framework 4.7.2 on older Server 2019 builds can default to TLS 1.0/1.1,
+# which most modern HTTPS endpoints reject. -bor (rather than =) preserves
+# TLS 1.3 on .NET 4.8+ hosts where the enum already includes it, so we
+# raise the floor without capping the ceiling. The assignment is process-
+# global, but each verb script runs in a fresh PowerShell process per
+# -EncodedCommand, so leakage to unrelated calls is bounded to this one
+# invocation.
 function Save-HypervHttpFile {
     [CmdletBinding()]
     param(
@@ -51,6 +56,7 @@ function Save-HypervHttpFile {
     # assembly is already loaded (PS 7+) so it's safe to call unconditionally.
     Add-Type -AssemblyName System.Net.Http
     [System.Net.ServicePointManager]::SecurityProtocol = `
+        [System.Net.ServicePointManager]::SecurityProtocol -bor `
         [System.Net.SecurityProtocolType]::Tls12
     $client = [System.Net.Http.HttpClient]::new()
     try {
