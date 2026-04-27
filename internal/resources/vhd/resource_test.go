@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -486,20 +487,32 @@ func TestBlockSizeBytesValidator(t *testing.T) {
 // assertValidatorDiags is the shared assertion shape for all three
 // validator-table tests. Verifies presence/absence of an error and, when
 // expected, that the error is anchored to the right attribute path.
+//
+// "Anchored" means the diagnostic carries a path.Path attached via
+// AddAttributeError -- that's what Terraform uses to highlight the
+// offending line in plan output. Checking only the message text would
+// pass a buggy validator that called AddAttributeError(path.Root("foo"))
+// while writing "bar" in the message; the type assertion to
+// diag.DiagnosticWithPath catches that mismatch.
 func assertValidatorDiags(t *testing.T, diags diag.Diagnostics, wantError bool, wantPath string) {
 	t.Helper()
-	if wantError {
-		if !diags.HasError() {
-			t.Fatalf("expected validator to fire on attribute %q; got no error", wantPath)
-		}
-		if !strings.Contains(diags.Errors()[0].Summary()+diags.Errors()[0].Detail(), wantPath) {
-			t.Errorf("expected diagnostic to reference attribute %q; got summary=%q detail=%q",
-				wantPath, diags.Errors()[0].Summary(), diags.Errors()[0].Detail())
+	if !wantError {
+		if diags.HasError() {
+			t.Errorf("expected validator to pass; got error(s): %v", diags.Errors())
 		}
 		return
 	}
-	if diags.HasError() {
-		t.Errorf("expected validator to pass; got error(s): %v", diags.Errors())
+	if !diags.HasError() {
+		t.Fatalf("expected validator to fire on attribute %q; got no error", wantPath)
+	}
+	first := diags.Errors()[0]
+	withPath, ok := first.(diag.DiagnosticWithPath)
+	if !ok {
+		t.Fatalf("expected first error to be DiagnosticWithPath (i.e., from AddAttributeError); got %T", first)
+	}
+	want := path.Root(wantPath)
+	if !withPath.Path().Equal(want) {
+		t.Errorf("diagnostic path mismatch: got %s, want %s", withPath.Path(), want)
 	}
 }
 
