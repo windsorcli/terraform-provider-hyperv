@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 var (
@@ -230,10 +231,16 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // modelFromImageFile hydrates a Model from a typed ImageFile DTO. URL is
 // caller-supplied because it's user intent (config/plan) and isn't
 // reconstructible from the file on disk.
+//
+// Path-typed attributes (id, destination_path) wrap the cmdlet's
+// canonical-form return value verbatim. Slash-style and case
+// differences between user input and the cmdlet's return are reconciled
+// by pathtype.Path's StringSemanticEquals; we don't need to preserve
+// the user's prior representation here.
 func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig) Model {
 	return Model{
-		ID:              types.StringValue(f.Path),
-		DestinationPath: types.StringValue(f.Path),
+		ID:              pathtype.NewPathValue(f.Path),
+		DestinationPath: pathtype.NewPathValue(f.Path),
 		URL:             url,
 		Sha256:          types.StringValue(f.Sha256),
 		SizeBytes:       types.Int64Value(f.SizeBytes),

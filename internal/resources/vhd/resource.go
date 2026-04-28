@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 var (
@@ -318,7 +319,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	state := modelFromVHD(v, plan.Path, plan.ParentPath)
+	state := modelFromVHD(v)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -353,7 +354,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	newState := modelFromVHD(v, state.Path, state.ParentPath)
+	newState := modelFromVHD(v)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -394,7 +395,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	newState := modelFromVHD(v, state.Path, state.ParentPath)
+	newState := modelFromVHD(v)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -436,23 +437,19 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // lowercase). Empty parent_path collapses to null so non-differencing
 // disks don't carry a phantom empty string.
 //
-// priorPath / priorParentPath carry the user's previously-stored values
-// (from plan in Create, from state in Read/Update). When the cmdlet's
-// returned value matches case-insensitively, the prior value is preserved
-// so Windows path canonicalization (uppercase drive letter, junction-point
-// resolution, short-filename expansion) doesn't surface as a perpetual
-// destroy-recreate loop on the RequiresReplace path / parent_path
-// attributes. PLAN.md S8 envisions a custom WindowsPath StringTypable for
-// this; the caller-preserve pattern here is the lighter interim solution
-// mirroring vswitch's net_adapter_names handling.
-func modelFromVHD(v *hyperv.VHD, priorPath, priorParentPath types.String) Model {
-	pathValue := preserveCaseOrNullify(priorPath, v.Path)
+// Path-typed attributes (id, path, parent_path) wrap the cmdlet's
+// canonical-form return value verbatim. Slash-style and case
+// differences between user input and the cmdlet's return are reconciled
+// by pathtype.Path's StringSemanticEquals, so the historical
+// preserveCaseOrNullify shim is gone -- the framework now handles what
+// that helper was inventing by hand.
+func modelFromVHD(v *hyperv.VHD) Model {
 	return Model{
-		ID:             pathValue,
-		Path:           pathValue,
+		ID:             pathtype.NewPathValue(v.Path),
+		Path:           pathtype.NewPathValue(v.Path),
 		VhdType:        types.StringValue(strings.ToLower(v.VhdType)),
 		SizeBytes:      types.Int64Value(v.SizeBytes),
-		ParentPath:     preserveCaseOrNullify(priorParentPath, v.ParentPath),
+		ParentPath:     parentPathOrNull(v.ParentPath),
 		BlockSizeBytes: types.Int64Value(v.BlockSizeBytes),
 		FileSizeBytes:  types.Int64Value(v.FileSizeBytes),
 		Format:         types.StringValue(v.Format),
@@ -460,24 +457,15 @@ func modelFromVHD(v *hyperv.VHD, priorPath, priorParentPath types.String) Model 
 	}
 }
 
-// preserveCaseOrNullify produces the framework-typed string the caller
-// should write into state for a path attribute. Three cases:
-//
-//   - fresh is empty: return null. Used for parent_path on non-differencing.
-//   - prior matches fresh case-insensitively: return prior. Preserves the
-//     user's configured casing so Windows path canonicalization doesn't
-//     produce a phantom diff on a RequiresReplace attribute.
-//   - otherwise: return the cmdlet's value as-is. The path genuinely
-//     changed (or was never set in state) and should reflect reality.
-func preserveCaseOrNullify(prior types.String, fresh string) types.String {
-	if fresh == "" {
-		return types.StringNull()
+// parentPathOrNull collapses an empty cmdlet-returned parent_path to
+// schema-null. Get-VHD on a non-differencing disk emits "" for ParentPath;
+// storing that as a literal empty Path would surface as a phantom diff
+// against config that omits the attribute entirely.
+func parentPathOrNull(p string) pathtype.Path {
+	if p == "" {
+		return pathtype.NewPathNull()
 	}
-	if !prior.IsNull() && !prior.IsUnknown() &&
-		strings.EqualFold(prior.ValueString(), fresh) {
-		return prior
-	}
-	return types.StringValue(fresh)
+	return pathtype.NewPathValue(p)
 }
 
 // optionalInt64 turns a framework Int64 into *int64 -- nil if null/unknown,
