@@ -38,7 +38,25 @@ function Get-HypervSwitch {
         $sw = Get-VMSwitch -Name $Name -ErrorAction Stop
     }
     catch {
-        if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        # "Switch missing" surfaces in two shapes:
+        #   1. CategoryInfo.Category = ObjectNotFound -- the documented
+        #      contract; what some Hyper-V module versions emit.
+        #   2. CategoryInfo.Category = InvalidArgument with
+        #      FullyQualifiedErrorId =
+        #      'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch'
+        #      -- what Get-VMSwitch actually emits on Server 2022 + PS 5.1
+        #      (verified 2026-04 against a real bench; the acc test for
+        #      hyperv_virtual_switch's CheckDestroy caught this). The FQId
+        #      is precise enough that unrelated InvalidArgument errors
+        #      (bad name format, etc.) still propagate as the design
+        #      intends -- only the canonical "Get-VMSwitch says not found"
+        #      shape is treated as missing.
+        $isMissing = (
+            $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound
+        ) -or (
+            $_.FullyQualifiedErrorId -eq 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch'
+        )
+        if (-not $isMissing) {
             throw
         }
         $sw = $null

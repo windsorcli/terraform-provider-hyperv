@@ -9,7 +9,12 @@ version: '3'
 #   • The `go install <pkg>@vX.Y.Z` lines below are Renovate-managed via the
 #     custom regex manager in .github/renovate.json.
 
-dotenv: ['.env', '.env.local']
+# Task's dotenv loader treats the FIRST file in the list as highest precedence
+# (https://taskfile.dev/reference/schema/#dotenv). Order is .env.local then .env
+# so a developer's personal overrides in .env.local win over any committed
+# defaults in .env. Both files are gitignored; .env.example is the committed
+# template -- copy it to .env.local and fill in HYPERV_* values for `task test:acc`.
+dotenv: ['.env.local', '.env']
 
 vars:
   PROVIDER_NAME: hyperv
@@ -109,13 +114,38 @@ tasks:
   # ---------- Test ----------
 
   test:
-    desc: Lint + unit tests
+    desc: Lint + unit tests (quick feedback; no bench, no PowerShell)
     deps: [lint, test:unit]
+
+  test:all:
+    desc: Full test bar — lint + unit + Pester + acceptance (pre-release gate)
+    summary: |
+      Runs every test tier sequentially, fail-fast: lint → unit → Pester →
+      acceptance. Each step must pass before the next runs, so a broken lint
+      doesn't burn time on the bench.
+
+      Requirements:
+        - PowerShell (pwsh) on PATH for Pester.
+        - .env.local populated with HYPERV_* values + the HYPERV_TEST_*
+          fixture vars listed in .env.example, all reachable on the
+          maintainer's workbench. See docs/contributing/acceptance-tests.md.
+
+      Use this before tagging a release. For day-to-day iteration prefer
+      `task test` (lint + unit only) -- it doesn't need a bench.
+    cmds:
+      - task: lint
+      - task: test:unit
+      - task: test:pester
+      - task: test:acc
 
   test:unit:
     desc: Go unit tests (no TF_ACC)
     cmds:
-      - go test -race -short -coverprofile={{.COVERAGE_FILE}} ./...
+      # ./internal/... excludes the root main package, which has no tests
+      # and would trip `go: no such tool "covdata"` on toolchains that
+      # ship without covdata (the aqua-provisioned Go 1.26.2 build hits
+      # this). main.go is exercised by `task build` instead.
+      - go test -race -short -coverprofile={{.COVERAGE_FILE}} ./internal/...
 
   test:acc:
     desc: Acceptance tests against real Hyper-V (TF_ACC=1; reads .env.local)

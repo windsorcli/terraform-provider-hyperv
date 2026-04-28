@@ -98,17 +98,49 @@ Describe 'Get-HypervSwitch' {
             $captured.CategoryInfo.Category.ToString() | Should -Be 'PermissionDenied'
         }
 
-        It 'remaps a real ObjectNotFound error from Get-VMSwitch to the typed envelope' {
-            # The real cmdlet under -ErrorAction Stop raises a terminating
-            # ObjectNotFound error rather than returning $null. The catch must
-            # accept that path and re-emit the VMSwitchNotFound envelope so the
-            # Go side maps it to ErrNotFound.
+        It 'remaps the cmdlet''s actual "switch not found" error (InvalidArgument + FQId) to the typed envelope' {
+            # Get-VMSwitch on Server 2022 + PS 5.1 reports a missing switch
+            # with category=InvalidArgument and FullyQualifiedErrorId
+            # 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch'
+            # -- NOT the documented ObjectNotFound. Verified against a real
+            # bench 2026-04 by an acceptance-test CheckDestroy failure:
+            # the previous version of this test mocked the *documented*
+            # shape (ObjectNotFound) and let the production catch only
+            # handle that shape, so the bench-side reality slipped through
+            # to the Go side as ErrPSExecution. Pinning the actual FQId
+            # here keeps the test honest about the cmdlet's behavior.
+            Mock Get-VMSwitch {
+                $exception = [System.ArgumentException]::new(
+                    "Hyper-V was unable to find a virtual switch with name `"$Name`".")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception,
+                    'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch',
+                    [System.Management.Automation.ErrorCategory]::InvalidArgument,
+                    $Name)
+                throw $errorRecord
+            }
+
+            $captured = $null
+            try { Get-HypervSwitch -Name 'missing' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
+        }
+
+        It 'still handles the documented ObjectNotFound shape (defensive: older Hyper-V versions)' {
+            # Belt-and-suspenders against future Hyper-V versions or other
+            # cmdlet paths that might emit the documented ObjectNotFound
+            # shape. The catch accepts both shapes and routes both to the
+            # same VMSwitchNotFound envelope.
             Mock Get-VMSwitch {
                 $exception = [System.Management.Automation.ItemNotFoundException]::new(
                     "Hyper-V was unable to find a virtual switch with name '$Name'.")
                 $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-                    $exception, 'GetVMSwitch,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch',
-                    [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+                    $exception,
+                    'GetVMSwitch,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch',
+                    [System.Management.Automation.ErrorCategory]::ObjectNotFound,
+                    $Name)
                 throw $errorRecord
             }
 
