@@ -23,9 +23,10 @@
 # Update would be dangerous magic that changes apply semantics -- the
 # operator drives power transitions via hyperv_vm_state.
 
-# Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
+# Read-HypervVMResult emits the canonical read shape. Inline duplicate
 # of get.ps1's tail because the runtime concatenates only preamble + a
-# single verb script per call.
+# single verb script per call. Keep these three copies in sync; the
+# Pester get.Tests.ps1 contract test pins the shape.
 function Read-HypervVMResult {
     [CmdletBinding()]
     param(
@@ -36,6 +37,14 @@ function Read-HypervVMResult {
         $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
         $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
     }
+    $hdds = @(
+        Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop |
+            Select-Object `
+                @{ N = 'Path';               E = { $_.Path } },
+                @{ N = 'ControllerType';     E = { $_.ControllerType.ToString() } },
+                @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
+                @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
+    )
     [pscustomobject]@{
         Name                = $Vm.Name
         Id                  = $Vm.Id.ToString()
@@ -47,6 +56,7 @@ function Read-HypervVMResult {
         Notes               = $Vm.Notes
         Path                = $Vm.Path
         SecureBootEnabled   = $secureBoot
+        HardDiskDrives      = $hdds
     } | Write-HypervResult
 }
 

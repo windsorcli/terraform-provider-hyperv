@@ -2,12 +2,17 @@ package vm
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
@@ -92,6 +97,66 @@ func resourceSchema() schema.Schema {
 						MarkdownDescription: "Static memory size in bytes (e.g. `4294967296` for " +
 							"4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with " +
 							"`DynamicMemoryEnabled=$false`; the VM generally must be `Off`.",
+					},
+				},
+			},
+			"hard_disk_drive": schema.SetNestedAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Set of VHDs/VHDXs attached to the VM. Each element identifies " +
+					"both the underlying file (`path`) and the controller slot the disk occupies " +
+					"(`controller_type` + `controller_number` + `controller_location`). The slot " +
+					"tuple is the unique key per VM -- two attachments at the same slot is an error.\n\n" +
+					"**Set semantics, not list:** the user's HCL ordering does not affect plans. " +
+					"Writing `[disk_b, disk_a]` and `[disk_a, disk_b]` plan identically as long as " +
+					"the slot tuples match. The provider also reads the cmdlet output unsorted; " +
+					"the framework's set diff handles canonicalization.\n\n" +
+					"**Reconciliation:** Update diffs the planned set against state by slot tuple. " +
+					"Slots present in plan but not state get `Add-VMHardDiskDrive`; slots in state " +
+					"but not plan get `Remove-VMHardDiskDrive`; slots in both with a different " +
+					"`path` are detached then re-attached (Set-VMHardDiskDrive's path-swap path " +
+					"is not used in this slice -- detach + attach has clearer error semantics).\n\n" +
+					"This resource does NOT create the VHD itself -- pair with `hyperv_vhd` or " +
+					"`hyperv_image_file` for that.",
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.UseStateForUnknown(),
+				},
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"path": schema.StringAttribute{
+							CustomType: pathtype.Type,
+							Required:   true,
+							MarkdownDescription: "Absolute path on the host of the VHD/VHDX to " +
+								"attach. Forward and back slashes are accepted equivalently; case " +
+								"is folded for comparison per Windows file-system semantics.",
+						},
+						"controller_type": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  stringdefault.StaticString("SCSI"),
+							MarkdownDescription: "Controller bus. `SCSI` is the default and the " +
+								"only valid choice for gen 2 VMs; `IDE` is gen-1-only. The script " +
+								"layer surfaces Hyper-V's clear \"cannot attach IDE devices to a " +
+								"generation 2 virtual machine\" error if the wrong type is paired " +
+								"with the wrong generation.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("SCSI", "IDE"),
+							},
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+						"controller_number": schema.Int64Attribute{
+							Required: true,
+							MarkdownDescription: "Controller index within the bus (0-based). " +
+								"Required: the slot tuple identifies the attachment, and " +
+								"auto-assignment isn't supported in this slice.",
+						},
+						"controller_location": schema.Int64Attribute{
+							Required: true,
+							MarkdownDescription: "Slot position within the controller (0-based). " +
+								"Required for the same reason as `controller_number`.",
+						},
 					},
 				},
 			},

@@ -127,17 +127,57 @@ type NewVHDDifferencingInput struct {
 // VM is the canonical read shape emitted by vm/{get,new,set}.ps1.
 // SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
 // no Secure Boot concept); gen 2 always returns a real bool.
+//
+// HardDiskDrives is always a (possibly empty) slice -- the script-side
+// @() wrapper guarantees JSON array shape even when no disks are
+// attached, so a freshly-created VM with no storage round-trips as
+// "HardDiskDrives": [] rather than null.
 type VM struct {
-	Name                string `json:"Name"`
-	ID                  string `json:"Id"`
-	Generation          int    `json:"Generation"`
-	ProcessorCount      int    `json:"ProcessorCount"`
-	MemoryStartupBytes  int64  `json:"MemoryStartupBytes"`
-	MemoryAssignedBytes int64  `json:"MemoryAssignedBytes"`
-	State               string `json:"State"`
-	Notes               string `json:"Notes"`
-	Path                string `json:"Path"`
-	SecureBootEnabled   *bool  `json:"SecureBootEnabled"`
+	Name                string          `json:"Name"`
+	ID                  string          `json:"Id"`
+	Generation          int             `json:"Generation"`
+	ProcessorCount      int             `json:"ProcessorCount"`
+	MemoryStartupBytes  int64           `json:"MemoryStartupBytes"`
+	MemoryAssignedBytes int64           `json:"MemoryAssignedBytes"`
+	State               string          `json:"State"`
+	Notes               string          `json:"Notes"`
+	Path                string          `json:"Path"`
+	SecureBootEnabled   *bool           `json:"SecureBootEnabled"`
+	HardDiskDrives      []HardDiskDrive `json:"HardDiskDrives"`
+}
+
+// HardDiskDrive is the per-attachment shape vm/get.ps1 emits inside
+// VM.HardDiskDrives. The (ControllerType, ControllerNumber,
+// ControllerLocation) tuple identifies the slot uniquely on a given
+// VM; Path identifies the underlying VHD/VHDX. The same VHD attached
+// at two different slots produces two HardDiskDrive entries.
+type HardDiskDrive struct {
+	Path               string `json:"Path"`
+	ControllerType     string `json:"ControllerType"`
+	ControllerNumber   int    `json:"ControllerNumber"`
+	ControllerLocation int    `json:"ControllerLocation"`
+}
+
+// AttachHardDiskInput is the stdin JSON shape for vm/add-hard-disk-drive.ps1.
+// All fields are required; the script's ValidateSet on ControllerType
+// is the second line of defense against typos that the resource-layer
+// schema validator should catch first.
+type AttachHardDiskInput struct {
+	Name               string `json:"name"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
+	Path               string `json:"path"`
+}
+
+// DetachHardDiskInput is the stdin JSON shape for vm/remove-hard-disk-drive.ps1.
+// Path is intentionally omitted -- the slot tuple identifies the
+// attachment, not the underlying VHD.
+type DetachHardDiskInput struct {
+	Name               string `json:"name"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
 }
 
 // NewVMInput is the stdin JSON shape for vm/new.ps1.

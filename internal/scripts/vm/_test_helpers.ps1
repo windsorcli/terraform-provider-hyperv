@@ -85,6 +85,34 @@ function Remove-VM {
     )
 }
 
+function Get-VMHardDiskDrive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM
+    )
+}
+
+function Add-VMHardDiskDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation,
+        [string] $Path
+    )
+}
+
+function Remove-VMHardDiskDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation
+    )
+}
+
 # New-HypervVMSample builds a Get-VM-shaped object for use as the canned
 # return value from Mock blocks. Defaults model a typical small gen 2 VM;
 # per-test overrides cover gen 1, larger sizing, running state, etc.
@@ -123,5 +151,25 @@ function New-HypervVMFirmwareSample {
     )
     [pscustomobject]@{
         SecureBoot = $SecureBoot
+    }
+}
+
+# New-HypervVMHardDiskDriveSample builds a Get-VMHardDiskDrive-shaped object
+# for use in Mock blocks. ControllerType is a string (the cmdlet emits an
+# enum that has a friendly .ToString() of "SCSI" or "IDE"; the test stubs
+# can skip the enum machinery by stringifying directly).
+function New-HypervVMHardDiskDriveSample {
+    [CmdletBinding()]
+    param(
+        [string] $Path               = 'C:\hyperv\vhds\sample.vhdx',
+        [string] $ControllerType     = 'SCSI',
+        [int]    $ControllerNumber   = 0,
+        [int]    $ControllerLocation = 0
+    )
+    [pscustomobject]@{
+        Path               = $Path
+        ControllerType     = $ControllerType
+        ControllerNumber   = $ControllerNumber
+        ControllerLocation = $ControllerLocation
     }
 }

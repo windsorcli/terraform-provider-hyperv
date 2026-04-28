@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 var (
@@ -137,9 +138,41 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		"name":       in.Name,
 		"generation": in.Generation,
 	})
-	v, err := r.client.NewVM(ctx, in)
-	if err != nil {
+	// NewVM's script already runs Get-VM internally and returns the
+	// canonical shape, but we're going to refetch after attachments
+	// regardless -- so the discarded return here costs nothing.
+	if _, err := r.client.NewVM(ctx, in); err != nil {
 		resp.Diagnostics.AddError("Create hyperv_vm failed", err.Error())
+		return
+	}
+
+	// Attach hard disks after the VM exists. Each attachment is a
+	// separate cmdlet on the host (Add-VMHardDiskDrive); errors here
+	// leave the VM created but partially-configured -- next plan will
+	// reconcile the missing attachments. We don't roll back the VM on
+	// attach failure because the user's intent is "have this VM" and
+	// the half-configured state is recoverable; tearing it down would
+	// take us further from desired.
+	for _, h := range plan.HardDiskDrives {
+		if err := r.client.AttachHardDisk(ctx, attachInputFor(plan.Name.ValueString(), h)); err != nil {
+			resp.Diagnostics.AddError("Attach hard disk failed", fmt.Sprintf(
+				"VM %s, slot %s/%d/%d, path %s: %s",
+				plan.Name.ValueString(),
+				h.ControllerType.ValueString(),
+				h.ControllerNumber.ValueInt64(),
+				h.ControllerLocation.ValueInt64(),
+				h.Path.ValueString(),
+				err))
+			return
+		}
+	}
+
+	// Re-fetch to populate Computed fields (HardDiskDrives mirror, State,
+	// Path) from the host. The framework's "inconsistent result after
+	// apply" check compares plan against this state.
+	v, err := r.client.GetVM(ctx, plan.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Read hyperv_vm after Create failed", err.Error())
 		return
 	}
 
@@ -201,13 +234,62 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
+	// Reconcile hard-disk attachments first. Order rationale: most
+	// attachment changes are SCSI hot-plug (gen 2) which doesn't
+	// require power-off, while scalar mutations (vcpu, memory_bytes,
+	// secure_boot) generally do. Doing attachments first keeps the
+	// "VM must be off for scalar updates" error path from blocking
+	// attachment changes the user could do online.
+	toAttach, toDetach := diffHardDiskDrives(plan.HardDiskDrives, state.HardDiskDrives)
+	for _, h := range toDetach {
+		if err := r.client.DetachHardDisk(ctx, detachInputFor(plan.Name.ValueString(), h)); err != nil {
+			// "Slot already empty" is ErrNotFound; treat as no-op
+			// since the desired state (empty) is met.
+			if errors.Is(err, hyperv.ErrNotFound) {
+				continue
+			}
+			resp.Diagnostics.AddError("Detach hard disk failed", fmt.Sprintf(
+				"VM %s, slot %s/%d/%d: %s",
+				plan.Name.ValueString(),
+				h.ControllerType.ValueString(),
+				h.ControllerNumber.ValueInt64(),
+				h.ControllerLocation.ValueInt64(),
+				err))
+			return
+		}
+	}
+	for _, h := range toAttach {
+		if err := r.client.AttachHardDisk(ctx, attachInputFor(plan.Name.ValueString(), h)); err != nil {
+			resp.Diagnostics.AddError("Attach hard disk failed", fmt.Sprintf(
+				"VM %s, slot %s/%d/%d, path %s: %s",
+				plan.Name.ValueString(),
+				h.ControllerType.ValueString(),
+				h.ControllerNumber.ValueInt64(),
+				h.ControllerLocation.ValueInt64(),
+				h.Path.ValueString(),
+				err))
+			return
+		}
+	}
+
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
-		// Framework re-ran Update for a Computed-only diff (e.g., refresh
-		// detected an out-of-band `state` change); no mutable field
-		// actually changed. Skip the host round-trip and pass plan
-		// straight to state. Mirrors vhd's same-shape short-circuit.
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		// No scalar change. If we did reconcile attachments above we
+		// still need a fresh GetVM so HardDiskDrives in state matches
+		// reality; if no attachments changed either, plan == state and
+		// we can skip the host round-trip. Mirrors vhd's same-shape
+		// short-circuit but extends to attachment-only updates.
+		if len(toAttach) == 0 && len(toDetach) == 0 {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			return
+		}
+		v, err := r.client.GetVM(ctx, plan.Name.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("Read hyperv_vm after attachment-only Update failed", err.Error())
+			return
+		}
+		newState := modelFromVM(v)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
 	tflog.Debug(ctx, "updating hyperv_vm", map[string]any{"name": in.Name})
@@ -333,6 +415,10 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 //   - Empty Notes collapses to types.StringNull() so omitting `notes` from
 //     config is stable across plans. Setting `notes = ""` to explicitly
 //     clear would loop; document this in schema.go.
+//
+// HardDiskDrives is a Set on the schema side, so list ordering doesn't
+// matter for plan/state diff. We just shovel the cmdlet's output into
+// the model; the framework's set semantics handle equivalence.
 func modelFromVM(v *hyperv.VM) Model {
 	secureBoot := types.BoolNull()
 	if v.SecureBootEnabled != nil {
@@ -342,15 +428,124 @@ func modelFromVM(v *hyperv.VM) Model {
 	if v.Notes == "" {
 		notes = types.StringNull()
 	}
+	hdds := make([]HardDiskDriveModel, 0, len(v.HardDiskDrives))
+	for _, h := range v.HardDiskDrives {
+		hdds = append(hdds, HardDiskDriveModel{
+			Path:               pathtype.NewPathValue(h.Path),
+			ControllerType:     types.StringValue(h.ControllerType),
+			ControllerNumber:   types.Int64Value(int64(h.ControllerNumber)),
+			ControllerLocation: types.Int64Value(int64(h.ControllerLocation)),
+		})
+	}
 	return Model{
-		ID:         types.StringValue(v.Name),
-		Name:       types.StringValue(v.Name),
-		Generation: types.Int64Value(int64(v.Generation)),
-		CPU:        CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:     MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
-		SecureBoot: secureBoot,
-		Notes:      notes,
-		State:      types.StringValue(v.State),
-		Path:       types.StringValue(v.Path),
+		ID:             types.StringValue(v.Name),
+		Name:           types.StringValue(v.Name),
+		Generation:     types.Int64Value(int64(v.Generation)),
+		CPU:            CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:         MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
+		HardDiskDrives: hdds,
+		SecureBoot:     secureBoot,
+		Notes:          notes,
+		State:          types.StringValue(v.State),
+		Path:           types.StringValue(v.Path),
+	}
+}
+
+// hddSlotKey identifies a slot tuple. The diff is keyed on this so a
+// path-swap at the same slot resolves as detach + attach (rather than
+// looking like a removal of the old slot and addition of a new one).
+type hddSlotKey struct {
+	ControllerType     string
+	ControllerNumber   int64
+	ControllerLocation int64
+}
+
+// hddSlotKeyOf is the projection used by diffHardDiskDrives. Treats
+// missing controller_type as the schema default (SCSI) so a config
+// that omits the field compares equal to state populated by the
+// cmdlet's canonical output.
+func hddSlotKeyOf(h HardDiskDriveModel) hddSlotKey {
+	t := h.ControllerType.ValueString()
+	if h.ControllerType.IsNull() || h.ControllerType.IsUnknown() {
+		t = "SCSI"
+	}
+	return hddSlotKey{
+		ControllerType:     t,
+		ControllerNumber:   h.ControllerNumber.ValueInt64(),
+		ControllerLocation: h.ControllerLocation.ValueInt64(),
+	}
+}
+
+// diffHardDiskDrives partitions plan vs state into the attach and detach
+// sets the Update reconciliation needs. A path swap at the same slot
+// produces both a detach (state's old) and an attach (plan's new); the
+// caller invokes the detach first so the slot is free when attach runs.
+//
+// Slot-tuple equality treats StringSemanticEquals on Path so a config
+// that wrote "C:/foo" against state of "C:\foo" doesn't trigger a
+// no-op detach + attach -- pathtype.Path's semantic-equals folds the
+// slash style.
+func diffHardDiskDrives(plan, state []HardDiskDriveModel) (toAttach, toDetach []HardDiskDriveModel) {
+	planBySlot := make(map[hddSlotKey]HardDiskDriveModel, len(plan))
+	for _, h := range plan {
+		planBySlot[hddSlotKeyOf(h)] = h
+	}
+	stateBySlot := make(map[hddSlotKey]HardDiskDriveModel, len(state))
+	for _, h := range state {
+		stateBySlot[hddSlotKeyOf(h)] = h
+	}
+
+	for k, planH := range planBySlot {
+		stateH, exists := stateBySlot[k]
+		if !exists {
+			toAttach = append(toAttach, planH)
+			continue
+		}
+		// Same slot: compare path under the custom type's
+		// semantic-equals so slash-style differences don't
+		// trigger a spurious detach+attach.
+		eq, _ := planH.Path.StringSemanticEquals(context.Background(), stateH.Path)
+		if !eq {
+			toDetach = append(toDetach, stateH)
+			toAttach = append(toAttach, planH)
+		}
+	}
+	for k, stateH := range stateBySlot {
+		if _, exists := planBySlot[k]; !exists {
+			toDetach = append(toDetach, stateH)
+		}
+	}
+	return toAttach, toDetach
+}
+
+// attachInputFor builds the wire-level AttachHardDiskInput from a
+// model element + the parent VM's name. controller_type defaults to
+// SCSI for parity with the schema's StaticString default.
+func attachInputFor(vmName string, h HardDiskDriveModel) hyperv.AttachHardDiskInput {
+	t := h.ControllerType.ValueString()
+	if h.ControllerType.IsNull() || h.ControllerType.IsUnknown() {
+		t = "SCSI"
+	}
+	return hyperv.AttachHardDiskInput{
+		Name:               vmName,
+		ControllerType:     t,
+		ControllerNumber:   int(h.ControllerNumber.ValueInt64()),
+		ControllerLocation: int(h.ControllerLocation.ValueInt64()),
+		Path:               h.Path.ValueString(),
+	}
+}
+
+// detachInputFor mirrors attachInputFor but omits Path -- the slot
+// tuple identifies the attachment to remove.
+func detachInputFor(vmName string, h HardDiskDriveModel) hyperv.DetachHardDiskInput {
+	t := h.ControllerType.ValueString()
+	if h.ControllerType.IsNull() || h.ControllerType.IsUnknown() {
+		t = "SCSI"
+	}
+	return hyperv.DetachHardDiskInput{
+		Name:               vmName,
+		ControllerType:     t,
+		ControllerNumber:   int(h.ControllerNumber.ValueInt64()),
+		ControllerLocation: int(h.ControllerLocation.ValueInt64()),
 	}
 }

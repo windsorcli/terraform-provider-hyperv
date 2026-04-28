@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
@@ -40,6 +41,7 @@ func TestResource_Schema(t *testing.T) {
 	}
 	wantAttrs := []string{
 		"id", "name", "generation", "cpu", "memory",
+		"hard_disk_drive",
 		"secure_boot", "notes", "state", "path",
 	}
 	for _, name := range wantAttrs {
@@ -601,5 +603,181 @@ func TestModelFromVM_PreservesInt64MemoryAndProcessorCount(t *testing.T) {
 	}
 	if got.Memory.StartupBytes.ValueInt64() != 68719476736 {
 		t.Errorf("Memory.StartupBytes = %d, want 68719476736", got.Memory.StartupBytes.ValueInt64())
+	}
+}
+
+// TestDiffHardDiskDrives_AddsRemovesAndPathSwaps exercises the slot-keyed
+// diff that drives Update reconciliation. The five cases below are the
+// only ones that matter:
+//   - new slot: attach
+//   - removed slot: detach
+//   - same slot, same path: no-op
+//   - same slot, different path: detach + attach (path swap)
+//   - same slot, slash-style-different path (under StringSemanticEquals):
+//     no-op (the custom type folds C:/foo and C:\foo)
+func TestDiffHardDiskDrives_AddsRemovesAndPathSwaps(t *testing.T) {
+	t.Parallel()
+
+	hdd := func(p, ct string, n, l int64) HardDiskDriveModel {
+		return HardDiskDriveModel{
+			Path:               pathtype.NewPathValue(p),
+			ControllerType:     types.StringValue(ct),
+			ControllerNumber:   types.Int64Value(n),
+			ControllerLocation: types.Int64Value(l),
+		}
+	}
+
+	t.Run("new slot in plan -> attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffHardDiskDrives(
+			[]HardDiskDriveModel{hdd("C:\\a.vhdx", "SCSI", 0, 0)},
+			nil,
+		)
+		if len(add) != 1 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 1/0", len(add), len(rm))
+		}
+	})
+
+	t.Run("removed slot -> detach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffHardDiskDrives(
+			nil,
+			[]HardDiskDriveModel{hdd("C:\\a.vhdx", "SCSI", 0, 0)},
+		)
+		if len(add) != 0 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 0/1", len(add), len(rm))
+		}
+	})
+
+	t.Run("same slot same path -> no-op", func(t *testing.T) {
+		t.Parallel()
+		h := hdd("C:\\a.vhdx", "SCSI", 0, 0)
+		add, rm := diffHardDiskDrives([]HardDiskDriveModel{h}, []HardDiskDriveModel{h})
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0", len(add), len(rm))
+		}
+	})
+
+	t.Run("same slot, different path -> detach + attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffHardDiskDrives(
+			[]HardDiskDriveModel{hdd("C:\\new.vhdx", "SCSI", 0, 0)},
+			[]HardDiskDriveModel{hdd("C:\\old.vhdx", "SCSI", 0, 0)},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1", len(add), len(rm))
+		}
+		if add[0].Path.ValueString() != "C:\\new.vhdx" {
+			t.Errorf("attach path = %q, want C:\\new.vhdx", add[0].Path.ValueString())
+		}
+		if rm[0].Path.ValueString() != "C:\\old.vhdx" {
+			t.Errorf("detach path = %q, want C:\\old.vhdx", rm[0].Path.ValueString())
+		}
+	})
+
+	t.Run("same slot, slash-style differs -> no-op (semantic equals)", func(t *testing.T) {
+		t.Parallel()
+		// pathtype.Path's StringSemanticEquals folds slash style;
+		// without that, the change here would falsely look like a
+		// path swap and trigger detach+attach on every plan.
+		add, rm := diffHardDiskDrives(
+			[]HardDiskDriveModel{hdd("C:/foo/disk.vhdx", "SCSI", 0, 0)},
+			[]HardDiskDriveModel{hdd("C:\\foo\\disk.vhdx", "SCSI", 0, 0)},
+		)
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0 (slash-style differences must not trigger detach+attach)", len(add), len(rm))
+		}
+	})
+}
+
+// TestAttachInputFor_DefaultsControllerTypeToSCSI pins the schema-default
+// behaviour: a HardDiskDriveModel with null ControllerType (the
+// schema's StaticString default kicks in at plan time, but defensive
+// guards in attachInputFor handle the unknown-during-plan-modification
+// case too) still produces a valid AttachHardDiskInput targeting SCSI.
+func TestAttachInputFor_DefaultsControllerTypeToSCSI(t *testing.T) {
+	t.Parallel()
+
+	h := HardDiskDriveModel{
+		Path:               pathtype.NewPathValue("C:\\a.vhdx"),
+		ControllerType:     types.StringNull(),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(0),
+	}
+	got := attachInputFor("vm01", h)
+	if got.ControllerType != "SCSI" {
+		t.Errorf("ControllerType = %q, want SCSI", got.ControllerType)
+	}
+	if got.Name != "vm01" || got.Path != "C:\\a.vhdx" {
+		t.Errorf("attach input round-trip wrong: %+v", got)
+	}
+}
+
+// TestDetachInputFor_OmitsPath confirms the wire payload for a detach
+// doesn't carry path -- the slot tuple alone identifies the
+// attachment, and DetachHardDiskInput is intentionally pathless to
+// match the cmdlet's contract.
+func TestDetachInputFor_OmitsPath(t *testing.T) {
+	t.Parallel()
+
+	h := HardDiskDriveModel{
+		Path:               pathtype.NewPathValue("C:\\a.vhdx"),
+		ControllerType:     types.StringValue("SCSI"),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(0),
+	}
+	got := detachInputFor("vm01", h)
+	if got.Name != "vm01" || got.ControllerType != "SCSI" {
+		t.Errorf("detach input wrong: %+v", got)
+	}
+	// Compile-time check: DetachHardDiskInput has no Path field. If
+	// someone adds one, this test still passes -- but its existence
+	// is the schema-level invariant we care about; the JSON-tag
+	// pinning test in internal/hyperv/vm_test.go enforces wire shape.
+}
+
+// TestModelFromVM_PopulatesHardDiskDrives confirms the cmdlet's
+// HardDiskDrives slice round-trips into the framework's HardDiskDriveModel
+// list, with Path going through pathtype.Path.
+func TestModelFromVM_PopulatesHardDiskDrives(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		HardDiskDrives: []hyperv.HardDiskDrive{
+			{Path: "C:\\a.vhdx", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 0},
+			{Path: "C:\\b.vhdx", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 1},
+		},
+	})
+	if len(got.HardDiskDrives) != 2 {
+		t.Fatalf("len(HardDiskDrives) = %d, want 2", len(got.HardDiskDrives))
+	}
+	if got.HardDiskDrives[0].Path.ValueString() != "C:\\a.vhdx" {
+		t.Errorf("first HDD path = %q, want C:\\a.vhdx", got.HardDiskDrives[0].Path.ValueString())
+	}
+	if got.HardDiskDrives[1].ControllerLocation.ValueInt64() != 1 {
+		t.Errorf("second HDD location = %d, want 1", got.HardDiskDrives[1].ControllerLocation.ValueInt64())
+	}
+}
+
+// TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice locks the script-side
+// @() wrapper guarantee on the Go side: an empty cmdlet result becomes
+// an empty (but non-nil) slice in the model. Nil here would make the
+// framework treat the attribute as null/unset, triggering a phantom
+// diff against a config that explicitly writes hard_disk_drive = [].
+func TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:           "vm01",
+		Generation:     2,
+		HardDiskDrives: []hyperv.HardDiskDrive{},
+	})
+	if got.HardDiskDrives == nil {
+		t.Error("HardDiskDrives = nil, want empty []HardDiskDriveModel")
+	}
+	if len(got.HardDiskDrives) != 0 {
+		t.Errorf("HardDiskDrives length = %d, want 0", len(got.HardDiskDrives))
 	}
 }

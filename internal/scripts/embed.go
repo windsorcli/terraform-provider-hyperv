@@ -68,14 +68,29 @@ func VHDScript(verb string) ([]byte, error) {
 	return VHD.ReadFile("vhd/" + verb + ".ps1")
 }
 
-// VM holds the verb scripts for hyperv_vm (M4 minimal slice -- name,
-// generation, vcpu, memory_bytes, secure_boot, notes; boot_order, dynamic
-// memory, integration services, etc. land in follow-up PRs).
+// VM holds the verb scripts for hyperv_vm. Beyond the four base verbs
+// (get/new/set/remove) there are per-attachment add/remove scripts:
+//
+//   - add-hard-disk-drive / remove-hard-disk-drive (M4)
+//   - add-network-adapter / remove-network-adapter (next M4 commit)
+//   - add-dvd-drive / remove-dvd-drive (next M4 commit)
+//
+// The attachment scripts deliberately don't get fold into set.ps1 -- each
+// attach/detach is a separate cmdlet on the host (Add-VMHardDiskDrive,
+// Add-VMNetworkAdapter, etc.) and the Go-side reconciliation in Update
+// is much cleaner when each cmdlet has its own script with its own
+// per-cmdlet error mapping than when set.ps1 has to disambiguate which
+// of N internal failures fired.
 //
 //go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1
+//go:embed vm/add-hard-disk-drive.ps1 vm/remove-hard-disk-drive.ps1
 var VM embed.FS
 
-// VMScript returns the contents of vm/<verb>.ps1 (verb in {get, new, set, remove}).
+// VMScript returns the contents of vm/<verb>.ps1.
+//
+// `verb` is the file name without extension. For multi-word verbs use the
+// hyphenated form ("add-hard-disk-drive"). The base verbs are
+// get/new/set/remove; attachment verbs add the specific cmdlet name.
 func VMScript(verb string) ([]byte, error) {
 	return VM.ReadFile("vm/" + verb + ".ps1")
 }

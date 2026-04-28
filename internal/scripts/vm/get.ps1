@@ -13,7 +13,14 @@
 #                   "State":                      "Off"|"Running"|"Saved"|"Paused"|...,
 #                   "Notes":                      "<string>",
 #                   "Path":                       "<vm-config-dir>",
-#                   "SecureBootEnabled":          <bool>|null   # null on gen 1
+#                   "SecureBootEnabled":          <bool>|null,    # null on gen 1
+#                   "HardDiskDrives":             [
+#                     { "Path":               "<absolute-path>",
+#                       "ControllerType":     "SCSI"|"IDE",
+#                       "ControllerNumber":   <int>,
+#                       "ControllerLocation": <int> },
+#                     ...
+#                   ]
 #                 }
 #   stderr/exit : missing VM -> Write-HypervError envelope with
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
@@ -39,6 +46,19 @@ function Read-HypervVMResult {
         $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
         $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
     }
+    # Hard-disk drives flow as an array even when empty -- ConvertTo-Json
+    # serializes an empty PowerShell array to `[]` only when it's
+    # explicitly typed as an array (the @() prefix below). Without that
+    # cast a single-HDD case round-trips as a scalar object, breaking the
+    # Go-side decode into []HardDiskDrive.
+    $hdds = @(
+        Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop |
+            Select-Object `
+                @{ N = 'Path';               E = { $_.Path } },
+                @{ N = 'ControllerType';     E = { $_.ControllerType.ToString() } },
+                @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
+                @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
+    )
     [pscustomobject]@{
         Name                = $Vm.Name
         Id                  = $Vm.Id.ToString()
@@ -50,6 +70,7 @@ function Read-HypervVMResult {
         Notes               = $Vm.Notes
         Path                = $Vm.Path
         SecureBootEnabled   = $secureBoot
+        HardDiskDrives      = $hdds
     } | Write-HypervResult
 }
 

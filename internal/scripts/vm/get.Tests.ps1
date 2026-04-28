@@ -12,17 +12,64 @@ Describe 'Get-HypervVM' {
 
     Context 'happy path' {
 
-        It 'emits the canonical 10-field shape (gen 2)' {
+        It 'emits the canonical read shape (gen 2, no HDDs attached)' {
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample -SecureBoot 'On' }
+            Mock Get-VMHardDiskDrive { @() }
 
             $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'Generation', 'Id', 'MemoryAssignedBytes', 'MemoryStartupBytes',
-                'Name', 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'State'
+                'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'MemoryStartupBytes', 'Name', 'Notes', 'Path',
+                'ProcessorCount', 'SecureBootEnabled', 'State'
             )
+        }
+
+        It 'emits an empty HardDiskDrives array when no disks attached' {
+            # The @() wrapper in Read-HypervVMResult forces array-shape on
+            # the JSON wire even when the cmdlet returns nothing. Without
+            # it, ConvertTo-Json would emit `null` for an empty pipeline,
+            # which Go's []HardDiskDrive decode rejects.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+
+            $raw = Get-HypervVM -Name 'sample-vm'
+            $raw | Should -Match '"HardDiskDrives":\[\]'
+        }
+
+        It 'emits HardDiskDrives with the four-field shape per attached disk' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(
+                    New-HypervVMHardDiskDriveSample `
+                        -Path 'C:\hyperv\vhds\root.vhdx' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 0
+                    New-HypervVMHardDiskDriveSample `
+                        -Path 'C:\hyperv\vhds\data.vhdx' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 1
+                )
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.HardDiskDrives.Count | Should -Be 2
+
+            $first = $parsed.HardDiskDrives[0]
+            $first.Path               | Should -Be 'C:\hyperv\vhds\root.vhdx'
+            $first.ControllerType     | Should -Be 'SCSI'
+            $first.ControllerNumber   | Should -Be 0
+            $first.ControllerLocation | Should -Be 0
+
+            # ControllerLocation must round-trip as a JSON number (not a
+            # quoted string) -- a regression that emitted `"0"` would
+            # break the Go-side types.Int64 decode AND would fail the
+            # `Should -Be 0` integer comparison above (Pester's -Be is
+            # strict-typed; "0" -ne 0).
+            $second = $parsed.HardDiskDrives[1]
+            $second.ControllerLocation | Should -Be 1
         }
 
         It 'returns SecureBootEnabled=true when firmware reports SecureBoot=On' {

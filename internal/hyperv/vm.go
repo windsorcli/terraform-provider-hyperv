@@ -102,3 +102,53 @@ func (c *Client) RemoveVM(ctx context.Context, name string) error {
 
 	return c.runScript(ctx, string(body), stdin, nil)
 }
+
+// AttachHardDisk wires an existing VHD to a VM at a specific controller
+// slot via Add-VMHardDiskDrive. Slot semantics:
+//
+//   - (ControllerType, ControllerNumber, ControllerLocation) identifies
+//     the slot uniquely. Two attachments at the same slot is an error
+//     (Hyper-V's InvalidArgument -> ErrPSExecution).
+//   - The Path argument is the existing VHD's location -- this method
+//     does NOT create the VHD; pair with hyperv_vhd or hyperv_image_file
+//     for that.
+//   - ControllerType=IDE on a gen 2 VM errors at the cmdlet layer with
+//     a clear "cannot attach IDE devices to a generation 2 virtual
+//     machine" -- the resource-layer schema validator should catch
+//     this at plan time, but the script-side ValidateSet is defense
+//     in depth.
+//
+// Returns ErrNotFound if the VM is missing (resource Read should have
+// reconciled before this is reachable, but the path exists for safety).
+// Other errors map to ErrPSExecution and surface verbatim.
+func (c *Client) AttachHardDisk(ctx context.Context, in AttachHardDiskInput) error {
+	body, err := scripts.VMScript("add-hard-disk-drive")
+	if err != nil {
+		return fmt.Errorf("load vm/add-hard-disk-drive.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal add-hard-disk-drive.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}
+
+// DetachHardDisk removes a VHD attachment from a VM at a specific
+// controller slot via Remove-VMHardDiskDrive. The slot tuple alone
+// identifies the attachment (Path is not part of the wire payload).
+//
+// "Slot already empty" surfaces as ObjectNotFound from the cmdlet ->
+// ErrNotFound on the Go side. The resource-layer reconciliation in
+// Update treats ErrNotFound as a no-op (desired state is "empty",
+// already met). Other errors map to ErrPSExecution.
+func (c *Client) DetachHardDisk(ctx context.Context, in DetachHardDiskInput) error {
+	body, err := scripts.VMScript("remove-hard-disk-drive")
+	if err != nil {
+		return fmt.Errorf("load vm/remove-hard-disk-drive.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal remove-hard-disk-drive.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}

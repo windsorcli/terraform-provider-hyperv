@@ -124,13 +124,15 @@ Describe 'Set-HypervVM' {
             Mock Set-VMMemory { }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
 
+            Mock Get-VMHardDiskDrive { @() }
+
             $parsed = Set-HypervVM -Name 'vm01' -Generation 2 -MemoryBytes 4294967296 |
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'Generation', 'Id', 'MemoryAssignedBytes', 'MemoryStartupBytes',
-                'Name', 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'State'
+                'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'MemoryStartupBytes', 'Name', 'Notes', 'Path',
+                'ProcessorCount', 'SecureBootEnabled', 'State'
             )
         }
     }

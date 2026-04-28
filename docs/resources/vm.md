@@ -68,6 +68,13 @@ resource "hyperv_vm" "legacy" {
 
 ### Optional
 
+- `hard_disk_drive` (Attributes Set) Set of VHDs/VHDXs attached to the VM. Each element identifies both the underlying file (`path`) and the controller slot the disk occupies (`controller_type` + `controller_number` + `controller_location`). The slot tuple is the unique key per VM -- two attachments at the same slot is an error.
+
+**Set semantics, not list:** the user's HCL ordering does not affect plans. Writing `[disk_b, disk_a]` and `[disk_a, disk_b]` plan identically as long as the slot tuples match. The provider also reads the cmdlet output unsorted; the framework's set diff handles canonicalization.
+
+**Reconciliation:** Update diffs the planned set against state by slot tuple. Slots present in plan but not state get `Add-VMHardDiskDrive`; slots in state but not plan get `Remove-VMHardDiskDrive`; slots in both with a different `path` are detached then re-attached (Set-VMHardDiskDrive's path-swap path is not used in this slice -- detach + attach has clearer error semantics).
+
+This resource does NOT create the VHD itself -- pair with `hyperv_vhd` or `hyperv_image_file` for that. (see [below for nested schema](#nestedatt--hard_disk_drive))
 - `notes` (String) Free-form description stored on the VM by Hyper-V.
 
 **Cannot be cleared in-place once set.** Three failure modes to be aware of:
@@ -101,6 +108,20 @@ Required:
 Required:
 
 - `startup_bytes` (Number) Static memory size in bytes (e.g. `4294967296` for 4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; the VM generally must be `Off`.
+
+
+<a id="nestedatt--hard_disk_drive"></a>
+### Nested Schema for `hard_disk_drive`
+
+Required:
+
+- `controller_location` (Number) Slot position within the controller (0-based). Required for the same reason as `controller_number`.
+- `controller_number` (Number) Controller index within the bus (0-based). Required: the slot tuple identifies the attachment, and auto-assignment isn't supported in this slice.
+- `path` (String) Absolute path on the host of the VHD/VHDX to attach. Forward and back slashes are accepted equivalently; case is folded for comparison per Windows file-system semantics.
+
+Optional:
+
+- `controller_type` (String) Controller bus. `SCSI` is the default and the only valid choice for gen 2 VMs; `IDE` is gen-1-only. The script layer surfaces Hyper-V's clear "cannot attach IDE devices to a generation 2 virtual machine" error if the wrong type is paired with the wrong generation.
 
 ## Import
 
