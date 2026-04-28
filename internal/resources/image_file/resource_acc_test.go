@@ -111,11 +111,32 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 			{
 				ResourceName: "hyperv_image_file.test",
 				ImportState:  true,
-				// Import by the form actually stored in state (the
-				// user's plan form, not the cmdlet's canonical form).
-				// ImportStateVerify compares pre- and post-import
-				// state byte-for-byte after refresh, so the import ID
-				// must match the form Read writes back.
+				// Why hclPath (forward-slash) and not hostFile (backslash):
+				//
+				// terraform-plugin-testing's ImportStateVerify
+				// (helper/resource/testing_new_import_state.go ~line 418
+				// in v1.16) uses reflect.DeepEqual on flattened
+				// map[string]string state -- byte-for-byte, no
+				// StringSemanticEquals invocation at the verify layer.
+				// The comparison is between the prior TestStep's state
+				// and the post-import state.
+				//
+				// The Apply step retains the user's forward-slash form in
+				// state via pathtype.Path's StringSemanticEquals. Post-
+				// import, the framework runs Read, and modelFromImageFile
+				// writes the cmdlet's backslash form -- but the framework's
+				// resp.State.Set merges new values against the just-set
+				// passthrough value using SemanticEquals, so the prior
+				// (forward) is retained. Both pre- and post-import state
+				// end up forward; verify passes.
+				//
+				// Verified empirically (2026-04): swapping hclPath ->
+				// hostFile produces a clean ImportStateVerify failure
+				// with diff "destination_path: forward != backslash",
+				// confirming the reliance on resp.State.Set's semantic-
+				// merge path. If this test breaks after a
+				// terraform-plugin-framework upgrade, suspect a change to
+				// that merge behavior.
 				ImportStateId:     hclPath,
 				ImportStateVerify: true,
 			},
