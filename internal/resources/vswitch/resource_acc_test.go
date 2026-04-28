@@ -1,0 +1,130 @@
+package vswitch_test
+
+// Acceptance tests for hyperv_virtual_switch. These run only when TF_ACC=1
+// is set (terraform-plugin-testing's default gate); `go test ./...` without
+// it skips the framework-managed bodies.
+//
+// The bench setup is documented in docs/contributing/acceptance-tests.md.
+// At minimum HYPERV_BACKEND and the per-backend vars (HYPERV_HOST,
+// HYPERV_USERNAME for ssh/winrm) must be loaded -- task test:acc reads
+// .env.local so a maintainer's bench creds stay out of the repo.
+//
+// Why Private as the first scenario: it requires no host NIC and no
+// management-OS toggle, so the test is independent of the bench's
+// network topology. External-switch tests come in a follow-up that
+// gates on HYPERV_TEST_NET_ADAPTER for the bench's bound NIC name.
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+
+	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+)
+
+// TestAcc_VirtualSwitch_basic exercises the create-read-update-import-delete
+// path on a Private switch. The Step list is the canonical resource.Test
+// shape: every Step is a separate `terraform plan && apply`, with the
+// framework asserting on state and (where Configured) plan actions.
+//
+// Steps:
+//  1. Create with notes = "<initial>". Verify name, switch_type, notes.
+//  2. Update notes to "<updated>". Verify in-place update -- not a replace
+//     (the schema marks `notes` as in-place updatable; a regression to
+//     RequiresReplace would surface here).
+//  3. Import the resource by name and verify state matches.
+func TestAcc_VirtualSwitch_basic(t *testing.T) {
+	name := acctest.RandomName("vswitch-private")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// CheckDestroy verifies the switch is actually gone from the
+		// bench after destroy, not just absent from Terraform state.
+		// Without this, a silently-failing Remove-VMSwitch would let
+		// the test pass green while leaving an orphan switch behind.
+		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch", client.GetVMSwitch),
+		Steps: []resource.TestStep{
+			{
+				Config: vswitchPrivateConfig(name, "initial notes"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("name"),
+						knownvalue.StringExact(name),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("switch_type"),
+						knownvalue.StringExact("Private"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("notes"),
+						knownvalue.StringExact("initial notes"),
+					),
+				},
+			},
+			{
+				Config: vswitchPrivateConfig(name, "updated notes"),
+				// Plan-action assertion: a RequiresReplace regression on
+				// `notes` would silently destroy-and-recreate the switch,
+				// and the state checks below would still pass against the
+				// fresh resource. Pin the action to Update so a schema
+				// regression fails this step explicitly.
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_virtual_switch.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("notes"),
+						knownvalue.StringExact("updated notes"),
+					),
+					// Name is immutable (RequiresReplace); confirm it
+					// survived the update unchanged. A regression that
+					// flipped name to in-place updatable would trip a
+					// different state-check failure.
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("name"),
+						knownvalue.StringExact(name),
+					),
+				},
+			},
+			{
+				ResourceName:      "hyperv_virtual_switch.test",
+				ImportState:       true,
+				ImportStateId:     name,
+				ImportStateVerify: true,
+				// `id` is a Computed mirror of `name`; it round-trips
+				// cleanly through import without divergence.
+			},
+		},
+	})
+}
+
+// vswitchPrivateConfig is the smallest valid HCL for a Private switch.
+// allow_management_os and net_adapter_names are intentionally omitted --
+// allow_management_os is rejected for Private by a config validator,
+// and net_adapter_names is External-only.
+func vswitchPrivateConfig(name, notes string) string {
+	return fmt.Sprintf(`
+resource "hyperv_virtual_switch" "test" {
+  name        = %q
+  switch_type = "Private"
+  notes       = %q
+}
+`, name, notes)
+}

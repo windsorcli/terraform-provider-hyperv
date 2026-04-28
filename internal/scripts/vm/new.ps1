@@ -114,6 +114,11 @@ function New-HypervVM {
             # through the connection layer). If cleanup fails the worst case
             # is the same orphan VM we'd have without the guard, and the next
             # apply trips a name-collision that IS surfaced.
+            #
+            # The explicit discard below makes the intent literal and keeps
+            # PSScriptAnalyzer's PSAvoidUsingEmptyCatchBlock happy --
+            # comments alone don't count as catch-block content.
+            $null = $_
         }
         throw
     }
