@@ -33,24 +33,30 @@ import (
 // representation handles the gen-1 case where the host has no Secure Boot
 // concept and the cmdlet returns null.
 //
-// CPU and Memory are value-typed nested structs (not pointer) because the
-// schema marks both blocks Required: true; a missing block is a config
-// error caught at plan time, not a nil dereference here.
+// CPU and Memory are pointer-typed (not value) because at ImportState
+// time the state passes through with just `name` set; the framework
+// then calls Read to populate everything else, but in the brief
+// window before Read runs, cpu/memory are null in state. A value
+// type can't represent null and the framework errors with "Received
+// null value, however the target type cannot handle null values."
+// Pointers null cleanly; modelFromVM allocates them.
 //
-// HardDiskDrives is a set of attachments. Set semantics (rather than
-// list) are deliberate: the (controller_type, controller_number,
-// controller_location) tuple identifies the slot uniquely, and the
-// user's HCL ordering doesn't matter for diff purposes -- writing
-// `[disk_b, disk_a]` and `[disk_a, disk_b]` should plan identically as
-// long as the slot tuples match. SetNestedAttribute on the schema side
-// is what makes that work; the model uses []HardDiskDriveModel because
-// the framework decodes both list and set into a Go slice.
+// HardDiskDrives is a list of attachments stored canonically by slot
+// tuple (controller_type, controller_number, controller_location).
+// Schema-side ListNestedAttribute (rather than SetNestedAttribute)
+// because terraform-plugin-framework v1.19's slice decode of
+// nested-set attributes hits a reflect path that produces a
+// "Target Type: []vm.HardDiskDriveModel, Suggested Type:
+// basetypes.SetValue" error during req.Plan.Get. List + a canonical
+// sort in modelFromVM gives the same user-visible behavior (HCL
+// ordering matches canonical state on subsequent applies) with a
+// simpler decode.
 type Model struct {
 	ID             types.String         `tfsdk:"id"`
 	Name           types.String         `tfsdk:"name"`
 	Generation     types.Int64          `tfsdk:"generation"`
-	CPU            CPUModel             `tfsdk:"cpu"`
-	Memory         MemoryModel          `tfsdk:"memory"`
+	CPU            *CPUModel            `tfsdk:"cpu"`
+	Memory         *MemoryModel         `tfsdk:"memory"`
 	HardDiskDrives []HardDiskDriveModel `tfsdk:"hard_disk_drive"`
 	SecureBoot     types.Bool           `tfsdk:"secure_boot"`
 	Notes          types.String         `tfsdk:"notes"`

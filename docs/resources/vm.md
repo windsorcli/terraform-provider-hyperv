@@ -68,11 +68,11 @@ resource "hyperv_vm" "legacy" {
 
 ### Optional
 
-- `hard_disk_drive` (Attributes Set) Set of VHDs/VHDXs attached to the VM. Each element identifies both the underlying file (`path`) and the controller slot the disk occupies (`controller_type` + `controller_number` + `controller_location`). The slot tuple is the unique key per VM -- two attachments at the same slot is an error.
+- `hard_disk_drive` (Attributes List) List of VHDs/VHDXs attached to the VM. Each element identifies both the underlying file (`path`) and the controller slot the disk occupies (`controller_type` + `controller_number` + `controller_location`). The slot tuple is the unique key per VM -- two attachments at the same slot is an error.
 
-**Set semantics, not list:** the user's HCL ordering does not affect plans. Writing `[disk_b, disk_a]` and `[disk_a, disk_b]` plan identically as long as the slot tuples match. The provider also reads the cmdlet output unsorted; the framework's set diff handles canonicalization.
+**Order convention:** state stores the list canonically by slot tuple (controller_type, then controller_number, then controller_location). Configs that write disks in slot order match state directly; configs that don't write in slot order will see a one-time "reorder" diff on the first apply that resolves to canonical order. (List rather than Set because terraform-plugin-framework v1.19's slice decode of nested-set attributes hits a known reflect path that doesn't compose cleanly with the inline-block model. List + canonical sort gives the same user-visible behavior with a simpler decode.)
 
-**Reconciliation:** Update diffs the planned set against state by slot tuple. Slots present in plan but not state get `Add-VMHardDiskDrive`; slots in state but not plan get `Remove-VMHardDiskDrive`; slots in both with a different `path` are detached then re-attached (Set-VMHardDiskDrive's path-swap path is not used in this slice -- detach + attach has clearer error semantics).
+**Reconciliation:** Update diffs the planned list against state by slot tuple (NOT by index, despite being a List). Slots present in plan but not state get `Add-VMHardDiskDrive`; slots in state but not plan get `Remove-VMHardDiskDrive`; slots in both with a different `path` are detached then re-attached (Set-VMHardDiskDrive's path-swap path is not used in this slice -- detach + attach has clearer error semantics).
 
 This resource does NOT create the VHD itself -- pair with `hyperv_vhd` or `hyperv_image_file` for that. (see [below for nested schema](#nestedatt--hard_disk_drive))
 - `notes` (String) Free-form description stored on the VM by Hyper-V.

@@ -87,7 +87,22 @@ function Get-HypervVM {
         $vm = Get-VM -Name $Name -ErrorAction Stop
     }
     catch {
-        if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        # "VM missing" surfaces in two shapes (mirror of the
+        # vswitch/get.ps1 fix from the M1d acc-test PR):
+        #   1. CategoryInfo.Category = ObjectNotFound -- the documented
+        #      contract; what some Hyper-V module versions emit.
+        #   2. CategoryInfo.Category = InvalidArgument with
+        #      FullyQualifiedErrorId =
+        #      'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM'
+        #      -- what Get-VM actually emits on Server 2022 + PS 5.1
+        #      (verified 2026-04 against a real bench; the acc test
+        #      for hyperv_vm's CheckDestroy caught this).
+        $isMissing = (
+            $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound
+        ) -or (
+            $_.FullyQualifiedErrorId -eq 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM'
+        )
+        if (-not $isMissing) {
             throw
         }
         $exception = [System.Management.Automation.ItemNotFoundException]::new(

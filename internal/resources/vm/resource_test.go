@@ -362,8 +362,8 @@ func TestBuildNewInput_AllFieldsForwarded(t *testing.T) {
 	plan := Model{
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
-		CPU:        CPUModel{Count: types.Int64Value(4)},
-		Memory:     MemoryModel{StartupBytes: types.Int64Value(8589934592)},
+		CPU:        &CPUModel{Count: types.Int64Value(4)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(8589934592)},
 		SecureBoot: types.BoolValue(true),
 		Notes:      types.StringValue("production"),
 	}
@@ -388,8 +388,8 @@ func TestBuildNewInput_OmitsNullOptionals(t *testing.T) {
 	plan := Model{
 		Name:       types.StringValue("legacy-vm"),
 		Generation: types.Int64Value(1),
-		CPU:        CPUModel{Count: types.Int64Value(1)},
-		Memory:     MemoryModel{StartupBytes: types.Int64Value(2147483648)},
+		CPU:        &CPUModel{Count: types.Int64Value(1)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(2147483648)},
 		SecureBoot: types.BoolNull(),
 		Notes:      types.StringNull(),
 	}
@@ -414,8 +414,8 @@ func TestBuildSetInput_OnlyChangedFieldsForwarded(t *testing.T) {
 	state := Model{
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
-		CPU:        CPUModel{Count: types.Int64Value(2)},
-		Memory:     MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
 		SecureBoot: types.BoolValue(true),
 		Notes:      types.StringValue("old"),
 	}
@@ -444,12 +444,19 @@ func TestBuildSetInput_OnlyChangedFieldsForwarded(t *testing.T) {
 func TestBuildSetInput_GenerationSourcedFromState(t *testing.T) {
 	t.Parallel()
 
+	// CPU and Memory are *CPUModel/*MemoryModel pointers per the
+	// import-time null requirement; tests must populate them since
+	// buildSetInput dereferences both unconditionally (the schema's
+	// Required guarantee makes that safe in production but not in
+	// hand-built test literals).
 	state := Model{
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
 	}
 	plan := state
-	plan.CPU = CPUModel{Count: types.Int64Value(4)}
+	plan.CPU = &CPUModel{Count: types.Int64Value(4)}
 
 	in := buildSetInput(plan, state)
 	if in.Generation != 2 {

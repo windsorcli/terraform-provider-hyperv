@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -416,9 +417,12 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 //     config is stable across plans. Setting `notes = ""` to explicitly
 //     clear would loop; document this in schema.go.
 //
-// HardDiskDrives is a Set on the schema side, so list ordering doesn't
-// matter for plan/state diff. We just shovel the cmdlet's output into
-// the model; the framework's set semantics handle equivalence.
+// HardDiskDrives is a List on the schema side. The cmdlet's emission
+// order isn't guaranteed to match user HCL order, and a List's diff
+// is index-based -- so we sort canonically by slot tuple before
+// storing. A user who writes disks in slot-tuple order in HCL will
+// see no diff against state; a user who doesn't will see a one-time
+// rewrite to canonical order on first apply.
 func modelFromVM(v *hyperv.VM) Model {
 	secureBoot := types.BoolNull()
 	if v.SecureBootEnabled != nil {
@@ -428,8 +432,22 @@ func modelFromVM(v *hyperv.VM) Model {
 	if v.Notes == "" {
 		notes = types.StringNull()
 	}
-	hdds := make([]HardDiskDriveModel, 0, len(v.HardDiskDrives))
-	for _, h := range v.HardDiskDrives {
+
+	// Sort the cmdlet's HDD output by slot tuple. Stable order means
+	// state and plan compare cleanly across refresh cycles.
+	sortedHDDs := make([]hyperv.HardDiskDrive, len(v.HardDiskDrives))
+	copy(sortedHDDs, v.HardDiskDrives)
+	sort.Slice(sortedHDDs, func(i, j int) bool {
+		if sortedHDDs[i].ControllerType != sortedHDDs[j].ControllerType {
+			return sortedHDDs[i].ControllerType < sortedHDDs[j].ControllerType
+		}
+		if sortedHDDs[i].ControllerNumber != sortedHDDs[j].ControllerNumber {
+			return sortedHDDs[i].ControllerNumber < sortedHDDs[j].ControllerNumber
+		}
+		return sortedHDDs[i].ControllerLocation < sortedHDDs[j].ControllerLocation
+	})
+	hdds := make([]HardDiskDriveModel, 0, len(sortedHDDs))
+	for _, h := range sortedHDDs {
 		hdds = append(hdds, HardDiskDriveModel{
 			Path:               pathtype.NewPathValue(h.Path),
 			ControllerType:     types.StringValue(h.ControllerType),
@@ -441,8 +459,8 @@ func modelFromVM(v *hyperv.VM) Model {
 		ID:             types.StringValue(v.Name),
 		Name:           types.StringValue(v.Name),
 		Generation:     types.Int64Value(int64(v.Generation)),
-		CPU:            CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:         MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
+		CPU:            &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:         &MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
 		HardDiskDrives: hdds,
 		SecureBoot:     secureBoot,
 		Notes:          notes,

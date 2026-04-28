@@ -150,10 +150,37 @@ Describe 'Get-HypervVM' {
 
     Context 'error propagation' {
 
-        It 'throws ObjectNotFound when the VM is missing' {
-            # The Go side keys on CategoryInfo.Category for ErrNotFound
-            # routing. ErrorId drift is fine; category drift would silently
-            # mis-route the typed error.
+        It 'translates the cmdlet''s actual "VM not found" error (InvalidArgument + FQId) to the typed envelope' {
+            # Get-VM on Server 2022 + PS 5.1 reports a missing VM with
+            # category=InvalidArgument and FullyQualifiedErrorId
+            # 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM' --
+            # NOT the documented ObjectNotFound. Verified against the
+            # bench 2026-04 by an acceptance-test CheckDestroy failure;
+            # same Hyper-V quirk as Get-VMSwitch (see vswitch/get.Tests.ps1
+            # for the full discussion).
+            Mock Get-VM {
+                $exception = [System.ArgumentException]::new(
+                    "Hyper-V was unable to find a virtual machine with name `"$Name`".")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception,
+                    'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM',
+                    [System.Management.Automation.ErrorCategory]::InvalidArgument,
+                    $Name)
+                throw $errorRecord
+            }
+
+            $captured = $null
+            try { Get-HypervVM -Name 'missing' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMNotFound'
+        }
+
+        It 'still handles the documented ObjectNotFound shape (defensive)' {
+            # Belt-and-suspenders: a future Hyper-V version or other
+            # cmdlet path that emits the documented category should
+            # still translate.
             Mock Get-VM {
                 $exception = [System.Management.Automation.ItemNotFoundException]::new(
                     "Hyper-V was unable to find a VM with name 'missing'.")
@@ -166,7 +193,6 @@ Describe 'Get-HypervVM' {
             $captured = $null
             try { Get-HypervVM -Name 'missing' } catch { $captured = $_ }
 
-            $captured | Should -Not -BeNullOrEmpty
             $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
             $captured.FullyQualifiedErrorId | Should -Match 'VMNotFound'
         }

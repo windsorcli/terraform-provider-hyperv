@@ -3,17 +3,40 @@ package vm
 import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
+
+// hardDiskObjectAttrTypes is the framework's attr.Type representation
+// of one element in the `hard_disk_drive` list. Used to construct the
+// schema-level Default (empty list of this object type), which keeps
+// the attribute from being "unknown" during plan when the user omits
+// it -- decoding into []HardDiskDriveModel can't represent unknown,
+// and without the Default the framework's tftypes -> Go reflect path
+// errors at apply time with "Suggested Type: basetypes.ListValue".
+//
+// Keep these tags 1:1 with HardDiskDriveModel's tfsdk tags. A drift
+// silently produces "schema mismatch" diagnostics that take a long
+// time to track down.
+func hardDiskObjectAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"path":                pathtype.Type,
+		"controller_type":     types.StringType,
+		"controller_number":   types.Int64Type,
+		"controller_location": types.Int64Type,
+	}
+}
 
 // resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
 // slice). MarkdownDescription on each attribute drives the Registry-
@@ -100,27 +123,43 @@ func resourceSchema() schema.Schema {
 					},
 				},
 			},
-			"hard_disk_drive": schema.SetNestedAttribute{
+			"hard_disk_drive": schema.ListNestedAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Set of VHDs/VHDXs attached to the VM. Each element identifies " +
+				MarkdownDescription: "List of VHDs/VHDXs attached to the VM. Each element identifies " +
 					"both the underlying file (`path`) and the controller slot the disk occupies " +
 					"(`controller_type` + `controller_number` + `controller_location`). The slot " +
 					"tuple is the unique key per VM -- two attachments at the same slot is an error.\n\n" +
-					"**Set semantics, not list:** the user's HCL ordering does not affect plans. " +
-					"Writing `[disk_b, disk_a]` and `[disk_a, disk_b]` plan identically as long as " +
-					"the slot tuples match. The provider also reads the cmdlet output unsorted; " +
-					"the framework's set diff handles canonicalization.\n\n" +
-					"**Reconciliation:** Update diffs the planned set against state by slot tuple. " +
-					"Slots present in plan but not state get `Add-VMHardDiskDrive`; slots in state " +
-					"but not plan get `Remove-VMHardDiskDrive`; slots in both with a different " +
-					"`path` are detached then re-attached (Set-VMHardDiskDrive's path-swap path " +
-					"is not used in this slice -- detach + attach has clearer error semantics).\n\n" +
+					"**Order convention:** state stores the list canonically by slot tuple " +
+					"(controller_type, then controller_number, then controller_location). Configs " +
+					"that write disks in slot order match state directly; configs that don't write " +
+					"in slot order will see a one-time \"reorder\" diff on the first apply that " +
+					"resolves to canonical order. (List rather than Set because terraform-plugin-" +
+					"framework v1.19's slice decode of nested-set attributes hits a known reflect " +
+					"path that doesn't compose cleanly with the inline-block model. List + " +
+					"canonical sort gives the same user-visible behavior with a simpler decode.)\n\n" +
+					"**Reconciliation:** Update diffs the planned list against state by slot tuple " +
+					"(NOT by index, despite being a List). Slots present in plan but not state get " +
+					"`Add-VMHardDiskDrive`; slots in state but not plan get `Remove-VMHardDiskDrive`; " +
+					"slots in both with a different `path` are detached then re-attached (Set-" +
+					"VMHardDiskDrive's path-swap path is not used in this slice -- detach + attach " +
+					"has clearer error semantics).\n\n" +
 					"This resource does NOT create the VHD itself -- pair with `hyperv_vhd` or " +
 					"`hyperv_image_file` for that.",
-				PlanModifiers: []planmodifier.Set{
-					setplanmodifier.UseStateForUnknown(),
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
 				},
+				// Default empty list keeps the attribute from being
+				// "unknown" during plan when the user omits it. See
+				// hardDiskObjectAttrTypes above for the rationale --
+				// without this, the framework's tftypes -> Go reflect
+				// path errors at apply time on a no-disk VM.
+				Default: listdefault.StaticValue(
+					types.ListValueMust(
+						types.ObjectType{AttrTypes: hardDiskObjectAttrTypes()},
+						[]attr.Value{},
+					),
+				),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"path": schema.StringAttribute{
