@@ -30,10 +30,14 @@
 .DS_Store
 Thumbs.db
 
-# Spike artifacts (per-spike .gitignore handles binaries)
+# Working / scratch docs kept locally but not version-controlled.
+# The maintainer's draft thinking lives here; durable design output
+# goes into docs/index.md, docs/resources/, docs/data-sources/, or
+# generated tfplugindocs templates -- which ARE tracked.
 /creds.txt
 /docs/spikes
 /docs/PLAN.md
+/docs/adr
 
 # Test artifacts
 testResults.xml
