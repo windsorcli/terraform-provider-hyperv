@@ -47,6 +47,7 @@ func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
 	return []resource.ConfigValidator{
 		secureBootRejectedForGen1Validator{},
+		networkAdapterUniqueNamesValidator{},
 	}
 }
 
@@ -98,6 +99,57 @@ func (v secureBootRejectedForGen1Validator) validate(data Model) diag.Diagnostic
 		"Generation 1 VMs use BIOS, not UEFI -- there is no Secure Boot concept. "+
 			"Remove secure_boot from the config or change generation to 2.",
 	)
+	return diags
+}
+
+// networkAdapterUniqueNamesValidator enforces that names within a VM's
+// network_adapter list are unique. Hyper-V's Add-VMNetworkAdapter
+// allows duplicate names (the cmdlet doesn't enforce uniqueness), but
+// our reconciliation diff is keyed on Name, so duplicates would
+// silently break the slot-key invariant. Catching at plan time gives
+// the operator a clear attribute-anchored diagnostic.
+type networkAdapterUniqueNamesValidator struct{}
+
+func (v networkAdapterUniqueNamesValidator) Description(_ context.Context) string {
+	return "network_adapter[].name must be unique within a VM"
+}
+
+func (v networkAdapterUniqueNamesValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v networkAdapterUniqueNamesValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate scans for duplicates by name. Skips Unknown entries (a NIC
+// whose name depends on a deferred resource attribute won't be
+// known yet). The first duplicate found gets the diagnostic;
+// surfacing all of them at once would require a more elaborate
+// "report all" pattern that isn't worth the complexity here.
+func (v networkAdapterUniqueNamesValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	seen := make(map[string]int, len(data.NetworkAdapters))
+	for i, n := range data.NetworkAdapters {
+		if n.Name.IsNull() || n.Name.IsUnknown() {
+			continue
+		}
+		name := n.Name.ValueString()
+		if prev, ok := seen[name]; ok {
+			diags.AddAttributeError(
+				path.Root("network_adapter").AtListIndex(i).AtName("name"),
+				"network_adapter names must be unique within a VM",
+				fmt.Sprintf("name %q at index %d already used at index %d", name, i, prev),
+			)
+			return diags
+		}
+		seen[name] = i
+	}
 	return diags
 }
 
@@ -168,9 +220,25 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	// Re-fetch to populate Computed fields (HardDiskDrives mirror, State,
-	// Path) from the host. The framework's "inconsistent result after
-	// apply" check compares plan against this state.
+	// Attach NICs after the VM exists. Same partial-failure semantics
+	// as HDD attachment -- if attach fails partway through, the next
+	// plan reconciles. We don't tear down the VM on attach failure.
+	for _, n := range plan.NetworkAdapters {
+		if err := r.client.AttachNetworkAdapter(ctx, attachNICInputFor(plan.Name.ValueString(), n)); err != nil {
+			resp.Diagnostics.AddError("Attach network adapter failed", fmt.Sprintf(
+				"VM %s, NIC %s, switch %s: %s",
+				plan.Name.ValueString(),
+				n.Name.ValueString(),
+				n.SwitchName.ValueString(),
+				err))
+			return
+		}
+	}
+
+	// Re-fetch to populate Computed fields (HardDiskDrives /
+	// NetworkAdapters mirrors, State, Path) from the host. The
+	// framework's "inconsistent result after apply" check compares
+	// plan against this state.
 	v, err := r.client.GetVM(ctx, plan.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Read hyperv_vm after Create failed", err.Error())
@@ -241,8 +309,8 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	// secure_boot) generally do. Doing attachments first keeps the
 	// "VM must be off for scalar updates" error path from blocking
 	// attachment changes the user could do online.
-	toAttach, toDetach := diffHardDiskDrives(plan.HardDiskDrives, state.HardDiskDrives)
-	for _, h := range toDetach {
+	hddAttach, hddDetach := diffHardDiskDrives(plan.HardDiskDrives, state.HardDiskDrives)
+	for _, h := range hddDetach {
 		if err := r.client.DetachHardDisk(ctx, detachInputFor(plan.Name.ValueString(), h)); err != nil {
 			// "Slot already empty" is ErrNotFound; treat as no-op
 			// since the desired state (empty) is met.
@@ -259,7 +327,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			return
 		}
 	}
-	for _, h := range toAttach {
+	for _, h := range hddAttach {
 		if err := r.client.AttachHardDisk(ctx, attachInputFor(plan.Name.ValueString(), h)); err != nil {
 			resp.Diagnostics.AddError("Attach hard disk failed", fmt.Sprintf(
 				"VM %s, slot %s/%d/%d, path %s: %s",
@@ -273,6 +341,30 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
+	// NIC reconciliation: same shape as HDD, keyed on Name. Detach
+	// first (frees the name) then attach so a switch swap at the
+	// same name resolves cleanly.
+	nicAttach, nicDetach := diffNetworkAdapters(plan.NetworkAdapters, state.NetworkAdapters)
+	for _, n := range nicDetach {
+		if err := r.client.DetachNetworkAdapter(ctx, detachNICInputFor(plan.Name.ValueString(), n)); err != nil {
+			if errors.Is(err, hyperv.ErrNotFound) {
+				continue
+			}
+			resp.Diagnostics.AddError("Detach network adapter failed", fmt.Sprintf(
+				"VM %s, NIC %s: %s",
+				plan.Name.ValueString(), n.Name.ValueString(), err))
+			return
+		}
+	}
+	for _, n := range nicAttach {
+		if err := r.client.AttachNetworkAdapter(ctx, attachNICInputFor(plan.Name.ValueString(), n)); err != nil {
+			resp.Diagnostics.AddError("Attach network adapter failed", fmt.Sprintf(
+				"VM %s, NIC %s, switch %s: %s",
+				plan.Name.ValueString(), n.Name.ValueString(), n.SwitchName.ValueString(), err))
+			return
+		}
+	}
+
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
 		// No scalar change. If we did reconcile attachments above we
@@ -280,7 +372,8 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		// reality; if no attachments changed either, plan == state and
 		// we can skip the host round-trip. Mirrors vhd's same-shape
 		// short-circuit but extends to attachment-only updates.
-		if len(toAttach) == 0 && len(toDetach) == 0 {
+		if len(hddAttach) == 0 && len(hddDetach) == 0 &&
+			len(nicAttach) == 0 && len(nicDetach) == 0 {
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			return
 		}
@@ -455,17 +548,33 @@ func modelFromVM(v *hyperv.VM) Model {
 			ControllerLocation: types.Int64Value(int64(h.ControllerLocation)),
 		})
 	}
+
+	// NICs sorted by Name -- same canonical-order rationale as HDDs.
+	sortedNICs := make([]hyperv.NetworkAdapter, len(v.NetworkAdapters))
+	copy(sortedNICs, v.NetworkAdapters)
+	sort.Slice(sortedNICs, func(i, j int) bool {
+		return sortedNICs[i].Name < sortedNICs[j].Name
+	})
+	nics := make([]NetworkAdapterModel, 0, len(sortedNICs))
+	for _, n := range sortedNICs {
+		nics = append(nics, NetworkAdapterModel{
+			Name:       types.StringValue(n.Name),
+			SwitchName: types.StringValue(n.SwitchName),
+		})
+	}
+
 	return Model{
-		ID:             types.StringValue(v.Name),
-		Name:           types.StringValue(v.Name),
-		Generation:     types.Int64Value(int64(v.Generation)),
-		CPU:            &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:         &MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
-		HardDiskDrives: hdds,
-		SecureBoot:     secureBoot,
-		Notes:          notes,
-		State:          types.StringValue(v.State),
-		Path:           types.StringValue(v.Path),
+		ID:              types.StringValue(v.Name),
+		Name:            types.StringValue(v.Name),
+		Generation:      types.Int64Value(int64(v.Generation)),
+		CPU:             &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:          &MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
+		HardDiskDrives:  hdds,
+		NetworkAdapters: nics,
+		SecureBoot:      secureBoot,
+		Notes:           notes,
+		State:           types.StringValue(v.State),
+		Path:            types.StringValue(v.Path),
 	}
 }
 
@@ -565,5 +674,61 @@ func detachInputFor(vmName string, h HardDiskDriveModel) hyperv.DetachHardDiskIn
 		ControllerType:     t,
 		ControllerNumber:   int(h.ControllerNumber.ValueInt64()),
 		ControllerLocation: int(h.ControllerLocation.ValueInt64()),
+	}
+}
+
+// diffNetworkAdapters partitions plan vs state into the NICs to attach
+// and the NICs to detach. Slot key is the display Name; a switch swap
+// at the same name produces both a detach and an attach (caller runs
+// the detach first to free the name).
+func diffNetworkAdapters(plan, state []NetworkAdapterModel) (toAttach, toDetach []NetworkAdapterModel) {
+	planByName := make(map[string]NetworkAdapterModel, len(plan))
+	for _, n := range plan {
+		planByName[n.Name.ValueString()] = n
+	}
+	stateByName := make(map[string]NetworkAdapterModel, len(state))
+	for _, n := range state {
+		stateByName[n.Name.ValueString()] = n
+	}
+
+	for k, planN := range planByName {
+		stateN, exists := stateByName[k]
+		if !exists {
+			toAttach = append(toAttach, planN)
+			continue
+		}
+		// Same name: if switch_name differs, detach + attach.
+		// Switch_name comparison is byte-for-byte (no semantic-equals
+		// type yet for switch names).
+		if !planN.SwitchName.Equal(stateN.SwitchName) {
+			toDetach = append(toDetach, stateN)
+			toAttach = append(toAttach, planN)
+		}
+	}
+	for k, stateN := range stateByName {
+		if _, exists := planByName[k]; !exists {
+			toDetach = append(toDetach, stateN)
+		}
+	}
+	return toAttach, toDetach
+}
+
+// attachNICInputFor builds the wire-level AttachNetworkAdapterInput.
+func attachNICInputFor(vmName string, n NetworkAdapterModel) hyperv.AttachNetworkAdapterInput {
+	return hyperv.AttachNetworkAdapterInput{
+		Name:       n.Name.ValueString(),
+		VMName:     vmName,
+		SwitchName: n.SwitchName.ValueString(),
+	}
+}
+
+// detachNICInputFor mirrors attachNICInputFor but only carries Name +
+// VMName -- switch info isn't needed for removal (Name + VMName
+// uniquely identifies the NIC given the schema-level uniqueness
+// constraint).
+func detachNICInputFor(vmName string, n NetworkAdapterModel) hyperv.DetachNetworkAdapterInput {
+	return hyperv.DetachNetworkAdapterInput{
+		Name:   n.Name.ValueString(),
+		VMName: vmName,
 	}
 }

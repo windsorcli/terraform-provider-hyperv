@@ -52,16 +52,17 @@ import (
 // ordering matches canonical state on subsequent applies) with a
 // simpler decode.
 type Model struct {
-	ID             types.String         `tfsdk:"id"`
-	Name           types.String         `tfsdk:"name"`
-	Generation     types.Int64          `tfsdk:"generation"`
-	CPU            *CPUModel            `tfsdk:"cpu"`
-	Memory         *MemoryModel         `tfsdk:"memory"`
-	HardDiskDrives []HardDiskDriveModel `tfsdk:"hard_disk_drive"`
-	SecureBoot     types.Bool           `tfsdk:"secure_boot"`
-	Notes          types.String         `tfsdk:"notes"`
-	State          types.String         `tfsdk:"state"`
-	Path           types.String         `tfsdk:"path"`
+	ID              types.String          `tfsdk:"id"`
+	Name            types.String          `tfsdk:"name"`
+	Generation      types.Int64           `tfsdk:"generation"`
+	CPU             *CPUModel             `tfsdk:"cpu"`
+	Memory          *MemoryModel          `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
+	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
+	Notes           types.String          `tfsdk:"notes"`
+	State           types.String          `tfsdk:"state"`
+	Path            types.String          `tfsdk:"path"`
 }
 
 // CPUModel is the nested `cpu` block. Static count only in this slice;
@@ -91,4 +92,18 @@ type HardDiskDriveModel struct {
 	ControllerType     types.String  `tfsdk:"controller_type"`
 	ControllerNumber   types.Int64   `tfsdk:"controller_number"`
 	ControllerLocation types.Int64   `tfsdk:"controller_location"`
+}
+
+// NetworkAdapterModel is one element of the `network_adapter` list on
+// hyperv_vm. Display Name is the slot key for diff/reconciliation
+// (Hyper-V allows duplicate-named NICs at the cmdlet level, but the
+// resource-layer schema validator enforces uniqueness within a VM's
+// list at plan time, so the slot key is well-defined).
+//
+// SwitchName binds the NIC to a hyperv_virtual_switch by name.
+// Required in this slice; future commits may add Optional defaulting
+// to "unbound" if a real use case surfaces.
+type NetworkAdapterModel struct {
+	Name       types.String `tfsdk:"name"`
+	SwitchName types.String `tfsdk:"switch_name"`
 }

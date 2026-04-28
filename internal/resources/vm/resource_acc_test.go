@@ -117,6 +117,125 @@ func TestAcc_VM_basic(t *testing.T) {
 	})
 }
 
+// TestAcc_VM_withNetworkAdapter chains a hyperv_virtual_switch to a
+// hyperv_vm via the inline network_adapter list. Three steps mirror
+// the HDD test pattern: attach one, add a second, remove the first.
+//
+// Uses Private switches throughout so no host NIC binding is needed
+// (matches what TestAcc_VirtualSwitch_basic exercises).
+func TestAcc_VM_withNetworkAdapter(t *testing.T) {
+	name := acctest.RandomName("vm-nic")
+	switchPrimary := acctest.RandomName("nic-sw-primary")
+	switchSecondary := acctest.RandomName("nic-sw-secondary")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: VM with one NIC bound to the primary switch.
+				Config: vmWithNICConfig(name, []nicBlock{
+					{Name: "primary", SwitchRef: "hyperv_virtual_switch.primary"},
+				}, []switchBlock{
+					{Label: "primary", Name: switchPrimary},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter"),
+						knownvalue.ListSizeExact(1),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("name"),
+						knownvalue.StringExact("primary"),
+					),
+				},
+			},
+			{
+				// Step 2: add a second NIC bound to a second switch.
+				Config: vmWithNICConfig(name, []nicBlock{
+					{Name: "primary", SwitchRef: "hyperv_virtual_switch.primary"},
+					{Name: "secondary", SwitchRef: "hyperv_virtual_switch.secondary"},
+				}, []switchBlock{
+					{Label: "primary", Name: switchPrimary},
+					{Label: "secondary", Name: switchSecondary},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter"),
+						knownvalue.ListSizeExact(2),
+					),
+				},
+			},
+			{
+				// Step 3: remove the original NIC, keep the second.
+				// Tests detach-without-affecting-the-survivor, the
+				// harder reconciliation case.
+				Config: vmWithNICConfig(name, []nicBlock{
+					{Name: "secondary", SwitchRef: "hyperv_virtual_switch.secondary"},
+				}, []switchBlock{
+					{Label: "secondary", Name: switchSecondary},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter"),
+						knownvalue.ListSizeExact(1),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("name"),
+						knownvalue.StringExact("secondary"),
+					),
+				},
+			},
+		},
+	})
+}
+
+// nicBlock and switchBlock are inputs to vmWithNICConfig.
+type nicBlock struct {
+	Name      string
+	SwitchRef string // e.g. "hyperv_virtual_switch.primary" -- gets ".name" appended
+}
+
+type switchBlock struct {
+	Label string // resource label, e.g. "primary"
+	Name  string // actual host-side switch name, e.g. "tfacc-nic-sw-primary-XXXX"
+}
+
+// vmWithNICConfig renders a multi-resource HCL: one Private switch per
+// switchBlock, plus a hyperv_vm whose network_adapter list has one
+// entry per nicBlock.
+func vmWithNICConfig(vmName string, nics []nicBlock, switches []switchBlock) string {
+	var b strings.Builder
+	for _, s := range switches {
+		fmt.Fprintf(&b, `
+resource "hyperv_virtual_switch" "%s" {
+  name        = %q
+  switch_type = "Private"
+}
+`, s.Label, s.Name)
+	}
+	fmt.Fprintf(&b, `
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  network_adapter = [
+`, vmName, vmMinimumMemoryBytes)
+	for _, n := range nics {
+		fmt.Fprintf(&b, `    { name = %q, switch_name = %s.name },`+"\n", n.Name, n.SwitchRef)
+	}
+	b.WriteString("  ]\n}\n")
+	return b.String()
+}
+
 // TestAcc_VM_withHardDisk chains a hyperv_vhd to a hyperv_vm via the
 // inline hard_disk_drive set. Exercises the slot-tuple-keyed Update
 // reconciliation by:

@@ -75,6 +75,13 @@ resource "hyperv_vm" "legacy" {
 **Reconciliation:** Update diffs the planned list against state by slot tuple (NOT by index, despite being a List). Slots present in plan but not state get `Add-VMHardDiskDrive`; slots in state but not plan get `Remove-VMHardDiskDrive`; slots in both with a different `path` are detached then re-attached (Set-VMHardDiskDrive's path-swap path is not used in this slice -- detach + attach has clearer error semantics).
 
 This resource does NOT create the VHD itself -- pair with `hyperv_vhd` or `hyperv_image_file` for that. (see [below for nested schema](#nestedatt--hard_disk_drive))
+- `network_adapter` (Attributes List) List of network adapters attached to the VM. Each NIC is bound to a `hyperv_virtual_switch` by name and identified within the VM by a unique display `name`. The display name is the slot key used for diff/reconciliation -- two NICs in the same VM cannot share a name (validator at plan time).
+
+**Order canonicalization:** state stores the list sorted by `name`. Configs that write NICs in name order match state directly; configs that don't will see a one-time "reorder" diff on the first apply.
+
+**Reconciliation:** Update diffs the planned list against state by name. Names present in plan but not state get `Add-VMNetworkAdapter`; names in state but not plan get `Remove-VMNetworkAdapter`; names in both with a different `switch_name` get detached then re-attached (Hyper-V doesn't expose a path-swap-only cmdlet for NIC switch binding, so detach + attach is the natural operation).
+
+VLAN tagging and static MAC addresses ship in a follow-up commit. (see [below for nested schema](#nestedatt--network_adapter))
 - `notes` (String) Free-form description stored on the VM by Hyper-V.
 
 **Cannot be cleared in-place once set.** Three failure modes to be aware of:
@@ -122,6 +129,15 @@ Required:
 Optional:
 
 - `controller_type` (String) Controller bus. `SCSI` is the default and the only valid choice for gen 2 VMs; `IDE` is gen-1-only. The script layer surfaces Hyper-V's clear "cannot attach IDE devices to a generation 2 virtual machine" error if the wrong type is paired with the wrong generation.
+
+
+<a id="nestedatt--network_adapter"></a>
+### Nested Schema for `network_adapter`
+
+Required:
+
+- `name` (String) Display name of the NIC. Used as the slot key for reconciliation and shown in Hyper-V Manager's NIC list. Must be unique within this VM's `network_adapter` list.
+- `switch_name` (String) Name of the `hyperv_virtual_switch` to bind this NIC to. Hyper-V validates the switch exists at apply time and surfaces its own clear error if it doesn't.
 
 ## Import
 

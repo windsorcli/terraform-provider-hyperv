@@ -119,7 +119,7 @@ Describe 'New-HypervVM' {
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
                 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
-                'MemoryStartupBytes', 'Name', 'Notes', 'Path',
+                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
                 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
         }

@@ -128,22 +128,53 @@ type NewVHDDifferencingInput struct {
 // SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
 // no Secure Boot concept); gen 2 always returns a real bool.
 //
-// HardDiskDrives is always a (possibly empty) slice -- the script-side
-// @() wrapper guarantees JSON array shape even when no disks are
-// attached, so a freshly-created VM with no storage round-trips as
-// "HardDiskDrives": [] rather than null.
+// HardDiskDrives and NetworkAdapters are always (possibly empty)
+// slices -- the script-side @() wrapper guarantees JSON array shape
+// even when nothing is attached, so a freshly-created VM with no
+// attachments round-trips as "[]" rather than null.
 type VM struct {
-	Name                string          `json:"Name"`
-	ID                  string          `json:"Id"`
-	Generation          int             `json:"Generation"`
-	ProcessorCount      int             `json:"ProcessorCount"`
-	MemoryStartupBytes  int64           `json:"MemoryStartupBytes"`
-	MemoryAssignedBytes int64           `json:"MemoryAssignedBytes"`
-	State               string          `json:"State"`
-	Notes               string          `json:"Notes"`
-	Path                string          `json:"Path"`
-	SecureBootEnabled   *bool           `json:"SecureBootEnabled"`
-	HardDiskDrives      []HardDiskDrive `json:"HardDiskDrives"`
+	Name                string           `json:"Name"`
+	ID                  string           `json:"Id"`
+	Generation          int              `json:"Generation"`
+	ProcessorCount      int              `json:"ProcessorCount"`
+	MemoryStartupBytes  int64            `json:"MemoryStartupBytes"`
+	MemoryAssignedBytes int64            `json:"MemoryAssignedBytes"`
+	State               string           `json:"State"`
+	Notes               string           `json:"Notes"`
+	Path                string           `json:"Path"`
+	SecureBootEnabled   *bool            `json:"SecureBootEnabled"`
+	HardDiskDrives      []HardDiskDrive  `json:"HardDiskDrives"`
+	NetworkAdapters     []NetworkAdapter `json:"NetworkAdapters"`
+}
+
+// NetworkAdapter is the per-NIC shape vm/get.ps1 emits inside
+// VM.NetworkAdapters. Display Name is the slot key the resource-layer
+// reconciliation uses to diff plan vs state. SwitchName identifies
+// which hyperv_virtual_switch the NIC is bound to (or empty when
+// unbound -- Hyper-V allows that, though it's rare).
+type NetworkAdapter struct {
+	Name       string `json:"Name"`
+	SwitchName string `json:"SwitchName"`
+}
+
+// AttachNetworkAdapterInput is the stdin JSON shape for
+// vm/add-network-adapter.ps1. All three fields are required;
+// uniqueness of Name within a VM is enforced by the resource-layer
+// schema validator (Hyper-V itself doesn't enforce it).
+type AttachNetworkAdapterInput struct {
+	Name       string `json:"name"`
+	VMName     string `json:"vm_name"`
+	SwitchName string `json:"switch_name"`
+}
+
+// DetachNetworkAdapterInput is the stdin JSON shape for
+// vm/remove-network-adapter.ps1. Name + VMName identify the NIC to
+// detach; the cmdlet would happily remove ALL NICs sharing the same
+// Name, but the schema-level uniqueness validator means there's only
+// ever one match in our state.
+type DetachNetworkAdapterInput struct {
+	Name   string `json:"name"`
+	VMName string `json:"vm_name"`
 }
 
 // HardDiskDrive is the per-attachment shape vm/get.ps1 emits inside

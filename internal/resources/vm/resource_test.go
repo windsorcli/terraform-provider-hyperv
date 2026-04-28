@@ -41,7 +41,7 @@ func TestResource_Schema(t *testing.T) {
 	}
 	wantAttrs := []string{
 		"id", "name", "generation", "cpu", "memory",
-		"hard_disk_drive",
+		"hard_disk_drive", "network_adapter",
 		"secure_boot", "notes", "state", "path",
 	}
 	for _, name := range wantAttrs {
@@ -229,8 +229,11 @@ func TestResource_Configure_WrongTypeIsClearError(t *testing.T) {
 	}
 }
 
-// TestResource_ConfigValidators_RegistersAll confirms the validator is
-// wired into ConfigValidators().
+// TestResource_ConfigValidators_RegistersAll confirms every validator
+// is wired into ConfigValidators(). Drift here means the resource is
+// shipping without a documented validator; usually the cmdlet-error
+// path still catches the problem at apply time, but plan-time
+// diagnostics are the contract.
 func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 	t.Parallel()
 
@@ -239,8 +242,8 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 1 {
-		t.Fatalf("got %d ConfigValidators, want 1 (secure_boot rejected for gen 1)", len(got))
+	if len(got) != 2 {
+		t.Fatalf("got %d ConfigValidators, want 2 (secure_boot rejected for gen 1, network_adapter unique names)", len(got))
 	}
 }
 
@@ -786,5 +789,141 @@ func TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice(t *testing.T) {
 	}
 	if len(got.HardDiskDrives) != 0 {
 		t.Errorf("HardDiskDrives length = %d, want 0", len(got.HardDiskDrives))
+	}
+}
+
+// TestNetworkAdapterUniqueNamesValidator pins the plan-time uniqueness
+// check on network_adapter[].name. Hyper-V allows duplicate-named NICs
+// at the cmdlet level; the validator is what makes the slot key
+// well-defined for our diff logic.
+func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		nics      []NetworkAdapterModel
+		wantError bool
+	}{
+		{
+			name: "two NICs with distinct names -> ok",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
+				{Name: types.StringValue("secondary"), SwitchName: types.StringValue("b")},
+			},
+		},
+		{
+			name: "two NICs sharing the same name -> fires",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("b")},
+			},
+			wantError: true,
+		},
+		{
+			name: "single NIC -> ok (trivially unique)",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("only"), SwitchName: types.StringValue("a")},
+			},
+		},
+		{
+			name: "empty list -> ok",
+			nics: []NetworkAdapterModel{},
+		},
+		{
+			name: "unknown name in second slot -> skip (deferred dep)",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
+				{Name: types.StringUnknown(), SwitchName: types.StringValue("b")},
+			},
+		},
+	}
+	v := networkAdapterUniqueNamesValidator{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(Model{NetworkAdapters: tc.nics})
+			if got := diags.HasError(); got != tc.wantError {
+				t.Errorf("HasError = %v, want %v; diags: %v", got, tc.wantError, diags)
+			}
+		})
+	}
+}
+
+// TestDiffNetworkAdapters mirrors the HDD diff test shape: same name +
+// same switch is no-op; same name + different switch is detach +
+// attach; new name is attach; removed name is detach.
+func TestDiffNetworkAdapters(t *testing.T) {
+	t.Parallel()
+
+	nic := func(name, sw string) NetworkAdapterModel {
+		return NetworkAdapterModel{
+			Name:       types.StringValue(name),
+			SwitchName: types.StringValue(sw),
+		}
+	}
+
+	t.Run("new name -> attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffNetworkAdapters([]NetworkAdapterModel{nic("a", "lab")}, nil)
+		if len(add) != 1 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 1/0", len(add), len(rm))
+		}
+	})
+	t.Run("removed name -> detach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffNetworkAdapters(nil, []NetworkAdapterModel{nic("a", "lab")})
+		if len(add) != 0 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 0/1", len(add), len(rm))
+		}
+	})
+	t.Run("same name same switch -> no-op", func(t *testing.T) {
+		t.Parallel()
+		n := nic("a", "lab")
+		add, rm := diffNetworkAdapters([]NetworkAdapterModel{n}, []NetworkAdapterModel{n})
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0", len(add), len(rm))
+		}
+	})
+	t.Run("same name different switch -> detach + attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffNetworkAdapters(
+			[]NetworkAdapterModel{nic("a", "new-switch")},
+			[]NetworkAdapterModel{nic("a", "old-switch")},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1", len(add), len(rm))
+		}
+		if add[0].SwitchName.ValueString() != "new-switch" {
+			t.Errorf("attach switch = %q, want new-switch", add[0].SwitchName.ValueString())
+		}
+		if rm[0].SwitchName.ValueString() != "old-switch" {
+			t.Errorf("detach switch = %q, want old-switch", rm[0].SwitchName.ValueString())
+		}
+	})
+}
+
+// TestModelFromVM_PopulatesNetworkAdapters confirms the cmdlet's NIC
+// list round-trips through modelFromVM, sorted by Name.
+func TestModelFromVM_PopulatesNetworkAdapters(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		NetworkAdapters: []hyperv.NetworkAdapter{
+			// Cmdlet emits in some order; modelFromVM sorts by Name.
+			{Name: "secondary", SwitchName: "lab-external"},
+			{Name: "primary", SwitchName: "lab-internal"},
+		},
+	})
+	if len(got.NetworkAdapters) != 2 {
+		t.Fatalf("got %d NICs, want 2", len(got.NetworkAdapters))
+	}
+	// After sort, primary comes first.
+	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
+		t.Errorf("first NIC name = %q, want primary (sorted)", got.NetworkAdapters[0].Name.ValueString())
+	}
+	if got.NetworkAdapters[1].SwitchName.ValueString() != "lab-external" {
+		t.Errorf("second NIC switch = %q, want lab-external", got.NetworkAdapters[1].SwitchName.ValueString())
 	}
 }

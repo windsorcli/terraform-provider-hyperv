@@ -113,6 +113,31 @@ function Remove-VMHardDiskDrive {
     )
 }
 
+function Get-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName
+    )
+}
+
+function Add-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $Name,
+        [string] $SwitchName
+    )
+}
+
+function Remove-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $Name
+    )
+}
+
 # New-HypervVMSample builds a Get-VM-shaped object for use as the canned
 # return value from Mock blocks. Defaults model a typical small gen 2 VM;
 # per-test overrides cover gen 1, larger sizing, running state, etc.
@@ -171,5 +196,20 @@ function New-HypervVMHardDiskDriveSample {
         ControllerType     = $ControllerType
         ControllerNumber   = $ControllerNumber
         ControllerLocation = $ControllerLocation
+    }
+}
+
+# New-HypervVMNetworkAdapterSample builds a Get-VMNetworkAdapter-shaped
+# object for use in Mock blocks. Two-field shape mirrors the
+# minimum-viable schema in the M4 step that ships NIC attachment.
+function New-HypervVMNetworkAdapterSample {
+    [CmdletBinding()]
+    param(
+        [string] $Name       = 'primary',
+        [string] $SwitchName = 'lab-internal'
+    )
+    [pscustomobject]@{
+        Name       = $Name
+        SwitchName = $SwitchName
     }
 }

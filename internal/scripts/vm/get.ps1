@@ -20,6 +20,11 @@
 #                       "ControllerNumber":   <int>,
 #                       "ControllerLocation": <int> },
 #                     ...
+#                   ],
+#                   "NetworkAdapters":            [
+#                     { "Name":       "<display-name>",
+#                       "SwitchName": "<vswitch-name>" },
+#                     ...
 #                   ]
 #                 }
 #   stderr/exit : missing VM -> Write-HypervError envelope with
@@ -59,6 +64,15 @@ function Read-HypervVMResult {
                 @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
                 @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
     )
+    # Network adapters: same @() wrapper rationale as HDDs -- empty
+    # array on the wire becomes []NetworkAdapter on the Go side, not
+    # nil, which keeps state stable when no NICs are attached.
+    $nics = @(
+        Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop |
+            Select-Object `
+                Name,
+                SwitchName
+    )
     [pscustomobject]@{
         Name                = $Vm.Name
         Id                  = $Vm.Id.ToString()
@@ -71,6 +85,7 @@ function Read-HypervVMResult {
         Path                = $Vm.Path
         SecureBootEnabled   = $secureBoot
         HardDiskDrives      = $hdds
+        NetworkAdapters     = $nics
     } | Write-HypervResult
 }
 

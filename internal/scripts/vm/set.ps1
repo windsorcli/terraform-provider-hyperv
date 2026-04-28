@@ -45,6 +45,10 @@ function Read-HypervVMResult {
                 @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
                 @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
     )
+    $nics = @(
+        Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop |
+            Select-Object Name, SwitchName
+    )
     [pscustomobject]@{
         Name                = $Vm.Name
         Id                  = $Vm.Id.ToString()
@@ -57,6 +61,7 @@ function Read-HypervVMResult {
         Path                = $Vm.Path
         SecureBootEnabled   = $secureBoot
         HardDiskDrives      = $hdds
+        NetworkAdapters     = $nics
     } | Write-HypervResult
 }
 

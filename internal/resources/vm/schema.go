@@ -38,6 +38,17 @@ func hardDiskObjectAttrTypes() map[string]attr.Type {
 	}
 }
 
+// networkAdapterObjectAttrTypes is the analog for network_adapter.
+// Same Default-empty-list rationale as HDDs. Two-field shape mirrors
+// the minimum-viable NIC schema in this slice; vlan_id and
+// mac_address attach as additional keys here in a follow-up.
+func networkAdapterObjectAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"name":        types.StringType,
+		"switch_name": types.StringType,
+	}
+}
+
 // resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
 // slice). MarkdownDescription on each attribute drives the Registry-
 // published doc when `task generate` runs tfplugindocs (PLAN.md S15).
@@ -195,6 +206,53 @@ func resourceSchema() schema.Schema {
 							Required: true,
 							MarkdownDescription: "Slot position within the controller (0-based). " +
 								"Required for the same reason as `controller_number`.",
+						},
+					},
+				},
+			},
+			"network_adapter": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "List of network adapters attached to the VM. Each NIC " +
+					"is bound to a `hyperv_virtual_switch` by name and identified within " +
+					"the VM by a unique display `name`. The display name is the slot key " +
+					"used for diff/reconciliation -- two NICs in the same VM cannot share " +
+					"a name (validator at plan time).\n\n" +
+					"**Order canonicalization:** state stores the list sorted by `name`. " +
+					"Configs that write NICs in name order match state directly; configs " +
+					"that don't will see a one-time \"reorder\" diff on the first apply.\n\n" +
+					"**Reconciliation:** Update diffs the planned list against state by " +
+					"name. Names present in plan but not state get `Add-VMNetworkAdapter`; " +
+					"names in state but not plan get `Remove-VMNetworkAdapter`; names in " +
+					"both with a different `switch_name` get detached then re-attached " +
+					"(Hyper-V doesn't expose a path-swap-only cmdlet for NIC switch " +
+					"binding, so detach + attach is the natural operation).\n\n" +
+					"VLAN tagging and static MAC addresses ship in a follow-up commit.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+				// Default empty list -- same rationale as hard_disk_drive
+				// above. Without it, the framework's reflect path errors
+				// when the user omits the attribute.
+				Default: listdefault.StaticValue(
+					types.ListValueMust(
+						types.ObjectType{AttrTypes: networkAdapterObjectAttrTypes()},
+						[]attr.Value{},
+					),
+				),
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required: true,
+							MarkdownDescription: "Display name of the NIC. Used as the slot key " +
+								"for reconciliation and shown in Hyper-V Manager's NIC list. " +
+								"Must be unique within this VM's `network_adapter` list.",
+						},
+						"switch_name": schema.StringAttribute{
+							Required: true,
+							MarkdownDescription: "Name of the `hyperv_virtual_switch` to bind " +
+								"this NIC to. Hyper-V validates the switch exists at apply " +
+								"time and surfaces its own clear error if it doesn't.",
 						},
 					},
 				},

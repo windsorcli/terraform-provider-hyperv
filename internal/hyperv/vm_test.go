@@ -517,3 +517,116 @@ func TestAttachDetachInputJSONTags(t *testing.T) {
 		t.Errorf("DetachHardDiskInput JSON must not carry path; got: %s", detach)
 	}
 }
+
+// TestClient_AttachNetworkAdapter_HappyPath confirms full input
+// round-trip into the script's stdin payload.
+func TestClient_AttachNetworkAdapter_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Add-HypervVMNetworkAdapter").Return("{}", "", 0)
+	c := NewClient(fr)
+
+	in := AttachNetworkAdapterInput{
+		Name:       "primary",
+		VMName:     "vm01",
+		SwitchName: "lab-internal",
+	}
+	if err := c.AttachNetworkAdapter(t.Context(), in); err != nil {
+		t.Fatalf("AttachNetworkAdapter: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{
+		`"name":"primary"`,
+		`"vm_name":"vm01"`,
+		`"switch_name":"lab-internal"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin should contain %q; got: %s", want, stdin)
+		}
+	}
+}
+
+// TestClient_AttachNetworkAdapter_ObjectNotFoundMapsToErrNotFound covers
+// the "VM was deleted between Read and the attachment Update" race.
+func TestClient_AttachNetworkAdapter_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{"category":"ObjectNotFound","message":"VM missing","cmdlet":"Add-VMNetworkAdapter"}`
+	fr := testutil.NewFakeRunner().
+		On("function Add-HypervVMNetworkAdapter").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	err := c.AttachNetworkAdapter(t.Context(), AttachNetworkAdapterInput{Name: "primary"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestClient_DetachNetworkAdapter_HappyPath: only Name + VMName on the
+// wire, no switch info needed for removal.
+func TestClient_DetachNetworkAdapter_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervVMNetworkAdapter").Return("{}", "", 0)
+	c := NewClient(fr)
+
+	in := DetachNetworkAdapterInput{Name: "primary", VMName: "vm01"}
+	if err := c.DetachNetworkAdapter(t.Context(), in); err != nil {
+		t.Fatalf("DetachNetworkAdapter: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if strings.Contains(stdin, `"switch_name"`) {
+		t.Errorf("DetachNetworkAdapterInput should NOT carry switch_name; got: %s", stdin)
+	}
+}
+
+// TestClient_DetachNetworkAdapter_ObjectNotFoundMapsToErrNotFound: same
+// "no-op when desired state already met" handling as the HDD case.
+func TestClient_DetachNetworkAdapter_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{"category":"ObjectNotFound","message":"NIC not found","cmdlet":"Remove-VMNetworkAdapter"}`
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervVMNetworkAdapter").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	err := c.DetachNetworkAdapter(t.Context(), DetachNetworkAdapterInput{Name: "gone", VMName: "vm01"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestClient_GetVM_DecodesNetworkAdapters confirms the array shape
+// round-trips through the typed VM struct.
+func TestClient_GetVM_DecodesNetworkAdapters(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{
+		"Name":"vm01","Id":"00000000-0000-0000-0000-000000000000","Generation":2,
+		"ProcessorCount":2,"MemoryStartupBytes":2147483648,"MemoryAssignedBytes":2147483648,
+		"State":"Off","Notes":"","Path":"C:\\foo","SecureBootEnabled":true,
+		"HardDiskDrives":[],
+		"NetworkAdapters":[
+			{"Name":"primary","SwitchName":"lab-internal"},
+			{"Name":"secondary","SwitchName":"lab-external"}
+		]
+	}`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVM").Return(envelope, "", 0)
+	c := NewClient(fr)
+
+	v, err := c.GetVM(t.Context(), "vm01")
+	if err != nil {
+		t.Fatalf("GetVM: %v", err)
+	}
+	if got := len(v.NetworkAdapters); got != 2 {
+		t.Fatalf("NetworkAdapters count = %d, want 2", got)
+	}
+	if v.NetworkAdapters[0].Name != "primary" || v.NetworkAdapters[0].SwitchName != "lab-internal" {
+		t.Errorf("first NIC = %+v, want primary/lab-internal", v.NetworkAdapters[0])
+	}
+}

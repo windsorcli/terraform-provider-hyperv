@@ -152,3 +152,39 @@ func (c *Client) DetachHardDisk(ctx context.Context, in DetachHardDiskInput) err
 	}
 	return c.runScript(ctx, string(body), stdin, nil)
 }
+
+// AttachNetworkAdapter adds a new NIC to a VM and binds it to the
+// named virtual switch via Add-VMNetworkAdapter. The display name is
+// the slot key used by the resource-layer Update reconciliation.
+//
+// Returns ErrNotFound if the VM is missing. Switch-not-found surfaces
+// as ErrPSExecution (Hyper-V's InvalidArgument category isn't routed
+// to a typed sentinel for this cmdlet).
+func (c *Client) AttachNetworkAdapter(ctx context.Context, in AttachNetworkAdapterInput) error {
+	body, err := scripts.VMScript("add-network-adapter")
+	if err != nil {
+		return fmt.Errorf("load vm/add-network-adapter.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal add-network-adapter.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}
+
+// DetachNetworkAdapter removes a NIC from a VM by display name via
+// Remove-VMNetworkAdapter. Missing VM and "no NIC by that name" both
+// surface as ObjectNotFound -> ErrNotFound; the resource-layer Update
+// reconciliation treats ErrNotFound as a no-op (desired state is "no
+// NIC by that name", already met).
+func (c *Client) DetachNetworkAdapter(ctx context.Context, in DetachNetworkAdapterInput) error {
+	body, err := scripts.VMScript("remove-network-adapter")
+	if err != nil {
+		return fmt.Errorf("load vm/remove-network-adapter.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal remove-network-adapter.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}

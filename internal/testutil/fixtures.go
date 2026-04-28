@@ -96,7 +96,8 @@ const VMGen2FixtureJSON = `{
 	"Notes": "production",
 	"Path": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V\\Virtual Machines",
 	"SecureBootEnabled": true,
-	"HardDiskDrives": []
+	"HardDiskDrives": [],
+	"NetworkAdapters": []
 }`
 
 // VMGen1FixtureJSON exercises the gen-1 case: SecureBootEnabled is null
@@ -112,5 +113,6 @@ const VMGen1FixtureJSON = `{
 	"Notes": "",
 	"Path": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V\\Virtual Machines",
 	"SecureBootEnabled": null,
-	"HardDiskDrives": []
+	"HardDiskDrives": [],
+	"NetworkAdapters": []
 }`
