@@ -112,8 +112,20 @@ func TestAcc_VHD_dynamic(t *testing.T) {
 				},
 			},
 			{
-				ResourceName:      "hyperv_vhd.test",
-				ImportState:       true,
+				ResourceName: "hyperv_vhd.test",
+				ImportState:  true,
+				// vhdPath is the forward-slash form (set above for the
+				// same StringSemanticEquals exercise). Using it verbatim
+				// for ImportStateId is correct; see image_file's
+				// resource_acc_test.go for the empirically-verified
+				// rationale (terraform-plugin-testing's
+				// ImportStateVerify is byte-for-byte at the verify
+				// layer, but the framework's resp.State.Set during
+				// post-import Read does merge with prior state via
+				// StringSemanticEquals -- so the forward form set by
+				// passthrough is retained when Read writes the cmdlet's
+				// backslash form). Backslash here was tried and
+				// produces a clean ImportStateVerify failure.
 				ImportStateId:     vhdPath,
 				ImportStateVerify: true,
 			},
