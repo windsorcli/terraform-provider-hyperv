@@ -31,9 +31,47 @@ function Read-HypervVMResult {
         [Parameter(Mandatory)] $Vm
     )
     $secureBoot = $null
+    $bootOrder  = @()
     if ($Vm.Generation -eq 2) {
         $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
         $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
+        $bootOrder = @(
+            foreach ($entry in $firmware.BootOrder) {
+                # Discriminator is $entry.Device's CLR type, not
+                # BootType (which is 'Drive' for both HDD and DVD). See
+                # get.ps1's matching block for the longer rationale.
+                $deviceType = $entry.Device.GetType().Name
+                switch ($deviceType) {
+                    'HardDiskDrive' {
+                        [pscustomobject]@{
+                            Type               = 'hard_disk_drive'
+                            ControllerType     = $entry.Device.ControllerType.ToString()
+                            ControllerNumber   = [int] $entry.Device.ControllerNumber
+                            ControllerLocation = [int] $entry.Device.ControllerLocation
+                            Name               = ''
+                        }
+                    }
+                    'DvdDrive' {
+                        [pscustomobject]@{
+                            Type               = 'dvd_drive'
+                            ControllerType     = $entry.Device.ControllerType.ToString()
+                            ControllerNumber   = [int] $entry.Device.ControllerNumber
+                            ControllerLocation = [int] $entry.Device.ControllerLocation
+                            Name               = ''
+                        }
+                    }
+                    'VMNetworkAdapter' {
+                        [pscustomobject]@{
+                            Type               = 'network_adapter'
+                            ControllerType     = ''
+                            ControllerNumber   = 0
+                            ControllerLocation = 0
+                            Name               = $entry.Device.Name
+                        }
+                    }
+                }
+            }
+        )
     }
     $hdds = @(
         Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop |
@@ -69,6 +107,7 @@ function Read-HypervVMResult {
         HardDiskDrives      = $hdds
         NetworkAdapters     = $nics
         DvdDrives           = $dvds
+        BootOrder           = $bootOrder
     } | Write-HypervResult
 }
 

@@ -32,15 +32,30 @@
 #                       "ControllerNumber":   <int>,
 #                       "ControllerLocation": <int> },
 #                     ...
+#                   ],
+#                   "BootOrder":                  [
+#                     # gen 2 only; always [] on gen 1.
+#                     # Discriminated by Type: hard_disk_drive / dvd_drive
+#                     # entries carry ControllerType / Number / Location;
+#                     # network_adapter entries carry Name. Unused fields
+#                     # are emitted as zero values (Go decodes via the
+#                     # type discriminator).
+#                     { "Type":               "hard_disk_drive"|"dvd_drive"|"network_adapter",
+#                       "ControllerType":     "SCSI"|"IDE"|"",
+#                       "ControllerNumber":   <int>,
+#                       "ControllerLocation": <int>,
+#                       "Name":               "<nic-name>"|"" },
+#                     ...
 #                   ]
 #                 }
 #   stderr/exit : missing VM -> Write-HypervError envelope with
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side so resource Read calls RemoveResource.
 #
-# boot_order is intentionally absent from the minimal slice -- the gen1/gen2
-# translation deserves its own PR with live-host validation. The VM boots
-# from whatever Hyper-V's default is until that lands.
+# boot_order is gen-2-only in this slice. Gen 1 (BIOS StartupOrder, a
+# 4-string enum from {CD, IDEHardDrive, LegacyNetworkAdapter, Floppy})
+# is deferred to a follow-up; the schema validator rejects boot_order
+# on gen 1 at plan time.
 
 # Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
 # of the same logic in new.ps1 / set.ps1 because the runtime concatenates
@@ -50,13 +65,62 @@ function Read-HypervVMResult {
     param(
         [Parameter(Mandatory)] $Vm
     )
-    # SecureBoot only applies to gen 2 -- Get-VMFirmware errors on gen 1
-    # ("not supported for the current configuration") and we don't want to
-    # surface that to the operator. Emit null for gen 1.
+    # SecureBoot and BootOrder both come from Get-VMFirmware, and
+    # both are gen-2-only -- the cmdlet errors on gen 1 with "not
+    # supported for the current configuration", which we don't want
+    # to surface. Single fetch covers both fields when on gen 2.
     $secureBoot = $null
+    $bootOrder  = @()
     if ($Vm.Generation -eq 2) {
         $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
         $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
+        $bootOrder = @(
+            foreach ($entry in $firmware.BootOrder) {
+                # The Microsoft.HyperV.PowerShell.VMBootSourceType enum
+                # only distinguishes Drive / Network / File / Unknown --
+                # NOT HardDiskDrive vs DvdDrive (both surface as 'Drive').
+                # The .NET type of $entry.Device is the real
+                # discriminator: HardDiskDrive vs DvdDrive vs
+                # VMNetworkAdapter. Verified empirically against
+                # Server 2022 + PS 5.1 (2026-04 bench session).
+                #
+                # File-type entries (UEFI bootloader paths -- e.g.,
+                # \EFI\BOOT\BOOTX64.EFI) and Unknown are silently
+                # skipped: not yet in the schema, and emitting a
+                # half-shaped record the Go side can't act on would
+                # surface as a phantom diff every plan.
+                $deviceType = $entry.Device.GetType().Name
+                switch ($deviceType) {
+                    'HardDiskDrive' {
+                        [pscustomobject]@{
+                            Type               = 'hard_disk_drive'
+                            ControllerType     = $entry.Device.ControllerType.ToString()
+                            ControllerNumber   = [int] $entry.Device.ControllerNumber
+                            ControllerLocation = [int] $entry.Device.ControllerLocation
+                            Name               = ''
+                        }
+                    }
+                    'DvdDrive' {
+                        [pscustomobject]@{
+                            Type               = 'dvd_drive'
+                            ControllerType     = $entry.Device.ControllerType.ToString()
+                            ControllerNumber   = [int] $entry.Device.ControllerNumber
+                            ControllerLocation = [int] $entry.Device.ControllerLocation
+                            Name               = ''
+                        }
+                    }
+                    'VMNetworkAdapter' {
+                        [pscustomobject]@{
+                            Type               = 'network_adapter'
+                            ControllerType     = ''
+                            ControllerNumber   = 0
+                            ControllerLocation = 0
+                            Name               = $entry.Device.Name
+                        }
+                    }
+                }
+            }
+        )
     }
     # Hard-disk drives flow as an array even when empty -- ConvertTo-Json
     # serializes an empty PowerShell array to `[]` only when it's
@@ -105,6 +169,7 @@ function Read-HypervVMResult {
         HardDiskDrives      = $hdds
         NetworkAdapters     = $nics
         DvdDrives           = $dvds
+        BootOrder           = $bootOrder
     } | Write-HypervResult
 }
 

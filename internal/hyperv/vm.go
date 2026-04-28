@@ -220,3 +220,21 @@ func (c *Client) DetachDvdDrive(ctx context.Context, in DetachDvdDriveInput) err
 	}
 	return c.runScript(ctx, string(body), stdin, nil)
 }
+
+// SetBootOrder replaces the boot device sequence on a gen 2 VM via
+// Set-VMFirmware -BootOrder. Wholesale replacement: each call sets the
+// full order; the script resolves each entry's slot/name to the
+// underlying device handle the cmdlet expects. Gen 1 isn't supported
+// in this slice -- the resource-layer schema validator should reject
+// boot_order on gen 1 at plan time.
+func (c *Client) SetBootOrder(ctx context.Context, in SetBootOrderInput) error {
+	body, err := scripts.VMScript("set-boot-order")
+	if err != nil {
+		return fmt.Errorf("load vm/set-boot-order.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal set-boot-order.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}

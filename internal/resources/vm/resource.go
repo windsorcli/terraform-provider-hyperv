@@ -48,6 +48,7 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 	return []resource.ConfigValidator{
 		secureBootRejectedForGen1Validator{},
 		networkAdapterUniqueNamesValidator{},
+		bootOrderRejectedForGen1Validator{},
 	}
 }
 
@@ -153,6 +154,55 @@ func (v networkAdapterUniqueNamesValidator) validate(data Model) diag.Diagnostic
 	return diags
 }
 
+// bootOrderRejectedForGen1Validator enforces that boot_order is only
+// valid for gen 2 VMs. Same shape as secureBootRejectedForGen1Validator:
+// gen 1 (BIOS) uses Set-VMBios -StartupOrder with category strings, a
+// fundamentally different schema that's deferred to a follow-up.
+type bootOrderRejectedForGen1Validator struct{}
+
+func (v bootOrderRejectedForGen1Validator) Description(_ context.Context) string {
+	return "boot_order is not valid for generation 1 VMs (BIOS startup order is gen-1-specific and deferred to a follow-up)"
+}
+
+func (v bootOrderRejectedForGen1Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v bootOrderRejectedForGen1Validator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate skips on Unknown (deferred deps) and on gen 2 (always
+// valid). Fires only for gen 1 with a non-empty boot_order. An empty
+// list (user explicitly sets boot_order = []) is treated as "no
+// management" and accepted on either generation.
+func (v bootOrderRejectedForGen1Validator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.Generation.IsUnknown() {
+		return diags
+	}
+	if data.Generation.ValueInt64() == 2 {
+		return diags
+	}
+	if len(data.BootOrder) == 0 {
+		return diags
+	}
+	diags.AddAttributeError(
+		path.Root("boot_order"),
+		"boot_order is not valid for generation 1 VMs",
+		"Generation 1 VMs use BIOS startup order (CD / IDEHardDrive / "+
+			"LegacyNetworkAdapter / Floppy categories), which is a separate "+
+			"schema slice deferred to a follow-up. Remove boot_order from the "+
+			"config or change generation to 2.",
+	)
+	return diags
+}
+
 // Configure stashes the typed Hyper-V client built by the provider's
 // Configure pass. Skips when ProviderData is nil (validate-time invocation
 // before the provider has resolved its config).
@@ -253,6 +303,19 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
+	// Boot order is set last because each entry must reference an
+	// already-attached device. Skip when the user didn't supply
+	// boot_order (Default empty list applied; we treat empty as "do
+	// not manage") -- the VM keeps Hyper-V's default order in that
+	// case.
+	if shouldApplyBootOrder(plan.BootOrder) {
+		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), plan.BootOrder)); err != nil {
+			resp.Diagnostics.AddError("Set boot order failed", fmt.Sprintf(
+				"VM %s: %s", plan.Name.ValueString(), err))
+			return
+		}
+	}
+
 	// Re-fetch to populate Computed fields (HardDiskDrives /
 	// NetworkAdapters mirrors, State, Path) from the host. The
 	// framework's "inconsistent result after apply" check compares
@@ -264,6 +327,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	}
 
 	state := modelFromVM(v)
+	state.BootOrder = reconcileBootOrderState(plan.BootOrder, state.BootOrder)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -299,6 +363,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	}
 
 	newState := modelFromVM(v)
+	newState.BootOrder = reconcileBootOrderState(state.BootOrder, newState.BootOrder)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -419,6 +484,23 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
+	// Boot order reconciliation. Compare plan vs state; on any
+	// difference, replace the whole list. The cmdlet semantics are
+	// wholesale-replacement so there's no per-entry diff to do --
+	// either we skip the call or we send the full planned list.
+	// Order matters: boot_order follows attachment reconciliation so
+	// every device a planned entry references is guaranteed to
+	// exist on the host before we resolve it.
+	bootOrderChanged := shouldApplyBootOrder(plan.BootOrder) &&
+		!bootOrderSemanticEquals(plan.BootOrder, state.BootOrder)
+	if bootOrderChanged {
+		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), plan.BootOrder)); err != nil {
+			resp.Diagnostics.AddError("Set boot order failed", fmt.Sprintf(
+				"VM %s: %s", plan.Name.ValueString(), err))
+			return
+		}
+	}
+
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
 		// No scalar change. If we did reconcile attachments above we
@@ -428,7 +510,8 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		// short-circuit but extends to attachment-only updates.
 		if len(hddAttach) == 0 && len(hddDetach) == 0 &&
 			len(nicAttach) == 0 && len(nicDetach) == 0 &&
-			len(dvdAttach) == 0 && len(dvdDetach) == 0 {
+			len(dvdAttach) == 0 && len(dvdDetach) == 0 &&
+			!bootOrderChanged {
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			return
 		}
@@ -438,6 +521,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			return
 		}
 		newState := modelFromVM(v)
+		newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -449,6 +533,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	}
 
 	newState := modelFromVM(v)
+	newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -647,6 +732,35 @@ func modelFromVM(v *hyperv.VM) Model {
 		})
 	}
 
+	// Boot order is stored in wire order (Hyper-V's actual sequence) --
+	// it's an ordered list, not slot-keyed, so no canonical sort.
+	// Per-entry shape is type-discriminated: hard_disk_drive / dvd_drive
+	// entries surface the slot tuple and null Name; network_adapter
+	// entries surface Name and null slot fields. The Go side decodes
+	// the same five-field BootOrderEntry struct regardless of type --
+	// fields not relevant to a given Type just hold zero values on the
+	// wire, which we collapse to schema-null here so plan-vs-state
+	// equality has a single source of truth.
+	bootOrder := make([]BootOrderEntryModel, 0, len(v.BootOrder))
+	for _, e := range v.BootOrder {
+		entry := BootOrderEntryModel{
+			Type:               types.StringValue(e.Type),
+			ControllerType:     types.StringNull(),
+			ControllerNumber:   types.Int64Null(),
+			ControllerLocation: types.Int64Null(),
+			Name:               types.StringNull(),
+		}
+		switch e.Type {
+		case "hard_disk_drive", "dvd_drive":
+			entry.ControllerType = types.StringValue(e.ControllerType)
+			entry.ControllerNumber = types.Int64Value(int64(e.ControllerNumber))
+			entry.ControllerLocation = types.Int64Value(int64(e.ControllerLocation))
+		case "network_adapter":
+			entry.Name = types.StringValue(e.Name)
+		}
+		bootOrder = append(bootOrder, entry)
+	}
+
 	return Model{
 		ID:              types.StringValue(v.Name),
 		Name:            types.StringValue(v.Name),
@@ -656,6 +770,7 @@ func modelFromVM(v *hyperv.VM) Model {
 		HardDiskDrives:  hdds,
 		NetworkAdapters: nics,
 		DvdDrives:       dvds,
+		BootOrder:       bootOrder,
 		SecureBoot:      secureBoot,
 		Notes:           notes,
 		State:           types.StringValue(v.State),
@@ -918,4 +1033,134 @@ func detachDvdInputFor(vmName string, d DvdDriveModel) hyperv.DetachDvdDriveInpu
 		ControllerNumber:   int(d.ControllerNumber.ValueInt64()),
 		ControllerLocation: int(d.ControllerLocation.ValueInt64()),
 	}
+}
+
+// shouldApplyBootOrder decides whether the user has actually requested
+// boot-order management on this apply. The schema is Optional+Computed
+// with a Default empty list, so the planner gives us:
+//
+//   - empty slice (default) -- user omitted boot_order; we leave
+//     Hyper-V's default in place (don't call Set-VMFirmware
+//     -BootOrder, which can't be set to empty anyway).
+//   - non-empty slice -- user explicitly listed entries; apply them.
+//
+// Drift handling (manual reorder on the host) bubbles through the
+// regular plan-vs-state compare in Update; this helper's job is only
+// to gate the cmdlet call on having something to set.
+func shouldApplyBootOrder(entries []BootOrderEntryModel) bool {
+	return len(entries) > 0
+}
+
+// reconcileBootOrderState picks what BootOrder to write to state after
+// Create / Update / Read. Two-rule semantics:
+//
+//   - When the user is managing boot_order (plan is non-empty), state
+//     gets the actual order from the host (live drift detection).
+//   - When the user is not managing (plan empty -- Default applied),
+//     state matches plan (also empty). Without this collapse, the
+//     framework's "inconsistent result after apply" check would fire:
+//     plan = [] but the host always has a non-empty order, so the
+//     fresh modelFromVM result would mismatch.
+//
+// The cost: when not managing, terraform refresh / plan don't surface
+// the actual host order. Acceptable trade-off given the cmdlet
+// requires a non-empty list anyway, and most users either manage
+// boot_order or don't care about it.
+func reconcileBootOrderState(planBootOrder, hostBootOrder []BootOrderEntryModel) []BootOrderEntryModel {
+	if !shouldApplyBootOrder(planBootOrder) {
+		return planBootOrder
+	}
+	return hostBootOrder
+}
+
+// setBootOrderInputFor projects the planned BootOrder list into the
+// wire shape the script expects. The Type discriminator decides which
+// fields are meaningful:
+//
+//   - hard_disk_drive / dvd_drive: controller_type / number / location.
+//     ControllerType defaults to SCSI when null/unknown (mirrors how
+//     attachDvdInputFor / attachHddInputFor handle the same default).
+//   - network_adapter: name only.
+//
+// Unused fields are emitted as zero values; the script's switch on
+// type ignores them. The wire JSON is the same regardless of source
+// shape -- the script + Go-side decode round-trip via the unified
+// SetBootOrderEntryInput struct.
+func setBootOrderInputFor(vmName string, entries []BootOrderEntryModel) hyperv.SetBootOrderInput {
+	out := make([]hyperv.SetBootOrderEntryInput, 0, len(entries))
+	for _, e := range entries {
+		entry := hyperv.SetBootOrderEntryInput{
+			Type: e.Type.ValueString(),
+		}
+		switch entry.Type {
+		case "hard_disk_drive", "dvd_drive":
+			t := e.ControllerType.ValueString()
+			if e.ControllerType.IsNull() || e.ControllerType.IsUnknown() || t == "" {
+				t = "SCSI"
+			}
+			entry.ControllerType = t
+			entry.ControllerNumber = int(e.ControllerNumber.ValueInt64())
+			entry.ControllerLocation = int(e.ControllerLocation.ValueInt64())
+		case "network_adapter":
+			entry.Name = e.Name.ValueString()
+		}
+		out = append(out, entry)
+	}
+	return hyperv.SetBootOrderInput{
+		Name:      vmName,
+		BootOrder: out,
+	}
+}
+
+// bootOrderSemanticEquals compares plan vs state element-wise, taking
+// the Type-driven shape into account: HDD/DVD entries match on the
+// slot tuple (treating null/unknown ControllerType as the SCSI
+// default); NIC entries match on Name. Order matters -- this is the
+// boot SEQUENCE, not a set.
+//
+// Returns true when no Set-VMFirmware -BootOrder call is needed.
+// Conservatively returns false on any unknown values so the apply
+// path defers the decision to the actual cmdlet call.
+func bootOrderSemanticEquals(a, b []BootOrderEntryModel) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bootOrderEntryEquals(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func bootOrderEntryEquals(a, b BootOrderEntryModel) bool {
+	if a.Type.IsUnknown() || b.Type.IsUnknown() {
+		return false
+	}
+	if a.Type.ValueString() != b.Type.ValueString() {
+		return false
+	}
+	switch a.Type.ValueString() {
+	case "hard_disk_drive", "dvd_drive":
+		return controllerTypeOrSCSI(a.ControllerType) == controllerTypeOrSCSI(b.ControllerType) &&
+			a.ControllerNumber.ValueInt64() == b.ControllerNumber.ValueInt64() &&
+			a.ControllerLocation.ValueInt64() == b.ControllerLocation.ValueInt64()
+	case "network_adapter":
+		return a.Name.ValueString() == b.Name.ValueString()
+	}
+	return false
+}
+
+// controllerTypeOrSCSI returns the SCSI default for null/unknown/empty
+// ControllerType values. Single source of truth for the "missing
+// controller_type means SCSI" rule used in slot-key comparisons.
+func controllerTypeOrSCSI(t types.String) string {
+	if t.IsNull() || t.IsUnknown() {
+		return "SCSI"
+	}
+	v := t.ValueString()
+	if v == "" {
+		return "SCSI"
+	}
+	return v
 }

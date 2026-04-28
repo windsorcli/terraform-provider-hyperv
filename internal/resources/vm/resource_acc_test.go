@@ -431,6 +431,160 @@ func TestAcc_VM_withHardDisk(t *testing.T) {
 	})
 }
 
+// TestAcc_VM_withBootOrder exercises the gen-2 boot_order feature
+// against the bench. Models the "Talos / OpenBSD install" flow: boot
+// from ISO once, install the OS to disk, reorder to boot from disk,
+// then eject the install media.
+//
+//  1. Create with a DVD (ISO loaded), a HDD, and boot_order = [dvd, hdd].
+//     This is the "first boot from install media" config.
+//  2. Update boot_order to [hdd, dvd] -- "post-install, boot from disk first."
+//  3. Update to remove the DVD entirely and boot_order = [hdd].
+//     This is the "install media ejected, steady state" config.
+//
+// boot_order is wholesale-replacement on the wire (Set-VMFirmware
+// -BootOrder takes the full list), so each step's transition is one
+// round-trip and the assertions just verify the resulting list shape.
+func TestAcc_VM_withBootOrder(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
+	isoFile := acctest.RequireEnv(t, "HYPERV_TEST_ISO_FILE")
+	name := acctest.RandomName("vm-boot")
+	client := acctest.NewClient(t)
+
+	vhdPath := toForwardSlash(joinHostPath(dir, name+"-root.vhdx"))
+	isoPath := toForwardSlash(isoFile)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: install-media-first config.
+				Config: vmWithBootOrderConfig(name, vhdPath, &isoPath, []bootOrderBlock{
+					{Type: "dvd_drive", Number: 0, Location: 1},
+					{Type: "hard_disk_drive", Number: 0, Location: 0},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("boot_order"),
+						knownvalue.ListSizeExact(2),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("boot_order").AtSliceIndex(0).AtMapKey("type"),
+						knownvalue.StringExact("dvd_drive"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("boot_order").AtSliceIndex(1).AtMapKey("type"),
+						knownvalue.StringExact("hard_disk_drive"),
+					),
+				},
+			},
+			{
+				// Step 2: post-install reorder. Same attachments, just
+				// flipped boot_order.
+				Config: vmWithBootOrderConfig(name, vhdPath, &isoPath, []bootOrderBlock{
+					{Type: "hard_disk_drive", Number: 0, Location: 0},
+					{Type: "dvd_drive", Number: 0, Location: 1},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("boot_order").AtSliceIndex(0).AtMapKey("type"),
+						knownvalue.StringExact("hard_disk_drive"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("boot_order").AtSliceIndex(1).AtMapKey("type"),
+						knownvalue.StringExact("dvd_drive"),
+					),
+				},
+			},
+			{
+				// Step 3: eject install media. DVD removed from the
+				// dvd_drive list and the boot_order entry that
+				// referenced it goes too. Tests that detach +
+				// boot_order shrink in the same apply works.
+				Config: vmWithBootOrderConfig(name, vhdPath, nil, []bootOrderBlock{
+					{Type: "hard_disk_drive", Number: 0, Location: 0},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("boot_order"),
+						knownvalue.ListSizeExact(1),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("dvd_drive"),
+						knownvalue.ListSizeExact(0),
+					),
+				},
+			},
+		},
+	})
+}
+
+// bootOrderBlock is the test-side input for a single boot_order entry.
+// Only HDD/DVD entries (slot-tuple) are exercised here; NIC entries
+// follow the same wire shape but their bench setup needs a switch +
+// network adapter, which is covered by TestAcc_VM_withNetworkAdapter.
+type bootOrderBlock struct {
+	Type     string // "hard_disk_drive" | "dvd_drive" | "network_adapter"
+	Number   int
+	Location int
+	Name     string // for network_adapter entries
+}
+
+// vmWithBootOrderConfig renders a VM with one HDD, optionally one DVD
+// (when isoPath is non-nil), and a boot_order list. Mirrors the
+// "Talos install" topology: one disk for the OS, one DVD for the
+// installer media.
+func vmWithBootOrderConfig(vmName, vhdPath string, isoPath *string, order []bootOrderBlock) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `
+resource "hyperv_vhd" "root" {
+  path       = %q
+  vhd_type   = "dynamic"
+  size_bytes = 67108864
+}
+
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  hard_disk_drive = [
+    { path = %q, controller_number = 0, controller_location = 0 },
+  ]
+`, vhdPath, vmName, vmMinimumMemoryBytes, vhdPath)
+
+	if isoPath != nil {
+		fmt.Fprintf(&b, `  dvd_drive = [
+    { iso_path = %q, controller_number = 0, controller_location = 1 },
+  ]
+`, *isoPath)
+	} else {
+		b.WriteString("  dvd_drive = []\n")
+	}
+
+	b.WriteString("  boot_order = [\n")
+	for _, e := range order {
+		switch e.Type {
+		case "hard_disk_drive", "dvd_drive":
+			fmt.Fprintf(&b, `    { type = %q, controller_number = %d, controller_location = %d },`+"\n",
+				e.Type, e.Number, e.Location)
+		case "network_adapter":
+			fmt.Fprintf(&b, `    { type = %q, name = %q },`+"\n", e.Type, e.Name)
+		}
+	}
+	b.WriteString("  ]\n}\n")
+	return b.String()
+}
+
 // vmBasicConfig is the minimum-shape HCL for a no-attachment hyperv_vm.
 // Generation 2, 2 vcpus, 256 MiB memory.
 func vmBasicConfig(name, notes string) string {

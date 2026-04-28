@@ -60,6 +60,7 @@ type Model struct {
 	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
 	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
 	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
 	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
 	Notes           types.String          `tfsdk:"notes"`
 	State           types.String          `tfsdk:"state"`
@@ -121,4 +122,19 @@ type DvdDriveModel struct {
 	ControllerType     types.String  `tfsdk:"controller_type"`
 	ControllerNumber   types.Int64   `tfsdk:"controller_number"`
 	ControllerLocation types.Int64   `tfsdk:"controller_location"`
+}
+
+// BootOrderEntryModel is one element of the `boot_order` list on a gen 2
+// hyperv_vm. Type discriminates between hard_disk_drive / dvd_drive
+// entries (which carry the slot tuple) and network_adapter entries
+// (which carry Name). Unused fields for a given Type are null.
+//
+// Gen 1 BIOS startup order is a separate, deferred slice; the schema
+// validator rejects boot_order on gen 1 at plan time.
+type BootOrderEntryModel struct {
+	Type               types.String `tfsdk:"type"`
+	ControllerType     types.String `tfsdk:"controller_type"`
+	ControllerNumber   types.Int64  `tfsdk:"controller_number"`
+	ControllerLocation types.Int64  `tfsdk:"controller_location"`
+	Name               types.String `tfsdk:"name"`
 }

@@ -166,7 +166,13 @@ func TestVHDScript_TestFilesNotEmbedded(t *testing.T) {
 func TestVMScript_LoadsAllVerbs(t *testing.T) {
 	t.Parallel()
 
-	for _, verb := range []string{"get", "new", "set", "remove"} {
+	for _, verb := range []string{
+		"get", "new", "set", "remove",
+		"add-hard-disk-drive", "remove-hard-disk-drive",
+		"add-network-adapter", "remove-network-adapter",
+		"add-dvd-drive", "remove-dvd-drive",
+		"set-boot-order",
+	} {
 		body, err := VMScript(verb)
 		if err != nil {
 			t.Errorf("VMScript(%q): %v", verb, err)

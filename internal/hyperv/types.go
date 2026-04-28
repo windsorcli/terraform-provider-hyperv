@@ -146,6 +146,53 @@ type VM struct {
 	HardDiskDrives      []HardDiskDrive  `json:"HardDiskDrives"`
 	NetworkAdapters     []NetworkAdapter `json:"NetworkAdapters"`
 	DvdDrives           []DvdDrive       `json:"DvdDrives"`
+	BootOrder           []BootOrderEntry `json:"BootOrder"`
+}
+
+// BootOrderEntry is the per-entry shape vm/get.ps1 emits inside
+// VM.BootOrder. Type discriminates between hard_disk_drive / dvd_drive
+// (which carry the ControllerType + ControllerNumber + ControllerLocation
+// slot tuple) and network_adapter (which carries Name). Unused fields
+// for a given Type are zero values; consumers branch on Type.
+//
+// Gen 1 VMs always emit []BootOrderEntry{} (the script doesn't fetch
+// firmware for them; gen 1 BIOS StartupOrder is a separate, deferred
+// schema slice).
+type BootOrderEntry struct {
+	Type               string `json:"Type"`
+	ControllerType     string `json:"ControllerType"`
+	ControllerNumber   int    `json:"ControllerNumber"`
+	ControllerLocation int    `json:"ControllerLocation"`
+	Name               string `json:"Name"`
+}
+
+// SetBootOrderInput is the stdin JSON shape for vm/set-boot-order.ps1.
+// BootOrder is the new desired sequence; the script replaces the VM's
+// current order wholesale (Set-VMFirmware -BootOrder is not additive).
+// Per-entry shape mirrors BootOrderEntry above with snake_case keys.
+type SetBootOrderInput struct {
+	Name      string                   `json:"name"`
+	BootOrder []SetBootOrderEntryInput `json:"boot_order"`
+}
+
+// SetBootOrderEntryInput is the per-entry shape inside
+// SetBootOrderInput.BootOrder. Same discriminator pattern as
+// BootOrderEntry: Type drives which subset of fields the script reads.
+//
+// All fields are emitted unconditionally (no omitempty). Reason:
+// PowerShell's Set-StrictMode 3.0 throws on access of an absent
+// property on a PSCustomObject. The script reads $entry.controller_*
+// for HDD/DVD entries and $entry.name for NIC entries; whichever
+// fields are unused for a given Type still need to be present on the
+// wire (zero values are fine -- the script's switch ignores them).
+// Specifically, omitempty on `int` would drop controller_number=0,
+// which is the most common slot index and would break the resolver.
+type SetBootOrderEntryInput struct {
+	Type               string `json:"type"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
+	Name               string `json:"name"`
 }
 
 // NetworkAdapter is the per-NIC shape vm/get.ps1 emits inside

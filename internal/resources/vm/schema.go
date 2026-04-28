@@ -61,6 +61,22 @@ func dvdDriveObjectAttrTypes() map[string]attr.Type {
 	}
 }
 
+// bootOrderObjectAttrTypes is the analog for boot_order. The shape is
+// a discriminated union: type drives which subset of the remaining
+// fields is meaningful. Required for the Default empty-list value
+// since boot_order is Optional+Computed and the framework otherwise
+// hands us an "unknown" ListValue that the v1.19 reflect path can't
+// decode into a Go slice (same issue as hard_disk_drive et al).
+func bootOrderObjectAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"type":                types.StringType,
+		"controller_type":     types.StringType,
+		"controller_number":   types.Int64Type,
+		"controller_location": types.Int64Type,
+		"name":                types.StringType,
+	}
+}
+
 // resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
 // slice). MarkdownDescription on each attribute drives the Registry-
 // published doc when `task generate` runs tfplugindocs (PLAN.md S15).
@@ -68,14 +84,12 @@ func resourceSchema() schema.Schema {
 	return schema.Schema{
 		MarkdownDescription: "Manages a Hyper-V virtual machine. Ships with " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), " +
-			"and `notes`. Dynamic CPU/memory, integration services, automatic start/stop actions, " +
-			"checkpoints, `boot_order`, attached storage, attached NICs, and power state land " +
-			"in follow-up PRs of the M4 milestone (per ADR-0001 those will arrive as inline " +
-			"`network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state` blocks on this " +
-			"resource).\n\n" +
-			"**Boot order** is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) " +
-			"translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is " +
-			"until that lands.\n\n" +
+			"`notes`, inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and " +
+			"`boot_order` (gen 2 only). Dynamic CPU/memory, integration services, automatic " +
+			"start/stop actions, checkpoints, and power state land in follow-up PRs.\n\n" +
+			"**Generation 1 boot order** is intentionally absent from this slice -- gen 1 uses " +
+			"BIOS category strings (`Set-VMBios -StartupOrder`) which deserve their own design " +
+			"pass. Gen 1 VMs boot from whatever Hyper-V's default is.\n\n" +
 			"**Power transitions:** the operational lifecycle (start/stop/save/pause) ships in a " +
 			"follow-up as the inline `state` block on this resource. Mutations to `cpu.count`, " +
 			"`memory.startup_bytes`, and `secure_boot` generally require the VM to be `Off`; the " +
@@ -329,6 +343,83 @@ func resourceSchema() schema.Schema {
 							Required: true,
 							MarkdownDescription: "Slot position within the controller (0-based). " +
 								"Required for slot identification.",
+						},
+					},
+				},
+			},
+			"boot_order": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Ordered list of boot devices on a generation 2 VM (UEFI " +
+					"firmware). Each entry has a `type` discriminator and the fields " +
+					"appropriate for that type:\n\n" +
+					"- `type = \"hard_disk_drive\"` or `\"dvd_drive\"`: identify the device " +
+					"by `controller_type` + `controller_number` + `controller_location` (the same " +
+					"slot tuple used in `hard_disk_drive[]` and `dvd_drive[]`).\n" +
+					"- `type = \"network_adapter\"`: identify the NIC by `name`.\n\n" +
+					"**Wholesale replacement.** Each plan-vs-state difference triggers " +
+					"`Set-VMFirmware -BootOrder` with the entire planned list -- there's no " +
+					"partial reorder; an N-element list is set as one atomic call. The VM " +
+					"generally must be `Off` for the cmdlet to apply the change.\n\n" +
+					"**Generation 1 (BIOS) is rejected.** Gen 1 uses a different mechanism " +
+					"(category strings via `Set-VMBios -StartupOrder`) and is intentionally " +
+					"out of scope for this slice; a config validator emits a clear error if " +
+					"`boot_order` is set on a gen 1 VM. Gen 1 boot management ships in a " +
+					"follow-up if a real use case surfaces.\n\n" +
+					"**Talos / OpenBSD install flow:** apply once with `dvd_drive` first in " +
+					"`boot_order`, install the OS, then re-apply with `hard_disk_drive` first " +
+					"(and the DVD removed from `dvd_drive[]` to eject the install media).\n\n" +
+					"**Drift handling:** if someone re-orders the boot list out of band on the " +
+					"host, the next refresh detects the drift and the next plan corrects it.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+				Default: listdefault.StaticValue(
+					types.ListValueMust(
+						types.ObjectType{AttrTypes: bootOrderObjectAttrTypes()},
+						[]attr.Value{},
+					),
+				),
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type": schema.StringAttribute{
+							Required: true,
+							MarkdownDescription: "Discriminator: `hard_disk_drive`, `dvd_drive`, or " +
+								"`network_adapter`. Drives which subset of the other fields applies.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("hard_disk_drive", "dvd_drive", "network_adapter"),
+							},
+						},
+						"controller_type": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							MarkdownDescription: "For `hard_disk_drive` / `dvd_drive` entries: the " +
+								"slot's bus (`SCSI` or `IDE`). Defaults to `SCSI`. Ignored for " +
+								"`network_adapter` entries.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("SCSI", "IDE", ""),
+							},
+						},
+						"controller_number": schema.Int64Attribute{
+							Optional: true,
+							Computed: true,
+							MarkdownDescription: "For `hard_disk_drive` / `dvd_drive` entries: the " +
+								"controller index within the bus (0-based). Ignored for " +
+								"`network_adapter` entries.",
+						},
+						"controller_location": schema.Int64Attribute{
+							Optional: true,
+							Computed: true,
+							MarkdownDescription: "For `hard_disk_drive` / `dvd_drive` entries: the " +
+								"slot position within the controller (0-based). Ignored for " +
+								"`network_adapter` entries.",
+						},
+						"name": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							MarkdownDescription: "For `network_adapter` entries: the NIC display " +
+								"name (must match a `network_adapter[].name` already declared on " +
+								"this VM). Ignored for `hard_disk_drive` / `dvd_drive` entries.",
 						},
 					},
 				},

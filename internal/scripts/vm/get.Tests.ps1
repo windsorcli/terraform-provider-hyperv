@@ -20,7 +20,7 @@ Describe 'Get-HypervVM' {
             $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
                 'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
                 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
@@ -136,6 +136,49 @@ Describe 'Get-HypervVM' {
             Should -Invoke Get-VM -Times 1 -Exactly -ParameterFilter {
                 $Name -eq 'lookup-target'
             }
+        }
+
+        It 'emits an empty BootOrder array on gen 1 (Get-VMFirmware not called)' {
+            # Same gen-1 guard as SecureBootEnabled -- BootOrder also
+            # comes from Get-VMFirmware so it's gen-2-only.
+            Mock Get-VM { New-HypervVMSample -Generation 1 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            $raw = Get-HypervVM -Name 'gen1-vm'
+            $raw | Should -Match '"BootOrder":\[\]'
+            Should -Invoke Get-VMFirmware -Times 0 -Exactly
+        }
+
+        It 'emits BootOrder discriminated by Type (hard_disk_drive / dvd_drive / network_adapter)' {
+            # The Go-side decode uses Type as the discriminator -- HDD
+            # and DVD entries carry ControllerType / Number / Location;
+            # NIC entries carry Name. Unused fields are zero values.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware {
+                New-HypervVMFirmwareSample -BootOrder @(
+                    New-HypervVMBootOrderEntrySample -DeviceType 'DvdDrive' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 1
+                    New-HypervVMBootOrderEntrySample -DeviceType 'HardDiskDrive' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 0
+                    New-HypervVMBootOrderEntrySample -DeviceType 'VMNetworkAdapter' -Name 'primary'
+                )
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+            $parsed.BootOrder.Count | Should -Be 3
+
+            $parsed.BootOrder[0].Type               | Should -Be 'dvd_drive'
+            $parsed.BootOrder[0].ControllerType     | Should -Be 'SCSI'
+            $parsed.BootOrder[0].ControllerNumber   | Should -Be 0
+            $parsed.BootOrder[0].ControllerLocation | Should -Be 1
+            $parsed.BootOrder[0].Name               | Should -Be ''
+
+            $parsed.BootOrder[1].Type               | Should -Be 'hard_disk_drive'
+            $parsed.BootOrder[1].ControllerLocation | Should -Be 0
+
+            $parsed.BootOrder[2].Type               | Should -Be 'network_adapter'
+            $parsed.BootOrder[2].Name               | Should -Be 'primary'
+            $parsed.BootOrder[2].ControllerType     | Should -Be ''
         }
 
         It 'compresses output to a single line (Write-HypervResult contract)' {

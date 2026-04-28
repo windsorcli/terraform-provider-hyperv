@@ -3,8 +3,8 @@
 page_title: "hyperv_vm Resource - hyperv"
 subcategory: ""
 description: |-
-  Manages a Hyper-V virtual machine. Ships with name, generation, nested cpu and memory blocks, secure_boot (gen 2), and notes. Dynamic CPU/memory, integration services, automatic start/stop actions, checkpoints, boot_order, attached storage, attached NICs, and power state land in follow-up PRs of the M4 milestone (per ADR-0001 those will arrive as inline network_adapter[], hard_disk_drive[], dvd_drive[], and state blocks on this resource).
-  Boot order is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands.
+  Manages a Hyper-V virtual machine. Ships with name, generation, nested cpu and memory blocks, secure_boot (gen 2), notes, inline network_adapter[], hard_disk_drive[], dvd_drive[], and boot_order (gen 2 only). Dynamic CPU/memory, integration services, automatic start/stop actions, checkpoints, and power state land in follow-up PRs.
+  Generation 1 boot order is intentionally absent from this slice -- gen 1 uses BIOS category strings (Set-VMBios -StartupOrder) which deserve their own design pass. Gen 1 VMs boot from whatever Hyper-V's default is.
   Power transitions: the operational lifecycle (start/stop/save/pause) ships in a follow-up as the inline state block on this resource. Mutations to cpu.count, memory.startup_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping.
   terraform destroy performs a hard power-off of any running VM (Stop-VM -Force -TurnOff, equivalent to pulling the plug) before calling Remove-VM -Force. This avoids the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration services are absent or unresponsive, and matches the destroy semantics other IaC providers (AWS, Azure, libvirt) use. If a clean shutdown matters -- e.g., decoupled VHDXs the user is keeping after destroy -- drive the graceful shutdown via hyperv_vm_state (when available) or out-of-band before running terraform destroy.
   Static memory only. This slice configures memory via Set-VMMemory -DynamicMemoryEnabled $false. Dynamic memory ships in a follow-up.
@@ -12,9 +12,9 @@ description: |-
 
 # hyperv_vm (Resource)
 
-Manages a Hyper-V virtual machine. Ships with `name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), and `notes`. Dynamic CPU/memory, integration services, automatic start/stop actions, checkpoints, `boot_order`, attached storage, attached NICs, and power state land in follow-up PRs of the M4 milestone (per ADR-0001 those will arrive as inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state` blocks on this resource).
+Manages a Hyper-V virtual machine. Ships with `name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), `notes`, inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only). Dynamic CPU/memory, integration services, automatic start/stop actions, checkpoints, and power state land in follow-up PRs.
 
-**Boot order** is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands.
+**Generation 1 boot order** is intentionally absent from this slice -- gen 1 uses BIOS category strings (`Set-VMBios -StartupOrder`) which deserve their own design pass. Gen 1 VMs boot from whatever Hyper-V's default is.
 
 **Power transitions:** the operational lifecycle (start/stop/save/pause) ships in a follow-up as the inline `state` block on this resource. Mutations to `cpu.count`, `memory.startup_bytes`, and `secure_boot` generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather than auto-stopping.
 
@@ -55,6 +55,15 @@ resource "hyperv_vm" "node01" {
   dvd_drive = [
     { iso_path = "C:/iso/talos.iso", controller_number = 0, controller_location = 1 },
   ]
+
+  # Boot from the install ISO first. After OS install, flip the order
+  # to put hard_disk_drive first and remove the dvd_drive entry to
+  # eject the install media. boot_order is gen 2 only -- the schema
+  # validator rejects it on generation = 1.
+  boot_order = [
+    { type = "dvd_drive", controller_number = 0, controller_location = 1 },
+    { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
+  ]
 }
 
 # Generation 1 VM (BIOS, legacy boot). Useful for Windows Server 2008 R2
@@ -85,6 +94,18 @@ resource "hyperv_vm" "legacy" {
 
 ### Optional
 
+- `boot_order` (Attributes List) Ordered list of boot devices on a generation 2 VM (UEFI firmware). Each entry has a `type` discriminator and the fields appropriate for that type:
+
+- `type = "hard_disk_drive"` or `"dvd_drive"`: identify the device by `controller_type` + `controller_number` + `controller_location` (the same slot tuple used in `hard_disk_drive[]` and `dvd_drive[]`).
+- `type = "network_adapter"`: identify the NIC by `name`.
+
+**Wholesale replacement.** Each plan-vs-state difference triggers `Set-VMFirmware -BootOrder` with the entire planned list -- there's no partial reorder; an N-element list is set as one atomic call. The VM generally must be `Off` for the cmdlet to apply the change.
+
+**Generation 1 (BIOS) is rejected.** Gen 1 uses a different mechanism (category strings via `Set-VMBios -StartupOrder`) and is intentionally out of scope for this slice; a config validator emits a clear error if `boot_order` is set on a gen 1 VM. Gen 1 boot management ships in a follow-up if a real use case surfaces.
+
+**Talos / OpenBSD install flow:** apply once with `dvd_drive` first in `boot_order`, install the OS, then re-apply with `hard_disk_drive` first (and the DVD removed from `dvd_drive[]` to eject the install media).
+
+**Drift handling:** if someone re-orders the boot list out of band on the host, the next refresh detects the drift and the next plan corrects it. (see [below for nested schema](#nestedatt--boot_order))
 - `dvd_drive` (Attributes List) List of DVD drives attached to the VM. Each drive occupies a controller slot identified by `controller_type` + `controller_number` + `controller_location`; `iso_path` optionally loads an ISO into the drive (omit for an empty drive).
 
 **Slot tuple keys reconciliation:** Update diffs the planned list against state by slot. Slots in plan but not state get `Add-VMDvdDrive`; slots in state but not plan get `Remove-VMDvdDrive`; slots in both with a different `iso_path` get detached and re-attached (the brief gap between the two calls is acceptable since the VM is generally Off during scalar updates anyway).
@@ -137,6 +158,21 @@ Required:
 Required:
 
 - `startup_bytes` (Number) Static memory size in bytes (e.g. `4294967296` for 4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; the VM generally must be `Off`.
+
+
+<a id="nestedatt--boot_order"></a>
+### Nested Schema for `boot_order`
+
+Required:
+
+- `type` (String) Discriminator: `hard_disk_drive`, `dvd_drive`, or `network_adapter`. Drives which subset of the other fields applies.
+
+Optional:
+
+- `controller_location` (Number) For `hard_disk_drive` / `dvd_drive` entries: the slot position within the controller (0-based). Ignored for `network_adapter` entries.
+- `controller_number` (Number) For `hard_disk_drive` / `dvd_drive` entries: the controller index within the bus (0-based). Ignored for `network_adapter` entries.
+- `controller_type` (String) For `hard_disk_drive` / `dvd_drive` entries: the slot's bus (`SCSI` or `IDE`). Defaults to `SCSI`. Ignored for `network_adapter` entries.
+- `name` (String) For `network_adapter` entries: the NIC display name (must match a `network_adapter[].name` already declared on this VM). Ignored for `hard_disk_drive` / `dvd_drive` entries.
 
 
 <a id="nestedatt--dvd_drive"></a>

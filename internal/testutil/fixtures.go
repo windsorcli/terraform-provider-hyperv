@@ -98,7 +98,8 @@ const VMGen2FixtureJSON = `{
 	"SecureBootEnabled": true,
 	"HardDiskDrives": [],
 	"NetworkAdapters": [],
-	"DvdDrives": []
+	"DvdDrives": [],
+	"BootOrder": []
 }`
 
 // VMGen1FixtureJSON exercises the gen-1 case: SecureBootEnabled is null
@@ -116,5 +117,6 @@ const VMGen1FixtureJSON = `{
 	"SecureBootEnabled": null,
 	"HardDiskDrives": [],
 	"NetworkAdapters": [],
-	"DvdDrives": []
+	"DvdDrives": [],
+	"BootOrder": []
 }`

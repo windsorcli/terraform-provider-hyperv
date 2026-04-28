@@ -28,6 +28,15 @@ resource "hyperv_vm" "node01" {
   dvd_drive = [
     { iso_path = "C:/iso/talos.iso", controller_number = 0, controller_location = 1 },
   ]
+
+  # Boot from the install ISO first. After OS install, flip the order
+  # to put hard_disk_drive first and remove the dvd_drive entry to
+  # eject the install media. boot_order is gen 2 only -- the schema
+  # validator rejects it on generation = 1.
+  boot_order = [
+    { type = "dvd_drive", controller_number = 0, controller_location = 1 },
+    { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
+  ]
 }
 
 # Generation 1 VM (BIOS, legacy boot). Useful for Windows Server 2008 R2

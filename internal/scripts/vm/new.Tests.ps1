@@ -118,7 +118,7 @@ Describe 'New-HypervVM' {
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
                 'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
                 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
