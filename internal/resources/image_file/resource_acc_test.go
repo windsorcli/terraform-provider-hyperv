@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
@@ -62,13 +63,21 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 		// inverse of CheckResourceGone: the file should STILL be
 		// readable on the bench after destroy. A regression that made
 		// host_path Delete remove the file would catch fire here.
+		//
+		// Per-Get timeout matches acctest.CheckResourceGone: a dropped
+		// bench connection between Terraform's destroy and this Get
+		// would otherwise block until the process-level go-test
+		// timeout (120 min per the Taskfile). 30s is generous against
+		// a healthy bench.
 		CheckDestroy: func(s *terraform.State) error {
-			ctx := context.Background()
 			for _, rs := range s.RootModule().Resources {
 				if rs.Type != "hyperv_image_file" {
 					continue
 				}
-				if _, err := client.GetImageFile(ctx, rs.Primary.ID); err != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				_, err := client.GetImageFile(ctx, rs.Primary.ID)
+				cancel()
+				if err != nil {
 					return fmt.Errorf("host_path file %s should still exist after "+
 						"destroy (provider must not delete pre-staged files): %v",
 						rs.Primary.ID, err)
