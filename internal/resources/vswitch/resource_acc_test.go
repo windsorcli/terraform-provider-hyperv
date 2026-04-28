@@ -20,6 +20,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
@@ -72,6 +73,19 @@ func TestAcc_VirtualSwitch_basic(t *testing.T) {
 			},
 			{
 				Config: vswitchPrivateConfig(name, "updated notes"),
+				// Plan-action assertion: a RequiresReplace regression on
+				// `notes` would silently destroy-and-recreate the switch,
+				// and the state checks below would still pass against the
+				// fresh resource. Pin the action to Update so a schema
+				// regression fails this step explicitly.
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_virtual_switch.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_virtual_switch.test",

@@ -21,6 +21,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
@@ -79,13 +80,23 @@ func TestAcc_VHD_dynamic(t *testing.T) {
 				},
 			},
 			{
-				// Resize: same path, larger size. Schema marks this
-				// as in-place via Resize-VHD; a regression that flipped
-				// size_bytes to RequiresReplace would surface as the
-				// destroy-and-recreate sequence (a different failure
-				// mode -- statecheck on the new size still passes,
-				// but the file's identity on the host changes).
+				// Resize: same path, larger size. Schema marks this as
+				// in-place via Resize-VHD. The plan-action assertion
+				// below pins that contract directly: a regression that
+				// flipped size_bytes to RequiresReplace would otherwise
+				// silently destroy-and-recreate, the statecheck on the
+				// new size would still pass against the fresh file, and
+				// only an out-of-band file-identity check (which we
+				// don't have) would catch it.
 				Config: vhdSizedConfig(vhdPath, "dynamic", vhdResizedSizeBytes),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_vhd.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_vhd.test",
