@@ -138,6 +138,34 @@ function Remove-VMNetworkAdapter {
     )
 }
 
+function Get-VMDvdDrive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName
+    )
+}
+
+function Add-VMDvdDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation,
+        [string] $Path
+    )
+}
+
+function Remove-VMDvdDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation
+    )
+}
+
 # New-HypervVMSample builds a Get-VM-shaped object for use as the canned
 # return value from Mock blocks. Defaults model a typical small gen 2 VM;
 # per-test overrides cover gen 1, larger sizing, running state, etc.

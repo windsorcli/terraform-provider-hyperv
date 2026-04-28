@@ -235,6 +235,24 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
+	// Attach DVDs. Order rationale (NICs first, DVDs after): pure
+	// convenience; Hyper-V doesn't care which order attachments
+	// happen in. Keeping the order stable keeps tflog output
+	// predictable.
+	for _, d := range plan.DvdDrives {
+		if err := r.client.AttachDvdDrive(ctx, attachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
+			resp.Diagnostics.AddError("Attach DVD drive failed", fmt.Sprintf(
+				"VM %s, slot %s/%d/%d, iso_path %s: %s",
+				plan.Name.ValueString(),
+				d.ControllerType.ValueString(),
+				d.ControllerNumber.ValueInt64(),
+				d.ControllerLocation.ValueInt64(),
+				d.IsoPath.ValueString(),
+				err))
+			return
+		}
+	}
+
 	// Re-fetch to populate Computed fields (HardDiskDrives /
 	// NetworkAdapters mirrors, State, Path) from the host. The
 	// framework's "inconsistent result after apply" check compares
@@ -365,6 +383,42 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
+	// DVD reconciliation: same slot-tuple shape as HDD. ISO swap at
+	// the same slot resolves as detach + attach (Hyper-V has a Set-
+	// VMDvdDrive cmdlet for in-place swap but the detach+attach path
+	// is uniform with HDD reconciliation and works equally well
+	// when the VM is Off, which it generally must be for scalar
+	// updates anyway).
+	dvdAttach, dvdDetach := diffDvdDrives(plan.DvdDrives, state.DvdDrives)
+	for _, d := range dvdDetach {
+		if err := r.client.DetachDvdDrive(ctx, detachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
+			if errors.Is(err, hyperv.ErrNotFound) {
+				continue
+			}
+			resp.Diagnostics.AddError("Detach DVD drive failed", fmt.Sprintf(
+				"VM %s, slot %s/%d/%d: %s",
+				plan.Name.ValueString(),
+				d.ControllerType.ValueString(),
+				d.ControllerNumber.ValueInt64(),
+				d.ControllerLocation.ValueInt64(),
+				err))
+			return
+		}
+	}
+	for _, d := range dvdAttach {
+		if err := r.client.AttachDvdDrive(ctx, attachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
+			resp.Diagnostics.AddError("Attach DVD drive failed", fmt.Sprintf(
+				"VM %s, slot %s/%d/%d, iso_path %s: %s",
+				plan.Name.ValueString(),
+				d.ControllerType.ValueString(),
+				d.ControllerNumber.ValueInt64(),
+				d.ControllerLocation.ValueInt64(),
+				d.IsoPath.ValueString(),
+				err))
+			return
+		}
+	}
+
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
 		// No scalar change. If we did reconcile attachments above we
@@ -373,7 +427,8 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		// we can skip the host round-trip. Mirrors vhd's same-shape
 		// short-circuit but extends to attachment-only updates.
 		if len(hddAttach) == 0 && len(hddDetach) == 0 &&
-			len(nicAttach) == 0 && len(nicDetach) == 0 {
+			len(nicAttach) == 0 && len(nicDetach) == 0 &&
+			len(dvdAttach) == 0 && len(dvdDetach) == 0 {
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			return
 		}
@@ -563,6 +618,35 @@ func modelFromVM(v *hyperv.VM) Model {
 		})
 	}
 
+	// DVDs sorted by slot tuple, same shape as HDDs.
+	sortedDvds := make([]hyperv.DvdDrive, len(v.DvdDrives))
+	copy(sortedDvds, v.DvdDrives)
+	sort.Slice(sortedDvds, func(i, j int) bool {
+		if sortedDvds[i].ControllerType != sortedDvds[j].ControllerType {
+			return sortedDvds[i].ControllerType < sortedDvds[j].ControllerType
+		}
+		if sortedDvds[i].ControllerNumber != sortedDvds[j].ControllerNumber {
+			return sortedDvds[i].ControllerNumber < sortedDvds[j].ControllerNumber
+		}
+		return sortedDvds[i].ControllerLocation < sortedDvds[j].ControllerLocation
+	})
+	dvds := make([]DvdDriveModel, 0, len(sortedDvds))
+	for _, d := range sortedDvds {
+		// Empty Path on the wire (the cmdlet's "" for a drive with no
+		// medium loaded) collapses to schema-null IsoPath so the
+		// user's plan that omits iso_path matches state cleanly.
+		isoPath := pathtype.NewPathValue(d.Path)
+		if d.Path == "" {
+			isoPath = pathtype.NewPathNull()
+		}
+		dvds = append(dvds, DvdDriveModel{
+			IsoPath:            isoPath,
+			ControllerType:     types.StringValue(d.ControllerType),
+			ControllerNumber:   types.Int64Value(int64(d.ControllerNumber)),
+			ControllerLocation: types.Int64Value(int64(d.ControllerLocation)),
+		})
+	}
+
 	return Model{
 		ID:              types.StringValue(v.Name),
 		Name:            types.StringValue(v.Name),
@@ -571,6 +655,7 @@ func modelFromVM(v *hyperv.VM) Model {
 		Memory:          &MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
 		HardDiskDrives:  hdds,
 		NetworkAdapters: nics,
+		DvdDrives:       dvds,
 		SecureBoot:      secureBoot,
 		Notes:           notes,
 		State:           types.StringValue(v.State),
@@ -730,5 +815,107 @@ func detachNICInputFor(vmName string, n NetworkAdapterModel) hyperv.DetachNetwor
 	return hyperv.DetachNetworkAdapterInput{
 		Name:   n.Name.ValueString(),
 		VMName: vmName,
+	}
+}
+
+// dvdSlotKeyOf projects a DvdDriveModel onto its slot tuple. Treats
+// missing controller_type as the schema default (SCSI), same as the
+// HDD analog.
+func dvdSlotKeyOf(d DvdDriveModel) hddSlotKey {
+	t := d.ControllerType.ValueString()
+	if d.ControllerType.IsNull() || d.ControllerType.IsUnknown() {
+		t = "SCSI"
+	}
+	return hddSlotKey{
+		ControllerType:     t,
+		ControllerNumber:   d.ControllerNumber.ValueInt64(),
+		ControllerLocation: d.ControllerLocation.ValueInt64(),
+	}
+}
+
+// diffDvdDrives partitions plan vs state by slot tuple, mirroring
+// diffHardDiskDrives. Path comparison uses pathtype.Path's
+// StringSemanticEquals so slash-style differences in iso_path don't
+// trigger spurious detach+attach loops.
+//
+// IsoPath null vs null is equal (both empty drives, no swap).
+// IsoPath null vs set, or set vs null, triggers swap (eject or load).
+// IsoPath set vs set with semantic-equal paths is no-op.
+func diffDvdDrives(plan, state []DvdDriveModel) (toAttach, toDetach []DvdDriveModel) {
+	planBySlot := make(map[hddSlotKey]DvdDriveModel, len(plan))
+	for _, d := range plan {
+		planBySlot[dvdSlotKeyOf(d)] = d
+	}
+	stateBySlot := make(map[hddSlotKey]DvdDriveModel, len(state))
+	for _, d := range state {
+		stateBySlot[dvdSlotKeyOf(d)] = d
+	}
+
+	for k, planD := range planBySlot {
+		stateD, exists := stateBySlot[k]
+		if !exists {
+			toAttach = append(toAttach, planD)
+			continue
+		}
+		// Same slot: compare iso_path. Null/null is equal (both empty
+		// drives). Otherwise, semantic-equals on the path.
+		planNull := planD.IsoPath.IsNull() || planD.IsoPath.IsUnknown()
+		stateNull := stateD.IsoPath.IsNull() || stateD.IsoPath.IsUnknown()
+		if planNull && stateNull {
+			continue
+		}
+		if planNull != stateNull {
+			toDetach = append(toDetach, stateD)
+			toAttach = append(toAttach, planD)
+			continue
+		}
+		eq, _ := planD.IsoPath.StringSemanticEquals(context.Background(), stateD.IsoPath)
+		if !eq {
+			toDetach = append(toDetach, stateD)
+			toAttach = append(toAttach, planD)
+		}
+	}
+	for k, stateD := range stateBySlot {
+		if _, exists := planBySlot[k]; !exists {
+			toDetach = append(toDetach, stateD)
+		}
+	}
+	return toAttach, toDetach
+}
+
+// attachDvdInputFor builds the wire-level AttachDvdDriveInput. IsoPath
+// null/unknown maps to nil *string so the JSON omits the key (script
+// then creates an empty drive); set IsoPath maps to &path.
+func attachDvdInputFor(vmName string, d DvdDriveModel) hyperv.AttachDvdDriveInput {
+	t := d.ControllerType.ValueString()
+	if d.ControllerType.IsNull() || d.ControllerType.IsUnknown() {
+		t = "SCSI"
+	}
+	in := hyperv.AttachDvdDriveInput{
+		Name:               vmName,
+		ControllerType:     t,
+		ControllerNumber:   int(d.ControllerNumber.ValueInt64()),
+		ControllerLocation: int(d.ControllerLocation.ValueInt64()),
+	}
+	if !d.IsoPath.IsNull() && !d.IsoPath.IsUnknown() {
+		p := d.IsoPath.ValueString()
+		in.IsoPath = &p
+	}
+	return in
+}
+
+// detachDvdInputFor mirrors attachDvdInputFor but omits IsoPath -- the
+// slot tuple identifies the drive to remove regardless of what's
+// loaded.
+func detachDvdInputFor(vmName string, d DvdDriveModel) hyperv.DetachDvdDriveInput {
+	t := d.ControllerType.ValueString()
+	if d.ControllerType.IsNull() || d.ControllerType.IsUnknown() {
+		t = "SCSI"
+	}
+	return hyperv.DetachDvdDriveInput{
+		Name:               vmName,
+		ControllerType:     t,
+		ControllerNumber:   int(d.ControllerNumber.ValueInt64()),
+		ControllerLocation: int(d.ControllerLocation.ValueInt64()),
 	}
 }

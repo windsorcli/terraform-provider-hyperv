@@ -59,6 +59,7 @@ type Model struct {
 	Memory          *MemoryModel          `tfsdk:"memory"`
 	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
 	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
 	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
 	Notes           types.String          `tfsdk:"notes"`
 	State           types.String          `tfsdk:"state"`
@@ -106,4 +107,18 @@ type HardDiskDriveModel struct {
 type NetworkAdapterModel struct {
 	Name       types.String `tfsdk:"name"`
 	SwitchName types.String `tfsdk:"switch_name"`
+}
+
+// DvdDriveModel is one element of the `dvd_drive` list on hyperv_vm.
+// Same slot-tuple shape as HardDiskDriveModel (controller_type,
+// controller_number, controller_location), but IsoPath is Optional --
+// an empty DVD drive (no medium loaded) is a legitimate config.
+//
+// IsoPath uses pathtype.Path for slash-style folding consistent with
+// hyperv_image_file.destination_path and hyperv_vhd.path.
+type DvdDriveModel struct {
+	IsoPath            pathtype.Path `tfsdk:"iso_path"`
+	ControllerType     types.String  `tfsdk:"controller_type"`
+	ControllerNumber   types.Int64   `tfsdk:"controller_number"`
+	ControllerLocation types.Int64   `tfsdk:"controller_location"`
 }

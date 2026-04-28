@@ -41,7 +41,7 @@ func TestResource_Schema(t *testing.T) {
 	}
 	wantAttrs := []string{
 		"id", "name", "generation", "cpu", "memory",
-		"hard_disk_drive", "network_adapter",
+		"hard_disk_drive", "network_adapter", "dvd_drive",
 		"secure_boot", "notes", "state", "path",
 	}
 	for _, name := range wantAttrs {
@@ -925,5 +925,150 @@ func TestModelFromVM_PopulatesNetworkAdapters(t *testing.T) {
 	}
 	if got.NetworkAdapters[1].SwitchName.ValueString() != "lab-external" {
 		t.Errorf("second NIC switch = %q, want lab-external", got.NetworkAdapters[1].SwitchName.ValueString())
+	}
+}
+
+// TestDiffDvdDrives covers the slot-keyed diff including the
+// null/non-null IsoPath transitions ("eject" and "load") that don't
+// apply to HDDs.
+func TestDiffDvdDrives(t *testing.T) {
+	t.Parallel()
+
+	dvd := func(iso *string, ct string, n, l int64) DvdDriveModel {
+		isoPath := pathtype.NewPathNull()
+		if iso != nil {
+			isoPath = pathtype.NewPathValue(*iso)
+		}
+		return DvdDriveModel{
+			IsoPath:            isoPath,
+			ControllerType:     types.StringValue(ct),
+			ControllerNumber:   types.Int64Value(n),
+			ControllerLocation: types.Int64Value(l),
+		}
+	}
+	str := func(s string) *string { return &s }
+
+	t.Run("new slot with iso -> attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+			nil,
+		)
+		if len(add) != 1 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 1/0", len(add), len(rm))
+		}
+	})
+	t.Run("removed slot -> detach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffDvdDrives(
+			nil,
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+		)
+		if len(add) != 0 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 0/1", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, both empty -> no-op", func(t *testing.T) {
+		t.Parallel()
+		empty := dvd(nil, "SCSI", 0, 1)
+		add, rm := diffDvdDrives([]DvdDriveModel{empty}, []DvdDriveModel{empty})
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, plan loads ISO into empty -> detach + attach (load)", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+			[]DvdDriveModel{dvd(nil, "SCSI", 0, 1)},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1 (load = swap)", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, plan ejects ISO -> detach + attach (Talos pattern)", func(t *testing.T) {
+		t.Parallel()
+		// This is the Flow C eject-after-install case: the user
+		// declared the DVD with an ISO, install completes, on the
+		// next apply they remove iso_path. Reconciliation detaches
+		// the loaded drive, attaches an empty one at the same slot.
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(nil, "SCSI", 0, 1)},
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1 (eject = swap)", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, slash-style differs -> no-op", func(t *testing.T) {
+		t.Parallel()
+		// Same StringSemanticEquals defense as the HDD test.
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(str("C:/isos/boot.iso"), "SCSI", 0, 1)},
+			[]DvdDriveModel{dvd(str(`C:\isos\boot.iso`), "SCSI", 0, 1)},
+		)
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0 (slash-folding via Path semantic-equals)", len(add), len(rm))
+		}
+	})
+}
+
+// TestAttachDvdInputFor_NilIsoPath confirms the null IsoPath case
+// produces a nil *string on the wire (the script's "if not empty"
+// guard then creates an empty drive).
+func TestAttachDvdInputFor_NilIsoPath(t *testing.T) {
+	t.Parallel()
+
+	d := DvdDriveModel{
+		IsoPath:            pathtype.NewPathNull(),
+		ControllerType:     types.StringValue("SCSI"),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(1),
+	}
+	got := attachDvdInputFor("vm01", d)
+	if got.IsoPath != nil {
+		t.Errorf("IsoPath = %v (target = %q), want nil", got.IsoPath, *got.IsoPath)
+	}
+}
+
+// TestAttachDvdInputFor_SetIsoPath confirms the set case populates
+// the *string.
+func TestAttachDvdInputFor_SetIsoPath(t *testing.T) {
+	t.Parallel()
+
+	d := DvdDriveModel{
+		IsoPath:            pathtype.NewPathValue("C:\\boot.iso"),
+		ControllerType:     types.StringValue("SCSI"),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(1),
+	}
+	got := attachDvdInputFor("vm01", d)
+	if got.IsoPath == nil || *got.IsoPath != "C:\\boot.iso" {
+		t.Errorf("IsoPath = %v, want pointer to C:\\boot.iso", got.IsoPath)
+	}
+}
+
+// TestModelFromVM_DvdDrivesEmptyPathBecomesNull: cmdlet's "" Path on a
+// drive with no medium loaded collapses to schema-null IsoPath, so a
+// user's plan that omits iso_path matches state cleanly.
+func TestModelFromVM_DvdDrivesEmptyPathBecomesNull(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		DvdDrives: []hyperv.DvdDrive{
+			{Path: "", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 1},
+			{Path: `C:\boot.iso`, ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 2},
+		},
+	})
+	if len(got.DvdDrives) != 2 {
+		t.Fatalf("got %d DVDs, want 2", len(got.DvdDrives))
+	}
+	if !got.DvdDrives[0].IsoPath.IsNull() {
+		t.Errorf("first DVD IsoPath = %v, want null (empty drive)", got.DvdDrives[0].IsoPath)
+	}
+	if got.DvdDrives[1].IsoPath.ValueString() != `C:\boot.iso` {
+		t.Errorf("second DVD IsoPath = %q, want C:\\boot.iso", got.DvdDrives[1].IsoPath.ValueString())
 	}
 }

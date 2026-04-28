@@ -128,10 +128,10 @@ type NewVHDDifferencingInput struct {
 // SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
 // no Secure Boot concept); gen 2 always returns a real bool.
 //
-// HardDiskDrives and NetworkAdapters are always (possibly empty)
-// slices -- the script-side @() wrapper guarantees JSON array shape
-// even when nothing is attached, so a freshly-created VM with no
-// attachments round-trips as "[]" rather than null.
+// HardDiskDrives, NetworkAdapters, and DvdDrives are always (possibly
+// empty) slices -- the script-side @() wrapper guarantees JSON array
+// shape even when nothing is attached, so a freshly-created VM with
+// no attachments round-trips as "[]" rather than null.
 type VM struct {
 	Name                string           `json:"Name"`
 	ID                  string           `json:"Id"`
@@ -145,6 +145,7 @@ type VM struct {
 	SecureBootEnabled   *bool            `json:"SecureBootEnabled"`
 	HardDiskDrives      []HardDiskDrive  `json:"HardDiskDrives"`
 	NetworkAdapters     []NetworkAdapter `json:"NetworkAdapters"`
+	DvdDrives           []DvdDrive       `json:"DvdDrives"`
 }
 
 // NetworkAdapter is the per-NIC shape vm/get.ps1 emits inside
@@ -175,6 +176,39 @@ type AttachNetworkAdapterInput struct {
 type DetachNetworkAdapterInput struct {
 	Name   string `json:"name"`
 	VMName string `json:"vm_name"`
+}
+
+// DvdDrive is the per-attachment shape vm/get.ps1 emits inside
+// VM.DvdDrives. Same slot-tuple identity as HardDiskDrive
+// (ControllerType + ControllerNumber + ControllerLocation), but
+// Path may be empty -- a DVD drive without an ISO loaded is a
+// legitimate state (the drive exists, the medium tray is empty).
+type DvdDrive struct {
+	Path               string `json:"Path"`
+	ControllerType     string `json:"ControllerType"`
+	ControllerNumber   int    `json:"ControllerNumber"`
+	ControllerLocation int    `json:"ControllerLocation"`
+}
+
+// AttachDvdDriveInput is the stdin JSON shape for vm/add-dvd-drive.ps1.
+// IsoPath is *string so the wire JSON drops it cleanly when the user
+// wants an empty drive (script's "if not empty" guard then omits
+// -Path from the cmdlet call).
+type AttachDvdDriveInput struct {
+	Name               string  `json:"name"`
+	ControllerType     string  `json:"controller_type"`
+	ControllerNumber   int     `json:"controller_number"`
+	ControllerLocation int     `json:"controller_location"`
+	IsoPath            *string `json:"iso_path,omitempty"`
+}
+
+// DetachDvdDriveInput mirrors DetachHardDiskInput -- slot tuple
+// identifies the DVD to remove, no Path needed.
+type DetachDvdDriveInput struct {
+	Name               string `json:"name"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
 }
 
 // HardDiskDrive is the per-attachment shape vm/get.ps1 emits inside

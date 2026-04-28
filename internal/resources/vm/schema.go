@@ -49,6 +49,18 @@ func networkAdapterObjectAttrTypes() map[string]attr.Type {
 	}
 }
 
+// dvdDriveObjectAttrTypes is the analog for dvd_drive. Slot tuple
+// matches HardDiskDrive; iso_path uses the path custom type for
+// slash-style folding.
+func dvdDriveObjectAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"iso_path":            pathtype.Type,
+		"controller_type":     types.StringType,
+		"controller_number":   types.Int64Type,
+		"controller_location": types.Int64Type,
+	}
+}
+
 // resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
 // slice). MarkdownDescription on each attribute drives the Registry-
 // published doc when `task generate` runs tfplugindocs (PLAN.md S15).
@@ -253,6 +265,70 @@ func resourceSchema() schema.Schema {
 							MarkdownDescription: "Name of the `hyperv_virtual_switch` to bind " +
 								"this NIC to. Hyper-V validates the switch exists at apply " +
 								"time and surfaces its own clear error if it doesn't.",
+						},
+					},
+				},
+			},
+			"dvd_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "List of DVD drives attached to the VM. Each drive occupies " +
+					"a controller slot identified by `controller_type` + `controller_number` + " +
+					"`controller_location`; `iso_path` optionally loads an ISO into the drive " +
+					"(omit for an empty drive).\n\n" +
+					"**Slot tuple keys reconciliation:** Update diffs the planned list against " +
+					"state by slot. Slots in plan but not state get `Add-VMDvdDrive`; slots in " +
+					"state but not plan get `Remove-VMDvdDrive`; slots in both with a different " +
+					"`iso_path` get detached and re-attached (the brief gap between the two " +
+					"calls is acceptable since the VM is generally Off during scalar updates " +
+					"anyway).\n\n" +
+					"**Eject-on-destroy and Talos-style flows:** removing a DVD entry from the " +
+					"list detaches it without VM replace, which is what Talos / OpenBSD / " +
+					"appliance-OS install workflows need (\"boot from ISO once, remove media on " +
+					"the next apply\"). Pair with a `boot_order` change in a follow-up commit.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+				Default: listdefault.StaticValue(
+					types.ListValueMust(
+						types.ObjectType{AttrTypes: dvdDriveObjectAttrTypes()},
+						[]attr.Value{},
+					),
+				),
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"iso_path": schema.StringAttribute{
+							CustomType: pathtype.Type,
+							Optional:   true,
+							MarkdownDescription: "Absolute path on the host of the ISO to load " +
+								"into this DVD drive. Omit for an empty drive (medium tray exists, " +
+								"nothing inserted). Forward and back slashes are accepted " +
+								"equivalently.",
+						},
+						"controller_type": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  stringdefault.StaticString("SCSI"),
+							MarkdownDescription: "Controller bus. `SCSI` is the default and the " +
+								"only valid choice for gen 2 VMs; `IDE` is gen-1-only. The " +
+								"script layer surfaces Hyper-V's clear cross-gen error if " +
+								"mismatched.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("SCSI", "IDE"),
+							},
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+						"controller_number": schema.Int64Attribute{
+							Required: true,
+							MarkdownDescription: "Controller index within the bus (0-based). " +
+								"Required for slot identification.",
+						},
+						"controller_location": schema.Int64Attribute{
+							Required: true,
+							MarkdownDescription: "Slot position within the controller (0-based). " +
+								"Required for slot identification.",
 						},
 					},
 				},

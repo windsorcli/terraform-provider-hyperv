@@ -25,6 +25,13 @@
 #                     { "Name":       "<display-name>",
 #                       "SwitchName": "<vswitch-name>" },
 #                     ...
+#                   ],
+#                   "DvdDrives":                  [
+#                     { "Path":               "<absolute-path>" | "",
+#                       "ControllerType":     "SCSI"|"IDE",
+#                       "ControllerNumber":   <int>,
+#                       "ControllerLocation": <int> },
+#                     ...
 #                   ]
 #                 }
 #   stderr/exit : missing VM -> Write-HypervError envelope with
@@ -73,6 +80,17 @@ function Read-HypervVMResult {
                 Name,
                 SwitchName
     )
+    # DVD drives: same shape as HardDiskDrives. An empty drive (no ISO
+    # loaded) emits Path as the empty string, not null -- the cmdlet's
+    # raw .Path property is "" in that case and we don't translate.
+    $dvds = @(
+        Get-VMDvdDrive -VM $Vm -ErrorAction Stop |
+            Select-Object `
+                @{ N = 'Path';               E = { if ($_.Path) { $_.Path } else { '' } } },
+                @{ N = 'ControllerType';     E = { $_.ControllerType.ToString() } },
+                @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
+                @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
+    )
     [pscustomobject]@{
         Name                = $Vm.Name
         Id                  = $Vm.Id.ToString()
@@ -86,6 +104,7 @@ function Read-HypervVMResult {
         SecureBootEnabled   = $secureBoot
         HardDiskDrives      = $hdds
         NetworkAdapters     = $nics
+        DvdDrives           = $dvds
     } | Write-HypervResult
 }
 

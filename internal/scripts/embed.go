@@ -85,6 +85,7 @@ func VHDScript(verb string) ([]byte, error) {
 //go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1
 //go:embed vm/add-hard-disk-drive.ps1 vm/remove-hard-disk-drive.ps1
 //go:embed vm/add-network-adapter.ps1 vm/remove-network-adapter.ps1
+//go:embed vm/add-dvd-drive.ps1 vm/remove-dvd-drive.ps1
 var VM embed.FS
 
 // VMScript returns the contents of vm/<verb>.ps1.

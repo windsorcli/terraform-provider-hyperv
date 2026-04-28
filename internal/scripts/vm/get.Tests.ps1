@@ -20,7 +20,7 @@ Describe 'Get-HypervVM' {
             $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
                 'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
                 'ProcessorCount', 'SecureBootEnabled', 'State'
             )

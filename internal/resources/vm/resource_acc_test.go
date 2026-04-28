@@ -117,6 +117,118 @@ func TestAcc_VM_basic(t *testing.T) {
 	})
 }
 
+// TestAcc_VM_withDvdDrive exercises the inline dvd_drive list across
+// the three transitions that matter:
+//
+//  1. Attach a DVD drive with an ISO loaded.
+//  2. Eject the ISO (drive stays at the same slot, iso_path goes from
+//     set to null) -- the Talos / OpenBSD "remove install media after
+//     install" pattern.
+//  3. Remove the DVD drive entirely.
+//
+// Reads HYPERV_TEST_ISO_FILE for the ISO path. Hyper-V's
+// Add-VMDvdDrive validates the file extension is .iso (a .txt
+// fixture is rejected with "The specified path for the drive is not
+// valid"), but doesn't validate ISO contents -- a 0-byte
+// fixture.iso suffices for the attach/detach lifecycle. A real boot
+// test that needs a valid ISO is for a future Flow A/C acc test.
+func TestAcc_VM_withDvdDrive(t *testing.T) {
+	isoFile := acctest.RequireEnv(t, "HYPERV_TEST_ISO_FILE")
+	name := acctest.RandomName("vm-dvd")
+	client := acctest.NewClient(t)
+
+	// Forward-slash form to exercise pathtype.Path semantic-equals.
+	isoPath := toForwardSlash(isoFile)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: VM with a DVD drive at SCSI 0:1, ISO loaded.
+				Config: vmWithDvdConfig(name, []dvdBlock{
+					{IsoPath: isoPath, Number: 0, Location: 1},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("dvd_drive"),
+						knownvalue.ListSizeExact(1),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("dvd_drive").AtSliceIndex(0).AtMapKey("iso_path"),
+						knownvalue.StringExact(isoPath),
+					),
+				},
+			},
+			{
+				// Step 2: same slot, ISO ejected (iso_path null).
+				Config: vmWithDvdConfig(name, []dvdBlock{
+					{IsoPath: "", Number: 0, Location: 1},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("dvd_drive"),
+						knownvalue.ListSizeExact(1),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("dvd_drive").AtSliceIndex(0).AtMapKey("iso_path"),
+						knownvalue.Null(),
+					),
+				},
+			},
+			{
+				// Step 3: DVD removed entirely.
+				Config: vmWithDvdConfig(name, nil),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("dvd_drive"),
+						knownvalue.ListSizeExact(0),
+					),
+				},
+			},
+		},
+	})
+}
+
+// dvdBlock is the input shape for vmWithDvdConfig.
+type dvdBlock struct {
+	IsoPath  string // empty string = empty drive (omits iso_path key)
+	Number   int
+	Location int
+}
+
+// vmWithDvdConfig renders a hyperv_vm with `len(dvds)` DVD entries.
+// IsoPath="" omits the key from HCL (empty drive); non-empty quotes
+// it as the iso_path attribute.
+func vmWithDvdConfig(vmName string, dvds []dvdBlock) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  dvd_drive = [
+`, vmName, vmMinimumMemoryBytes)
+	for _, d := range dvds {
+		if d.IsoPath == "" {
+			fmt.Fprintf(&b, `    { controller_number = %d, controller_location = %d },`+"\n",
+				d.Number, d.Location)
+		} else {
+			fmt.Fprintf(&b, `    { iso_path = %q, controller_number = %d, controller_location = %d },`+"\n",
+				d.IsoPath, d.Number, d.Location)
+		}
+	}
+	b.WriteString("  ]\n}\n")
+	return b.String()
+}
+
 // TestAcc_VM_withNetworkAdapter chains a hyperv_virtual_switch to a
 // hyperv_vm via the inline network_adapter list. Three steps mirror
 // the HDD test pattern: attach one, add a second, remove the first.

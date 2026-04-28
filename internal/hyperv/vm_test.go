@@ -630,3 +630,124 @@ func TestClient_GetVM_DecodesNetworkAdapters(t *testing.T) {
 		t.Errorf("first NIC = %+v, want primary/lab-internal", v.NetworkAdapters[0])
 	}
 }
+
+// TestClient_AttachDvdDrive_HappyPath confirms the optional IsoPath
+// pointer round-trips: a non-nil *string emits "iso_path" on the
+// wire, a nil *string omits the key entirely (omitempty).
+func TestClient_AttachDvdDrive_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Add-HypervVMDvdDrive").Return("{}", "", 0)
+	c := NewClient(fr)
+
+	iso := `C:\hyperv\isos\boot.iso`
+	in := AttachDvdDriveInput{
+		Name:               "vm01",
+		ControllerType:     "SCSI",
+		ControllerNumber:   0,
+		ControllerLocation: 1,
+		IsoPath:            &iso,
+	}
+	if err := c.AttachDvdDrive(t.Context(), in); err != nil {
+		t.Fatalf("AttachDvdDrive: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{
+		`"name":"vm01"`,
+		`"controller_type":"SCSI"`,
+		`"controller_number":0`,
+		`"controller_location":1`,
+		`"iso_path":"C:\\hyperv\\isos\\boot.iso"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin should contain %q; got: %s", want, stdin)
+		}
+	}
+}
+
+// TestClient_AttachDvdDrive_EmptyDrive_OmitsIsoPath: nil IsoPath
+// produces a wire payload without the iso_path key, so the
+// script-side "if not empty" guard creates an empty drive.
+func TestClient_AttachDvdDrive_EmptyDrive_OmitsIsoPath(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Add-HypervVMDvdDrive").Return("{}", "", 0)
+	c := NewClient(fr)
+
+	in := AttachDvdDriveInput{
+		Name:               "vm01",
+		ControllerType:     "SCSI",
+		ControllerNumber:   0,
+		ControllerLocation: 1,
+		IsoPath:            nil,
+	}
+	if err := c.AttachDvdDrive(t.Context(), in); err != nil {
+		t.Fatalf("AttachDvdDrive: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if strings.Contains(stdin, `"iso_path"`) {
+		t.Errorf("nil IsoPath must omit the wire key (omitempty); got: %s", stdin)
+	}
+}
+
+// TestClient_DetachDvdDrive_HappyPath: slot-tuple-only payload.
+func TestClient_DetachDvdDrive_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervVMDvdDrive").Return("{}", "", 0)
+	c := NewClient(fr)
+
+	in := DetachDvdDriveInput{
+		Name:               "vm01",
+		ControllerType:     "SCSI",
+		ControllerNumber:   0,
+		ControllerLocation: 1,
+	}
+	if err := c.DetachDvdDrive(t.Context(), in); err != nil {
+		t.Fatalf("DetachDvdDrive: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if strings.Contains(stdin, `"iso_path"`) {
+		t.Errorf("DetachDvdDriveInput must not carry iso_path; got: %s", stdin)
+	}
+}
+
+// TestClient_GetVM_DecodesDvdDrives: array shape round-trips, including
+// the empty-Path case for an empty (no-ISO-loaded) drive.
+func TestClient_GetVM_DecodesDvdDrives(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{
+		"Name":"vm01","Id":"00000000-0000-0000-0000-000000000000","Generation":2,
+		"ProcessorCount":2,"MemoryStartupBytes":2147483648,"MemoryAssignedBytes":2147483648,
+		"State":"Off","Notes":"","Path":"C:\\foo","SecureBootEnabled":true,
+		"HardDiskDrives":[],"NetworkAdapters":[],
+		"DvdDrives":[
+			{"Path":"C:\\hyperv\\isos\\boot.iso","ControllerType":"SCSI","ControllerNumber":0,"ControllerLocation":1},
+			{"Path":"","ControllerType":"SCSI","ControllerNumber":0,"ControllerLocation":2}
+		]
+	}`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVM").Return(envelope, "", 0)
+	c := NewClient(fr)
+
+	v, err := c.GetVM(t.Context(), "vm01")
+	if err != nil {
+		t.Fatalf("GetVM: %v", err)
+	}
+	if got := len(v.DvdDrives); got != 2 {
+		t.Fatalf("DvdDrives count = %d, want 2", got)
+	}
+	if v.DvdDrives[0].Path != `C:\hyperv\isos\boot.iso` {
+		t.Errorf("first DVD path = %q, want boot.iso", v.DvdDrives[0].Path)
+	}
+	if v.DvdDrives[1].Path != "" {
+		t.Errorf("second DVD path = %q, want empty (no ISO loaded)", v.DvdDrives[1].Path)
+	}
+}

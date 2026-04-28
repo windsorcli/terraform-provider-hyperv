@@ -188,3 +188,35 @@ func (c *Client) DetachNetworkAdapter(ctx context.Context, in DetachNetworkAdapt
 	}
 	return c.runScript(ctx, string(body), stdin, nil)
 }
+
+// AttachDvdDrive adds a DVD drive to a VM at a specific controller
+// slot via Add-VMDvdDrive, optionally loading an ISO. IsoPath=nil
+// produces an empty drive (the medium tray exists but no ISO is
+// loaded); IsoPath=&"path" loads the ISO at attach time.
+func (c *Client) AttachDvdDrive(ctx context.Context, in AttachDvdDriveInput) error {
+	body, err := scripts.VMScript("add-dvd-drive")
+	if err != nil {
+		return fmt.Errorf("load vm/add-dvd-drive.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal add-dvd-drive.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}
+
+// DetachDvdDrive removes a DVD drive from a VM at a specific
+// controller slot via Remove-VMDvdDrive. Same slot-keyed semantics
+// as DetachHardDisk -- whatever ISO (if any) was loaded gets
+// implicitly ejected.
+func (c *Client) DetachDvdDrive(ctx context.Context, in DetachDvdDriveInput) error {
+	body, err := scripts.VMScript("remove-dvd-drive")
+	if err != nil {
+		return fmt.Errorf("load vm/remove-dvd-drive.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal remove-dvd-drive.ps1 input: %w", err)
+	}
+	return c.runScript(ctx, string(body), stdin, nil)
+}

@@ -49,6 +49,14 @@ function Read-HypervVMResult {
         Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop |
             Select-Object Name, SwitchName
     )
+    $dvds = @(
+        Get-VMDvdDrive -VM $Vm -ErrorAction Stop |
+            Select-Object `
+                @{ N = 'Path';               E = { if ($_.Path) { $_.Path } else { '' } } },
+                @{ N = 'ControllerType';     E = { $_.ControllerType.ToString() } },
+                @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
+                @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
+    )
     [pscustomobject]@{
         Name                = $Vm.Name
         Id                  = $Vm.Id.ToString()
@@ -62,6 +70,7 @@ function Read-HypervVMResult {
         SecureBootEnabled   = $secureBoot
         HardDiskDrives      = $hdds
         NetworkAdapters     = $nics
+        DvdDrives           = $dvds
     } | Write-HypervResult
 }
 
