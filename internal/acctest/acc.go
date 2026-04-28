@@ -325,14 +325,24 @@ func NewClient(t *testing.T) *hyperv.Client {
 // resources whose Delete is documented as a no-op on the underlying
 // object -- e.g. hyperv_image_file in host_path mode. Those tests
 // inline a custom CheckDestroy rather than using this helper.
+//
+// Per-call context budget: 30 seconds. resource.TestCheckFunc's
+// signature has no *testing.T, so we can't piggyback on the
+// test-scoped context AccCtx provides. A bare context.Background
+// would let a dropped bench connection between Terraform's destroy
+// and this Get hang for the full process-level `go test -timeout`
+// (120 minutes per the Taskfile), turning a transient blip into a
+// two-hour wait with no intermediate signal. 30s is generous for
+// any single Get against a healthy bench and bounds the worst case.
 func CheckResourceGone[T any](resourceType string, get func(context.Context, string) (*T, error)) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		ctx := context.Background()
 		for _, rs := range s.RootModule().Resources {
 			if rs.Type != resourceType {
 				continue
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			_, err := get(ctx, rs.Primary.ID)
+			cancel()
 			if errors.Is(err, hyperv.ErrNotFound) {
 				continue
 			}
