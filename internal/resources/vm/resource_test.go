@@ -39,7 +39,7 @@ func TestResource_Schema(t *testing.T) {
 		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
 	}
 	wantAttrs := []string{
-		"id", "name", "generation", "vcpu", "memory_bytes",
+		"id", "name", "generation", "cpu", "memory",
 		"secure_boot", "notes", "state", "path",
 	}
 	for _, name := range wantAttrs {
@@ -76,23 +76,40 @@ func TestResource_Schema_RequiresReplaceOnImmutableAttrs(t *testing.T) {
 	}
 }
 
-// TestResource_Schema_VcpuAndMemoryAreInPlaceMutable confirms the two
-// in-place updatables don't carry RequiresReplace -- Set-VMProcessor /
-// Set-VMMemory are the in-place paths.
-func TestResource_Schema_VcpuAndMemoryAreInPlaceMutable(t *testing.T) {
+// TestResource_Schema_CPUAndMemoryAreInPlaceMutable confirms the
+// nested cpu/memory blocks don't carry RequiresReplace -- Set-VMProcessor
+// and Set-VMMemory are the in-place paths. The check looks at the inner
+// scalar attributes (cpu.count, memory.startup_bytes) since those are
+// where the RequiresReplace would be expressed if it were ever added.
+func TestResource_Schema_CPUAndMemoryAreInPlaceMutable(t *testing.T) {
 	t.Parallel()
 
 	r := New()
 	resp := &resource.SchemaResponse{}
 	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
 
-	for _, name := range []string{"vcpu", "memory_bytes"} {
-		intAttr, ok := resp.Schema.Attributes[name].(schema.Int64Attribute)
+	cases := []struct {
+		block, inner string
+	}{
+		{"cpu", "count"},
+		{"memory", "startup_bytes"},
+	}
+	for _, tc := range cases {
+		blockAttr, ok := resp.Schema.Attributes[tc.block].(schema.SingleNestedAttribute)
 		if !ok {
-			t.Fatalf("%q is not an Int64Attribute (got %T)", name, resp.Schema.Attributes[name])
+			t.Fatalf("%q is not a SingleNestedAttribute (got %T)", tc.block, resp.Schema.Attributes[tc.block])
 		}
-		if hasPlanModifier(intAttr.PlanModifiers, "RequiresReplace") {
-			t.Errorf("%q must NOT carry RequiresReplace", name)
+		// Block-level RequiresReplace would propagate through the whole
+		// thing, so check it doesn't carry one either.
+		if hasPlanModifier(blockAttr.PlanModifiers, "RequiresReplace") {
+			t.Errorf("%q (block) must NOT carry RequiresReplace", tc.block)
+		}
+		innerAttr, ok := blockAttr.Attributes[tc.inner].(schema.Int64Attribute)
+		if !ok {
+			t.Fatalf("%q.%q is not an Int64Attribute (got %T)", tc.block, tc.inner, blockAttr.Attributes[tc.inner])
+		}
+		if hasPlanModifier(innerAttr.PlanModifiers, "RequiresReplace") {
+			t.Errorf("%q.%q must NOT carry RequiresReplace", tc.block, tc.inner)
 		}
 	}
 }
@@ -341,12 +358,12 @@ func TestBuildNewInput_AllFieldsForwarded(t *testing.T) {
 	t.Parallel()
 
 	plan := Model{
-		Name:        types.StringValue("vm01"),
-		Generation:  types.Int64Value(2),
-		Vcpu:        types.Int64Value(4),
-		MemoryBytes: types.Int64Value(8589934592),
-		SecureBoot:  types.BoolValue(true),
-		Notes:       types.StringValue("production"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        CPUModel{Count: types.Int64Value(4)},
+		Memory:     MemoryModel{StartupBytes: types.Int64Value(8589934592)},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringValue("production"),
 	}
 	in := buildNewInput(plan)
 
@@ -367,12 +384,12 @@ func TestBuildNewInput_OmitsNullOptionals(t *testing.T) {
 	t.Parallel()
 
 	plan := Model{
-		Name:        types.StringValue("legacy-vm"),
-		Generation:  types.Int64Value(1),
-		Vcpu:        types.Int64Value(1),
-		MemoryBytes: types.Int64Value(2147483648),
-		SecureBoot:  types.BoolNull(),
-		Notes:       types.StringNull(),
+		Name:       types.StringValue("legacy-vm"),
+		Generation: types.Int64Value(1),
+		CPU:        CPUModel{Count: types.Int64Value(1)},
+		Memory:     MemoryModel{StartupBytes: types.Int64Value(2147483648)},
+		SecureBoot: types.BoolNull(),
+		Notes:      types.StringNull(),
 	}
 	in := buildNewInput(plan)
 
@@ -393,12 +410,12 @@ func TestBuildSetInput_OnlyChangedFieldsForwarded(t *testing.T) {
 	t.Parallel()
 
 	state := Model{
-		Name:        types.StringValue("vm01"),
-		Generation:  types.Int64Value(2),
-		Vcpu:        types.Int64Value(2),
-		MemoryBytes: types.Int64Value(4294967296),
-		SecureBoot:  types.BoolValue(true),
-		Notes:       types.StringValue("old"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        CPUModel{Count: types.Int64Value(2)},
+		Memory:     MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringValue("old"),
 	}
 	plan := state                         // start identical...
 	plan.Notes = types.StringValue("new") // ...change just notes
@@ -430,7 +447,7 @@ func TestBuildSetInput_GenerationSourcedFromState(t *testing.T) {
 		Generation: types.Int64Value(2),
 	}
 	plan := state
-	plan.Vcpu = types.Int64Value(4)
+	plan.CPU = CPUModel{Count: types.Int64Value(4)}
 
 	in := buildSetInput(plan, state)
 	if in.Generation != 2 {
@@ -579,10 +596,10 @@ func TestModelFromVM_PreservesInt64MemoryAndProcessorCount(t *testing.T) {
 		ProcessorCount:     16,
 		MemoryStartupBytes: 68719476736, // 64 GiB
 	})
-	if got.Vcpu.ValueInt64() != 16 {
-		t.Errorf("Vcpu = %d, want 16", got.Vcpu.ValueInt64())
+	if got.CPU.Count.ValueInt64() != 16 {
+		t.Errorf("CPU.Count = %d, want 16", got.CPU.Count.ValueInt64())
 	}
-	if got.MemoryBytes.ValueInt64() != 68719476736 {
-		t.Errorf("MemoryBytes = %d, want 68719476736", got.MemoryBytes.ValueInt64())
+	if got.Memory.StartupBytes.ValueInt64() != 68719476736 {
+		t.Errorf("Memory.StartupBytes = %d, want 68719476736", got.Memory.StartupBytes.ValueInt64())
 	}
 }

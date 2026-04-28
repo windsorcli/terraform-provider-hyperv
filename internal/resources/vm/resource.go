@@ -272,11 +272,13 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // from the JSON entirely (matches the Pester contract that treats absent
 // and null as equivalent but standardizes on absent).
 func buildNewInput(plan Model) hyperv.NewVMInput {
+	// CPU and Memory are Required nested blocks (model.go), so the inner
+	// fields are guaranteed populated here -- no IsNull guard needed.
 	in := hyperv.NewVMInput{
 		Name:        plan.Name.ValueString(),
 		Generation:  int(plan.Generation.ValueInt64()),
-		Vcpu:        int(plan.Vcpu.ValueInt64()),
-		MemoryBytes: plan.MemoryBytes.ValueInt64(),
+		Vcpu:        int(plan.CPU.Count.ValueInt64()),
+		MemoryBytes: plan.Memory.StartupBytes.ValueInt64(),
 	}
 	if !plan.SecureBoot.IsNull() && !plan.SecureBoot.IsUnknown() {
 		v := plan.SecureBoot.ValueBool()
@@ -302,12 +304,12 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		Name:       plan.Name.ValueString(),
 		Generation: int(state.Generation.ValueInt64()),
 	}
-	if !plan.Vcpu.Equal(state.Vcpu) {
-		v := int(plan.Vcpu.ValueInt64())
+	if !plan.CPU.Count.Equal(state.CPU.Count) {
+		v := int(plan.CPU.Count.ValueInt64())
 		in.Vcpu = &v
 	}
-	if !plan.MemoryBytes.Equal(state.MemoryBytes) {
-		v := plan.MemoryBytes.ValueInt64()
+	if !plan.Memory.StartupBytes.Equal(state.Memory.StartupBytes) {
+		v := plan.Memory.StartupBytes.ValueInt64()
 		in.MemoryBytes = &v
 	}
 	if !plan.SecureBoot.Equal(state.SecureBoot) &&
@@ -341,14 +343,14 @@ func modelFromVM(v *hyperv.VM) Model {
 		notes = types.StringNull()
 	}
 	return Model{
-		ID:          types.StringValue(v.Name),
-		Name:        types.StringValue(v.Name),
-		Generation:  types.Int64Value(int64(v.Generation)),
-		Vcpu:        types.Int64Value(int64(v.ProcessorCount)),
-		MemoryBytes: types.Int64Value(v.MemoryStartupBytes),
-		SecureBoot:  secureBoot,
-		Notes:       notes,
-		State:       types.StringValue(v.State),
-		Path:        types.StringValue(v.Path),
+		ID:         types.StringValue(v.Name),
+		Name:       types.StringValue(v.Name),
+		Generation: types.Int64Value(int64(v.Generation)),
+		CPU:        CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:     MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
+		SecureBoot: secureBoot,
+		Notes:      notes,
+		State:      types.StringValue(v.State),
+		Path:       types.StringValue(v.Path),
 	}
 }

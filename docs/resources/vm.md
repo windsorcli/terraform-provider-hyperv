@@ -3,20 +3,20 @@
 page_title: "hyperv_vm Resource - hyperv"
 subcategory: ""
 description: |-
-  Manages a Hyper-V virtual machine. Minimal first slice -- ships with name, generation, vcpu, memory_bytes, secure_boot (gen 2), and notes. Dynamic memory, integration services, automatic start/stop actions, checkpoints, boot_order, and VM path overrides land in follow-up PRs.
-  Boot order is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands; pair with a separate hyperv_vm_dvd_drive / hyperv_vm_hard_disk_drive in the meantime to attach storage.
-  Power transitions: the operational lifecycle (start/stop/save/pause) belongs to the separate hyperv_vm_state resource. Mutations to vcpu, memory_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping.
+  Manages a Hyper-V virtual machine. Ships with name, generation, nested cpu and memory blocks, secure_boot (gen 2), and notes. Dynamic CPU/memory, integration services, automatic start/stop actions, checkpoints, boot_order, attached storage, attached NICs, and power state land in follow-up PRs of the M4 milestone (per ADR-0001 those will arrive as inline network_adapter[], hard_disk_drive[], dvd_drive[], and state blocks on this resource).
+  Boot order is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands.
+  Power transitions: the operational lifecycle (start/stop/save/pause) ships in a follow-up as the inline state block on this resource. Mutations to cpu.count, memory.startup_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping.
   terraform destroy performs a hard power-off of any running VM (Stop-VM -Force -TurnOff, equivalent to pulling the plug) before calling Remove-VM -Force. This avoids the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration services are absent or unresponsive, and matches the destroy semantics other IaC providers (AWS, Azure, libvirt) use. If a clean shutdown matters -- e.g., decoupled VHDXs the user is keeping after destroy -- drive the graceful shutdown via hyperv_vm_state (when available) or out-of-band before running terraform destroy.
   Static memory only. This slice configures memory via Set-VMMemory -DynamicMemoryEnabled $false. Dynamic memory ships in a follow-up.
 ---
 
 # hyperv_vm (Resource)
 
-Manages a Hyper-V virtual machine. **Minimal first slice** -- ships with `name`, `generation`, `vcpu`, `memory_bytes`, `secure_boot` (gen 2), and `notes`. Dynamic memory, integration services, automatic start/stop actions, checkpoints, `boot_order`, and VM path overrides land in follow-up PRs.
+Manages a Hyper-V virtual machine. Ships with `name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), and `notes`. Dynamic CPU/memory, integration services, automatic start/stop actions, checkpoints, `boot_order`, attached storage, attached NICs, and power state land in follow-up PRs of the M4 milestone (per ADR-0001 those will arrive as inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state` blocks on this resource).
 
-**Boot order** is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands; pair with a separate `hyperv_vm_dvd_drive` / `hyperv_vm_hard_disk_drive` in the meantime to attach storage.
+**Boot order** is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is until that lands.
 
-**Power transitions:** the operational lifecycle (start/stop/save/pause) belongs to the separate `hyperv_vm_state` resource. Mutations to `vcpu`, `memory_bytes`, and `secure_boot` generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather than auto-stopping.
+**Power transitions:** the operational lifecycle (start/stop/save/pause) ships in a follow-up as the inline `state` block on this resource. Mutations to `cpu.count`, `memory.startup_bytes`, and `secure_boot` generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather than auto-stopping.
 
 **`terraform destroy` performs a hard power-off** of any running VM (`Stop-VM -Force -TurnOff`, equivalent to pulling the plug) before calling `Remove-VM -Force`. This avoids the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration services are absent or unresponsive, and matches the destroy semantics other IaC providers (AWS, Azure, libvirt) use. **If a clean shutdown matters** -- e.g., decoupled VHDXs the user is keeping after destroy -- drive the graceful shutdown via `hyperv_vm_state` (when available) or out-of-band before running `terraform destroy`.
 
@@ -61,10 +61,10 @@ resource "hyperv_vm" "legacy" {
 
 ### Required
 
+- `cpu` (Attributes) Virtual processor configuration. Static count only in this slice; dynamic-CPU attributes (`weight`, `reserve`, `limit`) attach to this same block in a follow-up. (see [below for nested schema](#nestedatt--cpu))
 - `generation` (Number) VM generation. `1` (BIOS, legacy boot, IDE/VHD) or `2` (UEFI, Secure Boot capable, SCSI/VHDX). **Forces replacement** -- Hyper-V cannot convert a VM from one generation to another.
-- `memory_bytes` (Number) Static memory size in bytes (e.g. `4294967296` for 4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; the VM generally must be `Off`. Dynamic memory ships in a follow-up PR.
+- `memory` (Attributes) Memory configuration. **Static memory only** in this slice (`Set-VMMemory -DynamicMemoryEnabled $false`); dynamic memory (`min_bytes`, `max_bytes`, optional `buffer` and `priority`) attaches to this same block in a follow-up. (see [below for nested schema](#nestedatt--memory))
 - `name` (String) VM name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a VM in place.
-- `vcpu` (Number) Number of virtual processors. In-place updatable via `Set-VMProcessor -Count`; the VM generally must be `Off` for the change to apply (cmdlet errors otherwise).
 
 ### Optional
 
@@ -86,6 +86,21 @@ To change `notes`, write a different non-empty value. To remove notes from a VM,
 - `id` (String) Resource identifier. Mirrors `name` -- VM names are unique per host.
 - `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
 - `state` (String) Current power state reported by the host. One of `Off`, `Running`, `Saved`, `Paused`, `Starting`, `Stopping`, ... Visibility-only on this resource; power transitions belong to the separate `hyperv_vm_state` resource.
+
+<a id="nestedatt--cpu"></a>
+### Nested Schema for `cpu`
+
+Required:
+
+- `count` (Number) Number of virtual processors. In-place updatable via `Set-VMProcessor -Count`; the VM generally must be `Off` for the change to apply (cmdlet errors otherwise).
+
+
+<a id="nestedatt--memory"></a>
+### Nested Schema for `memory`
+
+Required:
+
+- `startup_bytes` (Number) Static memory size in bytes (e.g. `4294967296` for 4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; the VM generally must be `Off`.
 
 ## Import
 

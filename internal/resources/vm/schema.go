@@ -15,18 +15,20 @@ import (
 // published doc when `task generate` runs tfplugindocs (PLAN.md S15).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "Manages a Hyper-V virtual machine. **Minimal first slice** -- ships with " +
-			"`name`, `generation`, `vcpu`, `memory_bytes`, `secure_boot` (gen 2), and `notes`. " +
-			"Dynamic memory, integration services, automatic start/stop actions, checkpoints, " +
-			"`boot_order`, and VM path overrides land in follow-up PRs.\n\n" +
+		MarkdownDescription: "Manages a Hyper-V virtual machine. Ships with " +
+			"`name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), " +
+			"and `notes`. Dynamic CPU/memory, integration services, automatic start/stop actions, " +
+			"checkpoints, `boot_order`, attached storage, attached NICs, and power state land " +
+			"in follow-up PRs of the M4 milestone (per ADR-0001 those will arrive as inline " +
+			"`network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state` blocks on this " +
+			"resource).\n\n" +
 			"**Boot order** is intentionally absent from this slice -- the gen 1 (BIOS) vs gen 2 (UEFI) " +
 			"translation deserves its own design pass. New VMs boot from whatever Hyper-V's default is " +
-			"until that lands; pair with a separate `hyperv_vm_dvd_drive` / `hyperv_vm_hard_disk_drive` " +
-			"in the meantime to attach storage.\n\n" +
-			"**Power transitions:** the operational lifecycle (start/stop/save/pause) belongs to the " +
-			"separate `hyperv_vm_state` resource. Mutations to `vcpu`, `memory_bytes`, and `secure_boot` " +
-			"generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather " +
-			"than auto-stopping.\n\n" +
+			"until that lands.\n\n" +
+			"**Power transitions:** the operational lifecycle (start/stop/save/pause) ships in a " +
+			"follow-up as the inline `state` block on this resource. Mutations to `cpu.count`, " +
+			"`memory.startup_bytes`, and `secure_boot` generally require the VM to be `Off`; the " +
+			"script surfaces the cmdlet's clear error rather than auto-stopping.\n\n" +
 			"**`terraform destroy` performs a hard power-off** of any running VM (`Stop-VM -Force " +
 			"-TurnOff`, equivalent to pulling the plug) before calling `Remove-VM -Force`. This avoids " +
 			"the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration " +
@@ -64,16 +66,34 @@ func resourceSchema() schema.Schema {
 					int64planmodifier.RequiresReplace(),
 				},
 			},
-			"vcpu": schema.Int64Attribute{
+			"cpu": schema.SingleNestedAttribute{
 				Required: true,
-				MarkdownDescription: "Number of virtual processors. In-place updatable via `Set-VMProcessor -Count`; " +
-					"the VM generally must be `Off` for the change to apply (cmdlet errors otherwise).",
+				MarkdownDescription: "Virtual processor configuration. Static count only in this slice; " +
+					"dynamic-CPU attributes (`weight`, `reserve`, `limit`) attach to this same block " +
+					"in a follow-up.",
+				Attributes: map[string]schema.Attribute{
+					"count": schema.Int64Attribute{
+						Required: true,
+						MarkdownDescription: "Number of virtual processors. In-place updatable via " +
+							"`Set-VMProcessor -Count`; the VM generally must be `Off` for the change " +
+							"to apply (cmdlet errors otherwise).",
+					},
+				},
 			},
-			"memory_bytes": schema.Int64Attribute{
+			"memory": schema.SingleNestedAttribute{
 				Required: true,
-				MarkdownDescription: "Static memory size in bytes (e.g. `4294967296` for 4 GiB). " +
-					"In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; " +
-					"the VM generally must be `Off`. Dynamic memory ships in a follow-up PR.",
+				MarkdownDescription: "Memory configuration. **Static memory only** in this slice " +
+					"(`Set-VMMemory -DynamicMemoryEnabled $false`); dynamic memory (`min_bytes`, " +
+					"`max_bytes`, optional `buffer` and `priority`) attaches to this same block in " +
+					"a follow-up.",
+				Attributes: map[string]schema.Attribute{
+					"startup_bytes": schema.Int64Attribute{
+						Required: true,
+						MarkdownDescription: "Static memory size in bytes (e.g. `4294967296` for " +
+							"4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with " +
+							"`DynamicMemoryEnabled=$false`; the VM generally must be `Off`.",
+					},
+				},
 			},
 			"secure_boot": schema.BoolAttribute{
 				Optional: true,
