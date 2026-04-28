@@ -2,7 +2,11 @@
 // image_file/{get,new,remove}.ps1 contract via the typed hyperv.Client.
 package image_file //nolint:revive // underscore in package name mirrors the script directory it wraps.
 
-import "github.com/hashicorp/terraform-plugin-framework/types"
+import (
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+)
 
 // Model is the tfsdk-bound struct backing the resource state. Field tags
 // align with schema.go attribute names; conversion to/from the typed
@@ -13,12 +17,19 @@ import "github.com/hashicorp/terraform-plugin-framework/types"
 // host_path-mode (verify-only). Mode switches between configs trigger
 // RequiresReplace at the schema layer; Delete keys on this same nil
 // check to gate the host-side remove.
+//
+// DestinationPath uses the pathtype.Path custom type so users can
+// write either `C:/foo` or `C:\foo` without the framework rejecting
+// the apply with "Provider produced inconsistent result after apply"
+// when Hyper-V returns the canonical backslash form. ID mirrors
+// destination_path and is also Path so the same semantic-equality
+// covers the Computed mirror's refresh path.
 type Model struct {
-	ID              types.String `tfsdk:"id"`
-	DestinationPath types.String `tfsdk:"destination_path"`
-	URL             *URLConfig   `tfsdk:"url"`
-	Sha256          types.String `tfsdk:"sha256"`
-	SizeBytes       types.Int64  `tfsdk:"size_bytes"`
+	ID              pathtype.Path `tfsdk:"id"`
+	DestinationPath pathtype.Path `tfsdk:"destination_path"`
+	URL             *URLConfig    `tfsdk:"url"`
+	Sha256          types.String  `tfsdk:"sha256"`
+	SizeBytes       types.Int64   `tfsdk:"size_bytes"`
 }
 
 // URLConfig is the user-supplied URL-mode source configuration. Both fields

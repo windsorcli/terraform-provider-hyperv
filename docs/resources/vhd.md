@@ -72,13 +72,13 @@ resource "hyperv_vhd" "vm01_root" {
 
 ### Required
 
-- `path` (String) Absolute path on the Hyper-V host where the VHD/VHDX should be created. The format (VHD vs VHDX) is inferred from the file extension. **Forces replacement** when changed -- the provider does not move VHDs in place.
+- `path` (String) Absolute path on the Hyper-V host where the VHD/VHDX should be created. The format (VHD vs VHDX) is inferred from the file extension. **Forces replacement** when changed -- the provider does not move VHDs in place. Forward and back slashes are accepted equivalently (`C:/foo/bar.vhdx` ≡ `C:\foo\bar.vhdx`); comparison is case-insensitive per Windows file-system semantics.
 - `vhd_type` (String) Disk layout. One of `fixed` (pre-allocated), `dynamic` (sparse), or `differencing` (child of a parent). **Forces replacement** when changed -- there is no in-place conversion path.
 
 ### Optional
 
 - `block_size_bytes` (Number) VHDX block size in bytes. Optional; defaults per Hyper-V (32 MiB for VHDX, 2 MiB for VHD). For `differencing` disks this is inherited from the parent and any value supplied is rejected by Hyper-V. **Forces replacement** when changed.
-- `parent_path` (String) Path to the parent VHD on the host. **Required** for `differencing`; **rejected** for `fixed` and `dynamic`. **Forces replacement** when changed -- the differencing chain is permanent.
+- `parent_path` (String) Path to the parent VHD on the host. **Required** for `differencing`; **rejected** for `fixed` and `dynamic`. **Forces replacement** when changed -- the differencing chain is permanent. Forward and back slashes are accepted equivalently; comparison is case-insensitive per Windows file-system semantics.
 - `size_bytes` (Number) Declared logical size in bytes. **Required** for `fixed` and `dynamic`; **rejected** for `differencing` (Hyper-V inherits the size from the parent). In-place updatable for `fixed` and `dynamic` via `Resize-VHD`; shrinks require trailing blocks to be empty (run `Optimize-VHD` first if needed).
 
 ### Read-Only

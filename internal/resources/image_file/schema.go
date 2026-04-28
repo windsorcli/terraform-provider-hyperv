@@ -10,6 +10,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // resourceSchema returns the locked-in schema for hyperv_image_file.
@@ -25,6 +27,7 @@ func resourceSchema() schema.Schema {
 			"**Recovery from partial-create:** if the download succeeds and the SHA-256 verifies but the atomic rename fails (e.g., destination path is on a different volume than the staging `.part` file), the file is left at the staging path with no Terraform state. Re-run `terraform apply` -- the next attempt re-downloads to a fresh staging path. The PowerShell layer cleans up its own `.part` files on every failure path.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
+				CustomType:          pathtype.Type,
 				Computed:            true,
 				MarkdownDescription: "Resource identifier. Mirrors `destination_path` -- file paths are unique on a host.",
 				PlanModifiers: []planmodifier.String{
@@ -32,10 +35,13 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			"destination_path": schema.StringAttribute{
-				Required: true,
+				CustomType: pathtype.Type,
+				Required:   true,
 				MarkdownDescription: "Absolute path on the Hyper-V host where the file should land (`url`-mode) " +
 					"or already exists (`host_path`-mode). **Forces replacement** when changed -- the provider " +
-					"does not move files in place.",
+					"does not move files in place. Forward and back slashes are accepted equivalently " +
+					"(`C:/foo/bar.vhdx` ≡ `C:\\foo\\bar.vhdx`); comparison is case-insensitive per Windows " +
+					"file-system semantics.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

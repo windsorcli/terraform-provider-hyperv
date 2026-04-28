@@ -46,7 +46,13 @@ const (
 // also resize but the cmdlet path is the same.
 func TestAcc_VHD_dynamic(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
-	vhdPath := joinHostPath(dir, acctest.RandomName("vhd-dyn")+".vhdx")
+	// Forward-slash form to exercise pathtype.Path's semantic-equals.
+	// State retains this form (not Hyper-V's canonical backslash) so the
+	// path assertion below uses the same variable.
+	vhdPath := strings.ReplaceAll(
+		joinHostPath(dir, acctest.RandomName("vhd-dyn")+".vhdx"),
+		`\`, `/`,
+	)
 	client := acctest.NewClient(t)
 
 	resource.Test(t, resource.TestCase{
@@ -121,7 +127,11 @@ func TestAcc_VHD_dynamic(t *testing.T) {
 // state, not a duplicate resize test.
 func TestAcc_VHD_fixed(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
-	vhdPath := joinHostPath(dir, acctest.RandomName("vhd-fixed")+".vhdx")
+	// Forward-slash form -- see TestAcc_VHD_dynamic for rationale.
+	vhdPath := strings.ReplaceAll(
+		joinHostPath(dir, acctest.RandomName("vhd-fixed")+".vhdx"),
+		`\`, `/`,
+	)
 	client := acctest.NewClient(t)
 
 	resource.Test(t, resource.TestCase{
@@ -167,10 +177,10 @@ func TestAcc_VHD_fixed(t *testing.T) {
 // applies the format default (32 MiB for VHDX) and the test doesn't
 // pin that value because the default may evolve across host versions.
 //
-// Path representation: backslash form. See image_file's
-// imageFileHostPathConfig for the rationale -- forward slashes trip
-// the framework's "inconsistent result after apply" check until a
-// custom StringSemanticEquals type lands on `path` (PLAN.md S8).
+// path is embedded verbatim. Callers control the slash form: pass
+// forward-slash form to exercise pathtype.Path's StringSemanticEquals
+// and assert on the same value (the framework retains the user's plan
+// representation in state when semantic-equals returns true).
 func vhdSizedConfig(path, vhdType string, sizeBytes int64) string {
 	return fmt.Sprintf(`
 resource "hyperv_vhd" "test" {

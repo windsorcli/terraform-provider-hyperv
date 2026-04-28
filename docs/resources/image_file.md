@@ -53,7 +53,7 @@ resource "hyperv_image_file" "preplaced_iso" {
 
 ### Required
 
-- `destination_path` (String) Absolute path on the Hyper-V host where the file should land (`url`-mode) or already exists (`host_path`-mode). **Forces replacement** when changed -- the provider does not move files in place.
+- `destination_path` (String) Absolute path on the Hyper-V host where the file should land (`url`-mode) or already exists (`host_path`-mode). **Forces replacement** when changed -- the provider does not move files in place. Forward and back slashes are accepted equivalently (`C:/foo/bar.vhdx` ≡ `C:\foo\bar.vhdx`); comparison is case-insensitive per Windows file-system semantics.
 
 ### Optional
 

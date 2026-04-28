@@ -8,6 +8,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // resourceSchema returns the locked-in schema for hyperv_vhd. Three
@@ -26,6 +28,7 @@ func resourceSchema() schema.Schema {
 			"**Attached flag:** `attached` reports whether any VM currently has this disk attached. The provider does not block destroy when the disk is attached -- the underlying `Remove-Item` errors loudly with a clear message in that case.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
+				CustomType:          pathtype.Type,
 				Computed:            true,
 				MarkdownDescription: "Resource identifier. Mirrors `path` -- file paths are unique on a host.",
 				PlanModifiers: []planmodifier.String{
@@ -33,9 +36,11 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			"path": schema.StringAttribute{
-				Required: true,
+				CustomType: pathtype.Type,
+				Required:   true,
 				MarkdownDescription: "Absolute path on the Hyper-V host where the VHD/VHDX should be created. " +
-					"The format (VHD vs VHDX) is inferred from the file extension. **Forces replacement** when changed -- the provider does not move VHDs in place.",
+					"The format (VHD vs VHDX) is inferred from the file extension. **Forces replacement** when changed -- the provider does not move VHDs in place. " +
+					"Forward and back slashes are accepted equivalently (`C:/foo/bar.vhdx` ≡ `C:\\foo\\bar.vhdx`); comparison is case-insensitive per Windows file-system semantics.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -62,10 +67,12 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			"parent_path": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
+				CustomType: pathtype.Type,
+				Optional:   true,
+				Computed:   true,
 				MarkdownDescription: "Path to the parent VHD on the host. **Required** for `differencing`; **rejected** " +
-					"for `fixed` and `dynamic`. **Forces replacement** when changed -- the differencing chain is permanent.",
+					"for `fixed` and `dynamic`. **Forces replacement** when changed -- the differencing chain is permanent. " +
+					"Forward and back slashes are accepted equivalently; comparison is case-insensitive per Windows file-system semantics.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 					stringplanmodifier.RequiresReplace(),

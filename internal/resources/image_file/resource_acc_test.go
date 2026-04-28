@@ -54,6 +54,13 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 	hostFile := acctest.RequireEnv(t, "HYPERV_TEST_HOST_FILE")
 	client := acctest.NewClient(t)
 
+	// Use forward-slash form in HCL to exercise pathtype.Path's
+	// StringSemanticEquals path. The framework retains the user's plan
+	// representation in state when semantic-equals returns true, so
+	// state will hold the forward-slash form as well -- the same value
+	// is reused for the StringExact assertion below.
+	hclPath := toForwardSlash(hostFile)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
@@ -87,12 +94,12 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: imageFileHostPathConfig(hostFile),
+				Config: imageFileHostPathConfig(hclPath),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_image_file.test",
 						tfjsonpath.New("destination_path"),
-						knownvalue.StringExact(hostFile),
+						knownvalue.StringExact(hclPath),
 					),
 					statecheck.ExpectKnownValue(
 						"hyperv_image_file.test",
@@ -102,9 +109,14 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 				},
 			},
 			{
-				ResourceName:      "hyperv_image_file.test",
-				ImportState:       true,
-				ImportStateId:     hostFile,
+				ResourceName: "hyperv_image_file.test",
+				ImportState:  true,
+				// Import by the form actually stored in state (the
+				// user's plan form, not the cmdlet's canonical form).
+				// ImportStateVerify compares pre- and post-import
+				// state byte-for-byte after refresh, so the import ID
+				// must match the form Read writes back.
+				ImportStateId:     hclPath,
 				ImportStateVerify: true,
 			},
 		},
@@ -149,7 +161,9 @@ func TestAcc_ImageFile_url(t *testing.T) {
 	url := srv.URL + "/fixture.bin"
 	checksum := "sha256:" + hexSum
 
-	dest := joinHostPath(dir, acctest.RandomName("img-url")+".bin")
+	// Forward-slash form for the same reason as TestAcc_ImageFile_hostPath
+	// -- exercises pathtype.Path's StringSemanticEquals against the bench.
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-url")+".bin"))
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
@@ -191,14 +205,12 @@ func TestAcc_ImageFile_url(t *testing.T) {
 // `url` is omitted -- its absence is the discriminator that selects the
 // host_path branch in the resource's mode-detection logic.
 //
-// Path representation: backslash form, matching what Hyper-V emits on
-// Read. Forward slashes work for cmdlet input but trip a "Provider
-// produced inconsistent result after apply" framework safety check
-// because plan != apply representation. The proper provider-side fix
-// is a StringSemanticEquals custom type on `destination_path` /
-// `path` (PLAN.md S8 -- "paths with case differences on Windows").
-// Until that lands, tests stay in canonical backslash form. The %q
-// verb handles HCL string-literal escaping; no manual normalization.
+// destPath is embedded verbatim in HCL; callers choose whether to pass
+// forward-slash form (to exercise pathtype.Path's StringSemanticEquals
+// against the bench) or backslash form. Whatever form they pass also
+// has to be the form they assert on, because the framework retains the
+// user's plan value as state when semantic-equals returns true (the
+// cmdlet's canonical backslash form is discarded post-apply).
 func imageFileHostPathConfig(destPath string) string {
 	return fmt.Sprintf(`
 resource "hyperv_image_file" "test" {
@@ -211,6 +223,9 @@ resource "hyperv_image_file" "test" {
 // Forwards the raw URL/checksum from the bench config so a maintainer
 // can swap in any sized fixture (a 5-byte text file is fine for a smoke
 // test; a 5 GiB VHDX would also work but burns bandwidth).
+//
+// destPath is embedded verbatim; same caller-controlled form as
+// imageFileHostPathConfig.
 func imageFileURLConfig(destPath, url, checksum string) string {
 	return fmt.Sprintf(`
 resource "hyperv_image_file" "test" {
@@ -226,10 +241,21 @@ resource "hyperv_image_file" "test" {
 // joinHostPath concatenates a Windows-style directory and filename. We
 // don't use filepath.Join here because the test runner is typically
 // Linux/macOS while the bench is Windows -- filepath.Join would emit
-// forward slashes on the runner, which mismatches Hyper-V's backslash
-// canonical form (see imageFileHostPathConfig). Doing the join with
-// explicit backslashes keeps plan == apply.
+// platform-dependent separators. Doing the join with explicit
+// backslashes keeps the underlying path representation consistent
+// regardless of where the test runs; toForwardSlash flips at the HCL
+// boundary specifically to exercise the pathtype semantic-equals.
 func joinHostPath(dir, name string) string {
 	dir = strings.TrimRight(dir, `\/`)
 	return dir + `\` + name
+}
+
+// toForwardSlash returns the forward-slash-only form of a Windows path
+// for embedding in HCL. The schema's pathtype.Path CustomType folds
+// slash style on comparison, so this writes the form that's both HCL-
+// friendly (no escaping) and that proves the type works -- the bench
+// reads back the canonical backslash form, and the framework's
+// semantic-equals check accepts both as equivalent.
+func toForwardSlash(p string) string {
+	return strings.ReplaceAll(p, `\`, `/`)
 }
