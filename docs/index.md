@@ -40,7 +40,7 @@ provider "hyperv" {}
 - `password` (String, Sensitive) Password. **Sensitive.** Falls back to `HYPERV_PASSWORD`.
 - `port` (Number) TCP port. Defaults to 22 (`ssh`) or 5986 (`winrm`). Falls back to `HYPERV_PORT`.
 - `ssh` (Attributes) SSH-backend-specific configuration. (see [below for nested schema](#nestedatt--ssh))
-- `timeout` (String) Per-call PowerShell execution timeout as a Go duration (e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`.
+- `timeout` (String) Per-call PowerShell execution timeout as a Go duration (e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`. Set to `0s` to disable. Bump for legitimately slow cmdlets like `New-VHD` on a multi-GB fixed disk.
 - `username` (String) Username. Required for `ssh` and `winrm`. Falls back to `HYPERV_USERNAME`.
 - `winrm` (Attributes) WinRM-backend-specific configuration. Backend ships in M3. (see [below for nested schema](#nestedatt--winrm))
 
