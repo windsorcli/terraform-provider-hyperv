@@ -65,7 +65,8 @@ function Set-VMFirmware {
 function Get-VMFirmware {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)] $VM
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName
     )
 }
 

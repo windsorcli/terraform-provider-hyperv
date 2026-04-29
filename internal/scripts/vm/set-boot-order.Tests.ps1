@@ -79,6 +79,116 @@ Describe 'Set-HypervVMBootOrder' {
         }
     }
 
+    Context 'File-type firmware entry preservation' {
+
+        # Set-VMFirmware -BootOrder replaces the entire firmware boot
+        # sequence. The script must read the existing firmware first
+        # and re-append File-type and Unknown-type entries (UEFI
+        # bootloader paths the schema doesn't model) so they survive
+        # the wholesale replace. Drive- and Network-type entries are
+        # NOT preserved -- the user's declared boot_order owns those.
+
+        It 'appends File-type entries from existing firmware to the end of BootOrder' {
+            $hddDevice  = New-HypervVMHardDiskDriveSample -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 0
+            $fileEntry  = [pscustomobject]@{
+                BootType     = 'File'
+                FirmwarePath = '\EFI\BOOT\BOOTX64.EFI'
+            }
+            $driveEntry = [pscustomobject]@{
+                BootType = 'Drive'
+                Device   = $hddDevice
+            }
+
+            Mock Get-VMHardDiskDrive { @($hddDevice) } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Get-VMFirmware {
+                [pscustomobject]@{
+                    BootOrder = @($driveEntry, $fileEntry)
+                }
+            } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Set-VMFirmware { }
+
+            $bootOrder = @(
+                [pscustomobject]@{ type = 'hard_disk_drive'; controller_type = 'SCSI'; controller_number = 0; controller_location = 0 }
+            )
+
+            Set-HypervVMBootOrder -Name 'vm01' -BootOrder $bootOrder | Out-Null
+
+            Should -Invoke Get-VMFirmware -Times 1 -Exactly
+            Should -Invoke Set-VMFirmware -Times 1 -Exactly -ParameterFilter {
+                $VMName -eq 'vm01' -and
+                $BootOrder.Count -eq 2 -and
+                $BootOrder[0] -eq $hddDevice -and
+                $BootOrder[1] -eq $fileEntry
+            }
+        }
+
+        It 'preserves Unknown-type entries alongside File-type entries' {
+            $hddDevice    = New-HypervVMHardDiskDriveSample
+            $fileEntry    = [pscustomobject]@{ BootType = 'File';    FirmwarePath = '\EFI\BOOT\BOOTX64.EFI' }
+            $unknownEntry = [pscustomobject]@{ BootType = 'Unknown'; FirmwarePath = '\EFI\Microsoft\Boot\bootmgfw.efi' }
+
+            Mock Get-VMHardDiskDrive { @($hddDevice) } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Get-VMFirmware {
+                [pscustomobject]@{ BootOrder = @($fileEntry, $unknownEntry) }
+            } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Set-VMFirmware { }
+
+            $bootOrder = @(
+                [pscustomobject]@{ type = 'hard_disk_drive'; controller_type = 'SCSI'; controller_number = 0; controller_location = 0 }
+            )
+
+            Set-HypervVMBootOrder -Name 'vm01' -BootOrder $bootOrder | Out-Null
+
+            Should -Invoke Set-VMFirmware -Times 1 -Exactly -ParameterFilter {
+                $BootOrder.Count -eq 3 -and
+                $BootOrder[0] -eq $hddDevice -and
+                $BootOrder[1] -eq $fileEntry -and
+                $BootOrder[2] -eq $unknownEntry
+            }
+        }
+
+        It 'does NOT preserve Drive- or Network-type entries (those are owned by user-declared boot_order)' {
+            $hddDevice   = New-HypervVMHardDiskDriveSample
+            $staleDrive  = [pscustomobject]@{ BootType = 'Drive';   Device = New-HypervVMHardDiskDriveSample -Path 'C:\stale.vhdx' }
+            $staleNet    = [pscustomobject]@{ BootType = 'Network'; Device = [pscustomobject]@{ Name = 'old-nic' } }
+
+            Mock Get-VMHardDiskDrive { @($hddDevice) } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Get-VMFirmware {
+                [pscustomobject]@{ BootOrder = @($staleDrive, $staleNet) }
+            } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Set-VMFirmware { }
+
+            $bootOrder = @(
+                [pscustomobject]@{ type = 'hard_disk_drive'; controller_type = 'SCSI'; controller_number = 0; controller_location = 0 }
+            )
+
+            Set-HypervVMBootOrder -Name 'vm01' -BootOrder $bootOrder | Out-Null
+
+            Should -Invoke Set-VMFirmware -Times 1 -Exactly -ParameterFilter {
+                $BootOrder.Count -eq 1 -and
+                $BootOrder[0] -eq $hddDevice
+            }
+        }
+
+        It 'tolerates a firmware read with no BootOrder property (fresh VM, never booted)' {
+            $hddDevice = New-HypervVMHardDiskDriveSample
+
+            Mock Get-VMHardDiskDrive { @($hddDevice) } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Get-VMFirmware { [pscustomobject]@{ BootOrder = @() } } -ParameterFilter { $VMName -eq 'vm01' }
+            Mock Set-VMFirmware { }
+
+            $bootOrder = @(
+                [pscustomobject]@{ type = 'hard_disk_drive'; controller_type = 'SCSI'; controller_number = 0; controller_location = 0 }
+            )
+
+            { Set-HypervVMBootOrder -Name 'vm01' -BootOrder $bootOrder } | Should -Not -Throw
+
+            Should -Invoke Set-VMFirmware -Times 1 -Exactly -ParameterFilter {
+                $BootOrder.Count -eq 1 -and $BootOrder[0] -eq $hddDevice
+            }
+        }
+    }
+
     Context 'parameter validation' {
 
         It 'throws on unsupported entry type' {

@@ -96,7 +96,31 @@ function Set-HypervVMBootOrder {
     $devices = foreach ($entry in $BootOrder) {
         Resolve-HypervVMBootDevice -VMName $Name -Entry $entry
     }
-    Set-VMFirmware -VMName $Name -BootOrder $devices -ErrorAction Stop
+
+    # Preserve File-type and Unknown-type firmware entries the schema
+    # doesn't model: UEFI bootloader paths (e.g. \EFI\BOOT\BOOTX64.EFI)
+    # that Hyper-V or the guest OS registers on first boot.
+    # Set-VMFirmware -BootOrder REPLACES the entire firmware boot
+    # sequence -- anything not in the list is removed -- so without
+    # this readback the first apply on a VM that has booted would
+    # silently drop those entries. Hyper-V may recreate a default EFI
+    # loader on next boot in some configurations, but the behavior is
+    # implementation-specific; we preserve explicitly. Drive-type
+    # ('Drive', 'Network') entries are NOT preserved here -- the
+    # user's declared boot_order is the source of truth for those.
+    $preserved = @()
+    $firmware = Get-VMFirmware -VMName $Name -ErrorAction Stop
+    if ($firmware -and $firmware.BootOrder) {
+        $preserved = @($firmware.BootOrder | Where-Object {
+            $_.BootType -eq 'File' -or $_.BootType -eq 'Unknown'
+        })
+    }
+
+    $finalOrder = @()
+    if ($devices)   { $finalOrder += @($devices) }
+    if ($preserved) { $finalOrder += $preserved }
+
+    Set-VMFirmware -VMName $Name -BootOrder $finalOrder -ErrorAction Stop
     @{} | Write-HypervResult
 }
 
