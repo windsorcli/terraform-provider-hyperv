@@ -122,7 +122,7 @@ if [ -z "$PR_NUM" ]; then
 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
-elif [ -z "$(echo "$PR_BODY" | sed 's/<!--.*-->//g' | tr -d '[:space:]')" ]; then
+elif [ -z "$(printf '%s' "$PR_BODY" | python3 -c 'import re, sys; print(re.sub(r"<!-- claude-code-review:summary -->.*?<!-- /claude-code-review:summary -->\s*", "", sys.stdin.read(), flags=re.DOTALL), end="")' | tr -d '[:space:]')" ]; then
   # Empty body (or only the workflow's markers/whitespace) — update
   gh pr edit "$PR_NUM" --body "$(cat <<'EOF'
 <generated body>
