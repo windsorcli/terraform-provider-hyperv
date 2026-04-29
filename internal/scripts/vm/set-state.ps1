@@ -152,6 +152,14 @@ function Set-HypervVMState {
         throw $errorRecord
     }
 
+    # Both branches rely on the global $WarningPreference =
+    # 'SilentlyContinue' from preamble.ps1: Start-VM on a Running VM and
+    # Stop-VM on an Off VM both emit a "VM is already in the specified
+    # state" warning that the SSH transport merges onto stdout, breaking
+    # JSON parsing on the Go side. A narrower `-WarningAction
+    # SilentlyContinue` per call would work *here* but the global pin
+    # keeps the contract uniform across every script -- see the
+    # preamble's $WarningPreference comment for the cost trade-off.
     switch ($Desired) {
         'Running' {
             Start-VM -VM $vm -ErrorAction Stop | Out-Null
