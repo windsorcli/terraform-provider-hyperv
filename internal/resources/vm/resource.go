@@ -533,18 +533,15 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
-		// No scalar change. If we did reconcile attachments above we
-		// still need a fresh GetVM so HardDiskDrives in state matches
-		// reality; if no attachments changed either, plan == state and
-		// we can skip the host round-trip. Mirrors vhd's same-shape
-		// short-circuit but extends to attachment-only updates.
-		if len(hddAttach) == 0 && len(hddDetach) == 0 &&
-			len(nicAttach) == 0 && len(nicDetach) == 0 &&
-			len(dvdAttach) == 0 && len(dvdDetach) == 0 &&
-			!bootOrderChanged && !stateChanged {
-			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-			return
-		}
+		// No scalar change. Always fall through to a fresh GetVM rather
+		// than short-circuiting with `Set(ctx, &plan)` -- when the user
+		// has a `state` block in config, plan.State.Current is Unknown
+		// (Computed without UseStateForUnknown by design, because current
+		// reflects live host state and can drift). Writing that Unknown
+		// to state would trip the framework's "provider produced unknown
+		// value in state" error on every second-and-beyond apply.
+		// One SSH round-trip per genuine no-op is the cost of a stable
+		// apply.
 		var v *hyperv.VM
 		if stateChanged {
 			var err error
