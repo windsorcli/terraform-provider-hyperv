@@ -245,6 +245,12 @@ func TestNewSSH_AppliesDefaults(t *testing.T) {
 	if b.opts.Timeout != defaultSSHTimeout {
 		t.Errorf("Timeout = %v, want %v (default)", b.opts.Timeout, defaultSSHTimeout)
 	}
+	if b.opts.CommandTimeout != defaultSSHCommandTimeout {
+		t.Errorf("CommandTimeout = %v, want %v (default)", b.opts.CommandTimeout, defaultSSHCommandTimeout)
+	}
+	if b.opts.KeepaliveInterval != defaultSSHKeepaliveInterval {
+		t.Errorf("KeepaliveInterval = %v, want %v (default)", b.opts.KeepaliveInterval, defaultSSHKeepaliveInterval)
+	}
 	if b.opts.PwshPath != defaultSSHPwshPath {
 		t.Errorf("PwshPath = %q, want %q (default)", b.opts.PwshPath, defaultSSHPwshPath)
 	}
@@ -261,13 +267,15 @@ func TestNewSSH_HonorsExplicitOptions(t *testing.T) {
 
 	knownHosts := writeKnownHostsFile(t)
 	conn, err := NewSSH(SSHOptions{
-		Host:           "10.0.0.5",
-		Port:           2222,
-		Username:       "alice",
-		PrivateKey:     generateTestKey(t),
-		KnownHostsPath: knownHosts,
-		Timeout:        15 * time.Second,
-		PwshPath:       "pwsh",
+		Host:              "10.0.0.5",
+		Port:              2222,
+		Username:          "alice",
+		PrivateKey:        generateTestKey(t),
+		KnownHostsPath:    knownHosts,
+		Timeout:           15 * time.Second,
+		CommandTimeout:    90 * time.Second,
+		KeepaliveInterval: 10 * time.Second,
+		PwshPath:          "pwsh",
 	})
 	if err != nil {
 		t.Fatalf("NewSSH: %v", err)
@@ -281,6 +289,12 @@ func TestNewSSH_HonorsExplicitOptions(t *testing.T) {
 	}
 	if b.opts.Timeout != 15*time.Second {
 		t.Errorf("Timeout = %v, want 15s", b.opts.Timeout)
+	}
+	if b.opts.CommandTimeout != 90*time.Second {
+		t.Errorf("CommandTimeout = %v, want 90s", b.opts.CommandTimeout)
+	}
+	if b.opts.KeepaliveInterval != 10*time.Second {
+		t.Errorf("KeepaliveInterval = %v, want 10s", b.opts.KeepaliveInterval)
 	}
 	if b.opts.PwshPath != "pwsh" {
 		t.Errorf("PwshPath = %q, want %q", b.opts.PwshPath, "pwsh")

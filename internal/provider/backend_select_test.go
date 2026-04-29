@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"golang.org/x/crypto/ssh"
@@ -315,6 +316,49 @@ func TestResolveString_UnknownAttributeFallsThroughToEnv(t *testing.T) {
 	got := resolveString(types.StringUnknown(), "FOO", "default")
 	if got != "from-env" {
 		t.Errorf("got %q, want from-env", got)
+	}
+}
+
+// resolveDuration's job: parse attr || env-var, return 0 + nil when both
+// missing so the caller's default applies.
+func TestResolveDuration_AttributeWinsOverEnvVar(t *testing.T) {
+	t.Setenv("FOO_TIMEOUT", "10s")
+	got, err := resolveDuration(types.StringValue("90s"), "FOO_TIMEOUT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 90*time.Second {
+		t.Errorf("got %v, want 90s", got)
+	}
+}
+
+func TestResolveDuration_EnvVarFallback(t *testing.T) {
+	t.Setenv("FOO_TIMEOUT", "2m")
+	got, err := resolveDuration(types.StringNull(), "FOO_TIMEOUT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 2*time.Minute {
+		t.Errorf("got %v, want 2m", got)
+	}
+}
+
+func TestResolveDuration_BothMissingReturnsZero(t *testing.T) {
+	t.Setenv("FOO_TIMEOUT", "")
+	got, err := resolveDuration(types.StringNull(), "FOO_TIMEOUT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("got %v, want 0", got)
+	}
+}
+
+func TestResolveDuration_UnparseableErrors(t *testing.T) {
+	t.Setenv("FOO_TIMEOUT", "")
+	_, err := resolveDuration(types.StringValue("not-a-duration"), "FOO_TIMEOUT")
+	if err == nil {
+		t.Fatal("expected an error for an unparseable duration; got nil")
 	}
 }
 
