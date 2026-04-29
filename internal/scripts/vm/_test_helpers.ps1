@@ -72,9 +72,18 @@ function Get-VMFirmware {
 function Stop-VM {
     [CmdletBinding()]
     param(
+        [Parameter(Position = 0)] $VM,
         [string] $Name,
         [switch] $Force,
         [switch] $TurnOff
+    )
+}
+
+function Start-VM {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $Name
     )
 }
 
@@ -304,16 +313,21 @@ function New-HypervVMHardDiskDriveSample {
 }
 
 # New-HypervVMNetworkAdapterSample builds a Get-VMNetworkAdapter-shaped
-# object for use in Mock blocks. Two-field shape mirrors the
-# minimum-viable schema in the M4 step that ships NIC attachment.
+# object for use in Mock blocks. Three-field shape mirrors what the
+# read script consumes: Name + SwitchName for slot identification +
+# binding, IPAddresses for the top-level ip_addresses flatten on the
+# Go side. IPAddresses defaults to empty (an Off VM or one without
+# integration services running has no reported IPs).
 function New-HypervVMNetworkAdapterSample {
     [CmdletBinding()]
     param(
-        [string] $Name       = 'primary',
-        [string] $SwitchName = 'lab-internal'
+        [string]   $Name        = 'primary',
+        [string]   $SwitchName  = 'lab-internal',
+        [string[]] $IPAddresses = @()
     )
     [pscustomobject]@{
-        Name       = $Name
-        SwitchName = $SwitchName
+        Name        = $Name
+        SwitchName  = $SwitchName
+        IPAddresses = $IPAddresses
     }
 }

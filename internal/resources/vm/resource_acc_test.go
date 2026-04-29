@@ -585,6 +585,103 @@ resource "hyperv_vm" "test" {
 	return b.String()
 }
 
+// TestAcc_VM_withState exercises the inline state block: Off -> Running
+// -> Off toggle, plus a refresh that confirms state.current re-reads
+// the host's actual state and the top-level ip_addresses Computed
+// list surfaces (empty here because an attachment-less VM reaches
+// Running but never gets past the UEFI no-boot-device screen, so
+// integration services never come up).
+//
+// Three steps:
+//
+//  1. Create with state.desired = "Off". Asserts the VM lands at
+//     Off and ip_addresses is the empty list.
+//  2. Update to state.desired = "Running". Asserts state.current
+//     transitions to Running.
+//  3. Update to state.desired = "Off". Asserts the hard-power-off
+//     transition completes.
+//
+// No attachments on the test VM: a 0-byte fixture.iso fails the
+// cmdlet's "ISO can be opened" check at Start-VM (corrupt-attachment
+// error), and a real bootable image isn't worth committing to the
+// test bench. Gen 2 + UEFI is happy to boot a no-attachment VM --
+// it shows the firmware no-boot-device screen but reaches Running.
+func TestAcc_VM_withState(t *testing.T) {
+	name := acctest.RandomName("vm-state")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: Off (matches Hyper-V's default for a new VM
+				// but exercised explicitly so refresh sees the state
+				// block populated rather than null).
+				Config: vmWithStateConfig(name, "Off"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("current"),
+						knownvalue.StringExact("Off"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("ip_addresses"),
+						knownvalue.ListSizeExact(0),
+					),
+				},
+			},
+			{
+				// Step 2: power on. The VM hits the UEFI no-boot-device
+				// screen but stays Running.
+				Config: vmWithStateConfig(name, "Running"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("desired"),
+						knownvalue.StringExact("Running"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("current"),
+						knownvalue.StringExact("Running"),
+					),
+				},
+			},
+			{
+				// Step 3: hard power-off. Verifies the destroy-style
+				// transition works as a configured Update too.
+				Config: vmWithStateConfig(name, "Off"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("current"),
+						knownvalue.StringExact("Off"),
+					),
+				},
+			},
+		},
+	})
+}
+
+// vmWithStateConfig is the HCL template for TestAcc_VM_withState: a
+// gen 2 VM with no attachments, just the inline state block.
+func vmWithStateConfig(vmName, desired string) string {
+	return fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  state = {
+    desired = %q
+  }
+}
+`, vmName, vmMinimumMemoryBytes, desired)
+}
+
 // vmBasicConfig is the minimum-shape HCL for a no-attachment hyperv_vm.
 // Generation 2, 2 vcpus, 256 MiB memory.
 func vmBasicConfig(name, notes string) string {

@@ -37,7 +37,22 @@ resource "hyperv_vm" "node01" {
     { type = "dvd_drive", controller_number = 0, controller_location = 1 },
     { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
   ]
+
+  # Power the VM on after attaching everything. Drop or set to "Off"
+  # to power-cycle. Hard power-off semantics on the Off transition
+  # (matches `terraform destroy`) -- graceful shutdown is a future
+  # `state.shutdown_mode` attribute.
+  state = {
+    desired = "Running"
+  }
 }
+
+# After apply, look up the VM's IPs (populated when the guest's
+# integration services are running):
+#
+#   output "node01_ip" {
+#     value = hyperv_vm.node01.ip_addresses[0]
+#   }
 
 # Generation 1 VM (BIOS, legacy boot). Useful for Windows Server 2008 R2
 # and earlier guests that don't support UEFI. No secure_boot attribute --

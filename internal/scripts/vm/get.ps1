@@ -22,8 +22,11 @@
 #                     ...
 #                   ],
 #                   "NetworkAdapters":            [
-#                     { "Name":       "<display-name>",
-#                       "SwitchName": "<vswitch-name>" },
+#                     { "Name":        "<display-name>",
+#                       "SwitchName":  "<vswitch-name>",
+#                       "IPAddresses": ["<ip>", ...] },   # empty when VM is Off
+#                                                         # or integration services
+#                                                         # haven't reported in.
 #                     ...
 #                   ],
 #                   "DvdDrives":                  [
@@ -138,11 +141,24 @@ function Read-HypervVMResult {
     # Network adapters: same @() wrapper rationale as HDDs -- empty
     # array on the wire becomes []NetworkAdapter on the Go side, not
     # nil, which keeps state stable when no NICs are attached.
+    # NICs include IPAddresses so the resource layer can surface a
+    # top-level ip_addresses flatten. Empty IPAddresses is the common
+    # case (Off VM, or integration services not reporting yet).
+    #
+    # Direct pscustomobject construction (rather than Select-Object
+    # with computed property) sidesteps a PS 5.1 ConvertTo-Json
+    # quirk: an empty array inside a Select-Object computed-property
+    # serializes as `{}` instead of `[]`, breaking the Go-side
+    # decode into []string. Building the object directly preserves
+    # the [string[]] cast through the JSON serializer.
     $nics = @(
-        Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop |
-            Select-Object `
-                Name,
-                SwitchName
+        foreach ($nic in (Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop)) {
+            [pscustomobject]@{
+                Name        = $nic.Name
+                SwitchName  = $nic.SwitchName
+                IPAddresses = [string[]] @($nic.IPAddresses)
+            }
+        }
     )
     # DVD drives: same shape as HardDiskDrives. An empty drive (no ISO
     # loaded) emits Path as the empty string, not null -- the cmdlet's

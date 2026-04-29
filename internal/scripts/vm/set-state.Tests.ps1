@@ -1,0 +1,105 @@
+# Locks the JSON contract for Set-HypervVMState (vm/set-state.ps1).
+# The Go-side resource layer dispatches state.desired transitions
+# through this script; any change to the wire shape or the dispatch
+# mapping is a breaking change.
+
+BeforeAll {
+    . $PSScriptRoot/_test_helpers.ps1
+    . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/set-state.ps1
+}
+
+Describe 'Set-HypervVMState' {
+
+    Context 'transition: Off -> Running' {
+
+        It 'calls Start-VM with the resolved VM and emits the post-transition read shape' {
+            Mock Get-VM { New-HypervVMSample -Name 'vm01' -State 'Running' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Start-VM { }
+            Mock Stop-VM  { }
+
+            Set-HypervVMState -Name 'vm01' -Desired 'Running' | Out-Null
+
+            Should -Invoke Start-VM -Times 1 -Exactly
+            Should -Invoke Stop-VM  -Times 0 -Exactly
+        }
+    }
+
+    Context 'transition: Running -> Off' {
+
+        It 'calls Stop-VM -TurnOff -Force (hard power-off semantics)' {
+            Mock Get-VM { New-HypervVMSample -Name 'vm01' -State 'Off' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Start-VM { }
+            Mock Stop-VM  { }
+
+            Set-HypervVMState -Name 'vm01' -Desired 'Off' | Out-Null
+
+            Should -Invoke Stop-VM  -Times 1 -Exactly -ParameterFilter {
+                $TurnOff.IsPresent -and $Force.IsPresent
+            }
+            Should -Invoke Start-VM -Times 0 -Exactly
+        }
+    }
+
+    Context 'parameter validation' {
+
+        It 'rejects Desired values outside {Off, Running}' {
+            { Set-HypervVMState -Name 'vm01' -Desired 'Saved' } |
+                Should -Throw -ExpectedMessage '*does not belong to the set*'
+        }
+    }
+
+    Context 'error propagation' {
+
+        It 'maps a missing VM to ObjectNotFound regardless of cmdlet category' {
+            # Mirrors get.ps1's two-shape catch -- on Server 2022 + PS 5.1
+            # the cmdlet emits InvalidArgument + the GetVM FQId for a
+            # missing VM, NOT ObjectNotFound. The script normalizes both
+            # to ObjectNotFound so the Go side maps to ErrNotFound and
+            # Update can recover via destroy + recreate.
+            Mock Get-VM {
+                $exception = [System.ArgumentException]::new(
+                    "Hyper-V was unable to find a virtual machine with name 'missing'.")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception,
+                    'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM',
+                    [System.Management.Automation.ErrorCategory]::InvalidArgument,
+                    'missing')
+                throw $errorRecord
+            }
+
+            $captured = $null
+            try {
+                Set-HypervVMState -Name 'missing' -Desired 'Running'
+            } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+        }
+    }
+
+    Context 'output shape' {
+
+        It 'emits a single-line JSON object with the canonical read keys' {
+            Mock Get-VM { New-HypervVMSample -State 'Running' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Start-VM { }
+
+            $output = Set-HypervVMState -Name 'vm01' -Desired 'Running'
+            $output | Should -BeOfType [string]
+            ($output -split "`n" | Measure-Object).Count | Should -Be 1
+
+            $parsed = $output | ConvertFrom-Json
+            $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
+                'ProcessorCount', 'SecureBootEnabled', 'State'
+            )
+        }
+    }
+}

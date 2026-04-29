@@ -458,13 +458,63 @@ func resourceSchema() schema.Schema {
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"state": schema.StringAttribute{
-				Computed: true,
-				MarkdownDescription: "Current power state reported by the host. One of `Off`, `Running`, " +
-					"`Saved`, `Paused`, `Starting`, `Stopping`, ... Visibility-only on this resource; " +
-					"power transitions belong to the separate `hyperv_vm_state` resource.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
+			"state": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Power-state block. Optional: omit to leave the VM at " +
+					"whatever power state Hyper-V's default applies (Off for newly created " +
+					"VMs). When set, `state.desired` drives transitions and `state.current` " +
+					"surfaces the host's actual state.\n\n" +
+					"**Transitions:** `Off` -> `Running` calls `Start-VM`; `Running` -> `Off` " +
+					"calls `Stop-VM -TurnOff -Force` (hard power-off, matching `terraform " +
+					"destroy` semantics). Graceful shutdown is a future option (will arrive as " +
+					"an additional `state.shutdown_mode` attribute) -- it requires Hyper-V " +
+					"integration services running in the guest, which not all images carry.\n\n" +
+					"**VM-must-be-Off rule:** scalar updates (`cpu.count`, `memory.startup_bytes`, " +
+					"`secure_boot`) generally require the VM to be `Off`. If `state.desired = \"Running\"` " +
+					"and a scalar field also changes in the same plan, the cmdlet errors at " +
+					"apply time -- split the change across two applies (transition first, then " +
+					"the scalar update) or set `state.desired = \"Off\"` for the duration.\n\n" +
+					"**Drift detection:** `state.current` refreshes on every plan, so an " +
+					"out-of-band Start-VM / Stop-VM surfaces as a diff that the next apply " +
+					"corrects.",
+				Attributes: map[string]schema.Attribute{
+					"desired": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Desired power state. `Off` or `Running`. Omit to " +
+							"surface only the current state without managing transitions.",
+						Validators: []validator.String{
+							stringvalidator.OneOf("Off", "Running"),
+						},
+					},
+					"current": schema.StringAttribute{
+						Computed: true,
+						MarkdownDescription: "Actual power state reported by the host. " +
+							"Includes transient values (`Starting`, `Stopping`, `Saved`, `Paused`) that " +
+							"surface during refresh between transitions.\n\n" +
+							"No `UseStateForUnknown` plan modifier: a plan that changes " +
+							"`state.desired` would otherwise carry the prior `state.current` into " +
+							"the post-apply consistency check, which the framework rejects when " +
+							"the actual transition results in a different value. Trade-off: " +
+							"plans show `current = (known after apply)` whenever the block is " +
+							"in scope, even on no-op apply turns.",
+					},
+				},
+			},
+			"ip_addresses": schema.ListAttribute{
+				Computed:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "Flat list of IPv4 / IPv6 addresses the guest's Hyper-V " +
+					"integration services have reported across all attached `network_adapter[]` " +
+					"entries. Empty when the VM is `Off`, when the guest is still booting, or " +
+					"when the guest doesn't ship integration services (rare for modern Windows " +
+					"and Linux).\n\n" +
+					"**Order is host-driven** (per-NIC, then per-IP within a NIC) and not " +
+					"stable across reboots. Downstream resources should reference specific " +
+					"indices (`hyperv_vm.web.ip_addresses[0]`) only when the VM has a single " +
+					"known-stable IP; multi-homed VMs should attach a per-NIC binding via the " +
+					"underlying `network_adapter[]` once that schema slice ships.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"path": schema.StringAttribute{

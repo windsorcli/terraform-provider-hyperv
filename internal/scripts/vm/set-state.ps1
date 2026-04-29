@@ -1,32 +1,40 @@
-# vm/set.ps1 -- partial in-place update of a VM's mutable attributes.
+# vm/set-state.ps1 -- transition a VM to a desired power state.
 #
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : {
-#                   "name":         "<string>",   # required
-#                   "generation":   1|2,          # required (validation hint
-#                                                 #  for the secure_boot guard)
-#                   "vcpu":         <int>,        # optional, only when changed
-#                   "memory_bytes": <int64>,      # optional
-#                   "secure_boot":  <bool>,       # optional, gen 2 only
-#                   "notes":        "<string>"    # optional
+#                   "name":    "<vm-name>",
+#                   "desired": "Off" | "Running"
 #                 }
-#   stdout JSON : same 10-field shape as get.ps1.
+#   stdout JSON : same shape as get.ps1 (the post-transition VM read).
+#   stderr/exit : missing VM -> ObjectNotFound -> ErrNotFound. Other
+#                 cmdlet errors (Start-VM on a VM with no boot media
+#                 doesn't error -- the VM enters Running and hangs at
+#                 a "no boot device" prompt, which is fine for this
+#                 layer) propagate with their original category.
 #
-# Mutability semantics: name and generation are RequiresReplace at the
-# schema layer and never reach this script. Everything else is in-place
-# mutable via Set-VM* cmdlets.
+# Dispatch:
+#   - desired=Running: Start-VM. Works from any non-Running state
+#     (Off boots; Saved resumes; Paused isn't supported in this
+#     slice but the cmdlet errors clearly).
+#   - desired=Off: Stop-VM -TurnOff -Force. Hard power-off,
+#     matching destroy semantics in remove.ps1. Graceful shutdown
+#     (Stop-VM -Force without -TurnOff) is a future option once
+#     `state` grows a `shutdown_mode` attribute -- it requires
+#     integration services in the guest, which our acc-test
+#     fixtures don't have.
 #
-# **VM-must-be-Off rule.** vcpu, memory_bytes, and secure_boot generally
-# require the VM to be powered off. The cmdlets error clearly when the VM
-# is running; we surface that error verbatim. Auto-stopping the VM during
-# Update would be dangerous magic that changes apply semantics -- the
-# operator drives power transitions via hyperv_vm_state.
+# Idempotency: Start-VM on an already-Running VM is a no-op (cmdlet
+# emits a warning we silence via -ErrorAction). Same for Stop-VM on
+# an already-Off VM. The resource layer's plan-vs-state diff filters
+# the redundant call out anyway, but the cmdlet-level idempotence is
+# the second line of defense.
 
-# Read-HypervVMResult emits the canonical read shape. Inline duplicate
-# of get.ps1's tail because the runtime concatenates only preamble + a
-# single verb script per call. Keep these three copies in sync; the
-# Pester get.Tests.ps1 contract test pins the shape.
+# Read-HypervVMResult is the canonical read shape. Same inline-copy
+# pattern as get/new/set.ps1 -- the runtime concatenates only
+# preamble + a single verb script per call (no cross-script helpers).
+# Keep these copies in sync; the Pester get.Tests.ps1 contract test
+# pins the shape.
 function Read-HypervVMResult {
     [CmdletBinding()]
     param(
@@ -39,9 +47,6 @@ function Read-HypervVMResult {
         $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
         $bootOrder = @(
             foreach ($entry in $firmware.BootOrder) {
-                # Discriminator is $entry.Device's CLR type, not
-                # BootType (which is 'Drive' for both HDD and DVD). See
-                # get.ps1's matching block for the longer rationale.
                 $deviceType = $entry.Device.GetType().Name
                 switch ($deviceType) {
                     'HardDiskDrive' {
@@ -118,26 +123,25 @@ function Read-HypervVMResult {
     } | Write-HypervResult
 }
 
-# Set-HypervVM applies the partial update. Same Stop + selective
-# ObjectNotFound catch pattern as get.ps1 -- a missing VM raises
-# ObjectNotFound (mapped to ErrNotFound on the Go side) so Update can
-# recover gracefully from out-of-band deletion via destroy+recreate
-# rather than surfacing the cmdlet's opaque InvalidArgument error.
-function Set-HypervVM {
+function Set-HypervVMState {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [int]    $Generation,
-        [Nullable[int]]                 $Vcpu,
-        [Nullable[int64]]               $MemoryBytes,
-        [Nullable[bool]]                $SecureBoot,
-        [string]                        $Notes
+        [Parameter(Mandatory)] [string]                       $Name,
+        [Parameter(Mandatory)] [ValidateSet('Off', 'Running')] [string] $Desired
     )
     try {
         $vm = Get-VM -Name $Name -ErrorAction Stop
     }
     catch {
-        if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        # Mirror get.ps1's "missing VM" mapping: cmdlet may surface
+        # ObjectNotFound or InvalidArgument + the GetVM FQId
+        # depending on Hyper-V module version.
+        $isMissing = (
+            $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound
+        ) -or (
+            $_.FullyQualifiedErrorId -eq 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM'
+        )
+        if (-not $isMissing) {
             throw
         }
         $exception = [System.Management.Automation.ItemNotFoundException]::new(
@@ -148,21 +152,13 @@ function Set-HypervVM {
         throw $errorRecord
     }
 
-    # Only forward what the caller supplied. The Go-side Update sends only
-    # changed fields, so each branch is gated on presence.
-    if ($null -ne $MemoryBytes) {
-        Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false `
-            -StartupBytes ([int64] $MemoryBytes) -ErrorAction Stop
-    }
-    if ($null -ne $Vcpu) {
-        Set-VMProcessor -VMName $Name -Count ([int] $Vcpu) -ErrorAction Stop
-    }
-    if ($Generation -eq 2 -and $null -ne $SecureBoot) {
-        $sb = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
-        Set-VMFirmware -VMName $Name -EnableSecureBoot $sb -ErrorAction Stop
-    }
-    if ($PSBoundParameters.ContainsKey('Notes')) {
-        Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
+    switch ($Desired) {
+        'Running' {
+            Start-VM -VM $vm -ErrorAction Stop | Out-Null
+        }
+        'Off' {
+            Stop-VM -VM $vm -TurnOff -Force -ErrorAction Stop | Out-Null
+        }
     }
 
     $vm = Get-VM -Name $Name -ErrorAction Stop
@@ -173,29 +169,7 @@ function Set-HypervVM {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-
-        $callArgs = @{
-            Name       = $params.name
-            Generation = [int] $params.generation
-        }
-        if ($params.PSObject.Properties.Name -contains 'vcpu' -and
-            $null -ne $params.vcpu) {
-            $callArgs.Vcpu = [int] $params.vcpu
-        }
-        if ($params.PSObject.Properties.Name -contains 'memory_bytes' -and
-            $null -ne $params.memory_bytes) {
-            $callArgs.MemoryBytes = [int64] $params.memory_bytes
-        }
-        if ($params.PSObject.Properties.Name -contains 'secure_boot' -and
-            $null -ne $params.secure_boot) {
-            $callArgs.SecureBoot = [bool] $params.secure_boot
-        }
-        if ($params.PSObject.Properties.Name -contains 'notes' -and
-            $null -ne $params.notes) {
-            $callArgs.Notes = [string] $params.notes
-        }
-
-        Set-HypervVM @callArgs
+        Set-HypervVMState -Name $params.name -Desired $params.desired
     }
     catch {
         Write-HypervError $_

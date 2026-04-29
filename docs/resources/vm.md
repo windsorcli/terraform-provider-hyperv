@@ -64,7 +64,22 @@ resource "hyperv_vm" "node01" {
     { type = "dvd_drive", controller_number = 0, controller_location = 1 },
     { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
   ]
+
+  # Power the VM on after attaching everything. Drop or set to "Off"
+  # to power-cycle. Hard power-off semantics on the Off transition
+  # (matches `terraform destroy`) -- graceful shutdown is a future
+  # `state.shutdown_mode` attribute.
+  state = {
+    desired = "Running"
+  }
 }
+
+# After apply, look up the VM's IPs (populated when the guest's
+# integration services are running):
+#
+#   output "node01_ip" {
+#     value = hyperv_vm.node01.ip_addresses[0]
+#   }
 
 # Generation 1 VM (BIOS, legacy boot). Useful for Windows Server 2008 R2
 # and earlier guests that don't support UEFI. No secure_boot attribute --
@@ -137,12 +152,21 @@ To change `notes`, write a different non-empty value. To remove notes from a VM,
 - `secure_boot` (Boolean) Whether UEFI Secure Boot is enabled. **Valid only when `generation = 2`** -- a config validator rejects this on gen 1 at plan time. Defaults to Hyper-V's default (typically `true` for new gen 2 VMs). In-place updatable via `Set-VMFirmware`.
 
 **Cannot be cleared in-place.** Once `secure_boot` has been set in config and applied, writing `secure_boot = null` (or removing the attribute and re-adding it later) will NOT revert to the host default -- the change isn't forwarded by the partial-update path, the host keeps the previous value, and every subsequent plan shows the same diff. To revert, either explicitly set the desired bool (e.g. `secure_boot = true`) or destroy and recreate the VM.
+- `state` (Attributes) Power-state block. Optional: omit to leave the VM at whatever power state Hyper-V's default applies (Off for newly created VMs). When set, `state.desired` drives transitions and `state.current` surfaces the host's actual state.
+
+**Transitions:** `Off` -> `Running` calls `Start-VM`; `Running` -> `Off` calls `Stop-VM -TurnOff -Force` (hard power-off, matching `terraform destroy` semantics). Graceful shutdown is a future option (will arrive as an additional `state.shutdown_mode` attribute) -- it requires Hyper-V integration services running in the guest, which not all images carry.
+
+**VM-must-be-Off rule:** scalar updates (`cpu.count`, `memory.startup_bytes`, `secure_boot`) generally require the VM to be `Off`. If `state.desired = "Running"` and a scalar field also changes in the same plan, the cmdlet errors at apply time -- split the change across two applies (transition first, then the scalar update) or set `state.desired = "Off"` for the duration.
+
+**Drift detection:** `state.current` refreshes on every plan, so an out-of-band Start-VM / Stop-VM surfaces as a diff that the next apply corrects. (see [below for nested schema](#nestedatt--state))
 
 ### Read-Only
 
 - `id` (String) Resource identifier. Mirrors `name` -- VM names are unique per host.
+- `ip_addresses` (List of String) Flat list of IPv4 / IPv6 addresses the guest's Hyper-V integration services have reported across all attached `network_adapter[]` entries. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services (rare for modern Windows and Linux).
+
+**Order is host-driven** (per-NIC, then per-IP within a NIC) and not stable across reboots. Downstream resources should reference specific indices (`hyperv_vm.web.ip_addresses[0]`) only when the VM has a single known-stable IP; multi-homed VMs should attach a per-NIC binding via the underlying `network_adapter[]` once that schema slice ships.
 - `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
-- `state` (String) Current power state reported by the host. One of `Off`, `Running`, `Saved`, `Paused`, `Starting`, `Stopping`, ... Visibility-only on this resource; power transitions belong to the separate `hyperv_vm_state` resource.
 
 <a id="nestedatt--cpu"></a>
 ### Nested Schema for `cpu`
@@ -210,6 +234,20 @@ Required:
 
 - `name` (String) Display name of the NIC. Used as the slot key for reconciliation and shown in Hyper-V Manager's NIC list. Must be unique within this VM's `network_adapter` list.
 - `switch_name` (String) Name of the `hyperv_virtual_switch` to bind this NIC to. Hyper-V validates the switch exists at apply time and surfaces its own clear error if it doesn't.
+
+
+<a id="nestedatt--state"></a>
+### Nested Schema for `state`
+
+Optional:
+
+- `desired` (String) Desired power state. `Off` or `Running`. Omit to surface only the current state without managing transitions.
+
+Read-Only:
+
+- `current` (String) Actual power state reported by the host. Includes transient values (`Starting`, `Stopping`, `Saved`, `Paused`) that surface during refresh between transitions.
+
+No `UseStateForUnknown` plan modifier: a plan that changes `state.desired` would otherwise carry the prior `state.current` into the post-apply consistency check, which the framework rejects when the actual transition results in a different value. Trade-off: plans show `current = (known after apply)` whenever the block is in scope, even on no-op apply turns.
 
 ## Import
 

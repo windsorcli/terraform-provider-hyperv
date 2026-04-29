@@ -22,6 +22,14 @@
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
+# Stop-VM (already-Off) and Start-VM (already-Running) emit a "VM is
+# already in the specified state" WARNING that lands on stdout via
+# the SSH transport's stream-merging, corrupting the JSON output the
+# Go-side decoder expects. Silencing globally is right for this
+# provider: every script's contract is "JSON on stdout or nothing,"
+# and any genuinely useful warning would be better surfaced via
+# Write-HypervError on stderr.
+$WarningPreference     = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
 $OutputEncoding           = [System.Text.Encoding]::UTF8

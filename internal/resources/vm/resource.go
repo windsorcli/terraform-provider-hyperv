@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -316,18 +317,39 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	// Re-fetch to populate Computed fields (HardDiskDrives /
-	// NetworkAdapters mirrors, State, Path) from the host. The
-	// framework's "inconsistent result after apply" check compares
-	// plan against this state.
-	v, err := r.client.GetVM(ctx, plan.Name.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Read hyperv_vm after Create failed", err.Error())
-		return
+	// Power transition is the very last step: each device the user
+	// asked for is now attached, boot order is set, and only now does
+	// it make sense to flip the VM on (if the user asked for that).
+	// SetVMState returns the post-transition VM read so we can skip
+	// the trailing GetVM call entirely.
+	var v *hyperv.VM
+	if shouldApplyState(plan.State) {
+		var err error
+		v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
+			Name:    plan.Name.ValueString(),
+			Desired: plan.State.Desired.ValueString(),
+		})
+		if err != nil {
+			resp.Diagnostics.AddError("Set VM state failed", fmt.Sprintf(
+				"VM %s, desired %s: %s",
+				plan.Name.ValueString(), plan.State.Desired.ValueString(), err))
+			return
+		}
+	} else {
+		// User didn't manage state -- pull the post-attachment read
+		// directly so the framework's "inconsistent result after
+		// apply" check sees the actual host shape.
+		var err error
+		v, err = r.client.GetVM(ctx, plan.Name.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("Read hyperv_vm after Create failed", err.Error())
+			return
+		}
 	}
 
 	state := modelFromVM(v)
 	state.BootOrder = reconcileBootOrderState(plan.BootOrder, state.BootOrder)
+	state.State = reconcileStateBlock(plan.State, state.State)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -364,6 +386,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 
 	newState := modelFromVM(v)
 	newState.BootOrder = reconcileBootOrderState(state.BootOrder, newState.BootOrder)
+	newState.State = reconcileStateBlock(state.State, newState.State)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -501,6 +524,13 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
+	// State transition is the very last reconciliation -- VM-must-be-Off
+	// scalar updates (cpu/memory/secure_boot) need to happen FIRST,
+	// then we transition to Running if the user wants. Going the
+	// other direction (Running -> Off) is also fine here because the
+	// scalar updates don't fire when the VM is already Off.
+	stateChanged := shouldApplyState(plan.State) && stateDesiredChanged(plan.State, state.State)
+
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
 		// No scalar change. If we did reconcile attachments above we
@@ -511,17 +541,34 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		if len(hddAttach) == 0 && len(hddDetach) == 0 &&
 			len(nicAttach) == 0 && len(nicDetach) == 0 &&
 			len(dvdAttach) == 0 && len(dvdDetach) == 0 &&
-			!bootOrderChanged {
+			!bootOrderChanged && !stateChanged {
 			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			return
 		}
-		v, err := r.client.GetVM(ctx, plan.Name.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Read hyperv_vm after attachment-only Update failed", err.Error())
-			return
+		var v *hyperv.VM
+		if stateChanged {
+			var err error
+			v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
+				Name:    plan.Name.ValueString(),
+				Desired: plan.State.Desired.ValueString(),
+			})
+			if err != nil {
+				resp.Diagnostics.AddError("Set VM state failed", fmt.Sprintf(
+					"VM %s, desired %s: %s",
+					plan.Name.ValueString(), plan.State.Desired.ValueString(), err))
+				return
+			}
+		} else {
+			var err error
+			v, err = r.client.GetVM(ctx, plan.Name.ValueString())
+			if err != nil {
+				resp.Diagnostics.AddError("Read hyperv_vm after attachment-only Update failed", err.Error())
+				return
+			}
 		}
 		newState := modelFromVM(v)
 		newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
+		newState.State = reconcileStateBlock(plan.State, newState.State)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -532,8 +579,24 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
+	// Scalar update succeeded; if the user also wants a state
+	// transition this turn, do it now and re-read.
+	if stateChanged {
+		v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
+			Name:    plan.Name.ValueString(),
+			Desired: plan.State.Desired.ValueString(),
+		})
+		if err != nil {
+			resp.Diagnostics.AddError("Set VM state failed", fmt.Sprintf(
+				"VM %s, desired %s: %s",
+				plan.Name.ValueString(), plan.State.Desired.ValueString(), err))
+			return
+		}
+	}
+
 	newState := modelFromVM(v)
 	newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
+	newState.State = reconcileStateBlock(plan.State, newState.State)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -773,9 +836,30 @@ func modelFromVM(v *hyperv.VM) Model {
 		BootOrder:       bootOrder,
 		SecureBoot:      secureBoot,
 		Notes:           notes,
-		State:           types.StringValue(v.State),
+		State:           &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
+		IPAddresses:     flattenIPAddresses(v.NetworkAdapters),
 		Path:            types.StringValue(v.Path),
 	}
+}
+
+// flattenIPAddresses unions the per-NIC IPAddresses arrays from
+// Get-VMNetworkAdapter into the top-level ip_addresses Computed
+// list. Order is preserved (NICs in cmdlet order, IPs in cmdlet
+// order within each NIC) -- not lexically sorted, because Hyper-V
+// reports a stable per-boot order and re-sorting would mask drift
+// for downstream consumers that key off ip_addresses[0].
+//
+// Returns a known empty list (not null) when no IPs are present.
+// The schema's ListAttribute decode requires a known value, and an
+// empty Off-VM is the steady state for most acc-test fixtures.
+func flattenIPAddresses(nics []hyperv.NetworkAdapter) types.List {
+	var ips []attr.Value
+	for _, n := range nics {
+		for _, ip := range n.IPAddresses {
+			ips = append(ips, types.StringValue(ip))
+		}
+	}
+	return types.ListValueMust(types.StringType, ips)
 }
 
 // hddSlotKey identifies a slot tuple. The diff is keyed on this so a
@@ -1049,6 +1133,75 @@ func detachDvdInputFor(vmName string, d DvdDriveModel) hyperv.DetachDvdDriveInpu
 // to gate the cmdlet call on having something to set.
 func shouldApplyBootOrder(entries []BootOrderEntryModel) bool {
 	return len(entries) > 0
+}
+
+// shouldApplyState returns true when the user is actually requesting
+// a power transition. The state block is *StateModel pointer-typed:
+//
+//   - nil block -- user omitted `state` entirely; we don't manage power
+//     and don't call SetVMState.
+//   - non-nil block with null Desired -- user wrote `state = {}` (or
+//     state-only-with-current); same "don't manage" semantics.
+//   - non-nil block with known Desired -- the user asked for a
+//     specific power state, fire SetVMState.
+func shouldApplyState(s *StateModel) bool {
+	if s == nil {
+		return false
+	}
+	return !s.Desired.IsNull() && !s.Desired.IsUnknown()
+}
+
+// stateDesiredChanged returns true when the planned Desired differs
+// from the host's actual Current state -- i.e., when SetVMState
+// actually needs to fire. Treats null Desired (user didn't manage)
+// as "no change". Used both to gate the cmdlet call and to keep the
+// same-shape short-circuit in Update accurate.
+//
+// Plan vs state Current isn't just an equality check: the user might
+// have written `Off` while the VM is in a transient `Stopping`
+// state from a prior interrupted apply. In that case the next
+// SetVMState('Off') is a no-op for the cmdlet and a fresh GetVM
+// confirms the steady state.
+func stateDesiredChanged(planState, stateState *StateModel) bool {
+	if planState == nil || planState.Desired.IsNull() || planState.Desired.IsUnknown() {
+		return false
+	}
+	if stateState == nil || stateState.Current.IsNull() || stateState.Current.IsUnknown() {
+		return true
+	}
+	return planState.Desired.ValueString() != stateState.Current.ValueString()
+}
+
+// reconcileStateBlock picks what to write to Model.State after a
+// Create / Update / Read, mirroring reconcileBootOrderState's two-rule
+// shape. The framework would otherwise complain about plan/state
+// shape mismatches when the user omits the block entirely:
+//
+//   - User omitted `state` (planState == nil): collapse hostState to
+//     nil so plan == state == null. Drift detection on power state is
+//     forgone in exchange.
+//   - User set `state.desired`: keep hostState's Current and overwrite
+//     Desired with what the user wrote (Optional attribute -- state
+//     value must match config value).
+//   - User wrote `state = {}` (planState non-nil, Desired null): keep
+//     Current from host, Desired stays null on both sides.
+func reconcileStateBlock(planState, hostState *StateModel) *StateModel {
+	if planState == nil {
+		return nil
+	}
+	if hostState == nil {
+		// Defensive: Read might have produced a nil state even though
+		// plan has one. Synthesize a current-null block so the plan
+		// shape matches.
+		return &StateModel{
+			Desired: planState.Desired,
+			Current: types.StringNull(),
+		}
+	}
+	return &StateModel{
+		Desired: planState.Desired,
+		Current: hostState.Current,
+	}
 }
 
 // reconcileBootOrderState picks what BootOrder to write to state after

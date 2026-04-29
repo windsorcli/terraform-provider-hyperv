@@ -82,8 +82,13 @@ function Read-HypervVMResult {
                 @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
     )
     $nics = @(
-        Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop |
-            Select-Object Name, SwitchName
+        foreach ($nic in (Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop)) {
+            [pscustomobject]@{
+                Name        = $nic.Name
+                SwitchName  = $nic.SwitchName
+                IPAddresses = [string[]] @($nic.IPAddresses)
+            }
+        }
     )
     $dvds = @(
         Get-VMDvdDrive -VM $Vm -ErrorAction Stop |

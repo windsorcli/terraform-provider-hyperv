@@ -238,3 +238,24 @@ func (c *Client) SetBootOrder(ctx context.Context, in SetBootOrderInput) error {
 	}
 	return c.runScript(ctx, string(body), stdin, nil)
 }
+
+// SetVMState transitions the VM's power state via Start-VM (Desired=
+// 'Running') or Stop-VM -TurnOff -Force (Desired='Off'). Returns the
+// post-transition VM read so callers can refresh state without a
+// separate GetVM round-trip. Idempotent at the cmdlet level: setting
+// Desired='Running' on an already-Running VM is a no-op.
+func (c *Client) SetVMState(ctx context.Context, in SetVMStateInput) (*VM, error) {
+	body, err := scripts.VMScript("set-state")
+	if err != nil {
+		return nil, fmt.Errorf("load vm/set-state.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("marshal set-state.ps1 input: %w", err)
+	}
+	var out VM
+	if err := c.runScript(ctx, string(body), stdin, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

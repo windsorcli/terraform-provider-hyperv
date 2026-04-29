@@ -63,7 +63,8 @@ type Model struct {
 	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
 	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
 	Notes           types.String          `tfsdk:"notes"`
-	State           types.String          `tfsdk:"state"`
+	State           *StateModel           `tfsdk:"state"`
+	IPAddresses     types.List            `tfsdk:"ip_addresses"`
 	Path            types.String          `tfsdk:"path"`
 }
 
@@ -137,4 +138,24 @@ type BootOrderEntryModel struct {
 	ControllerNumber   types.Int64  `tfsdk:"controller_number"`
 	ControllerLocation types.Int64  `tfsdk:"controller_location"`
 	Name               types.String `tfsdk:"name"`
+}
+
+// StateModel is the nested `state` block on hyperv_vm. Pointer-typed
+// (Model.State is *StateModel) for the same reason as CPU and Memory:
+// during ImportState the framework writes a partial Model with just
+// `name` set, and a value-typed nested struct can't represent null.
+//
+// Desired is the user-facing power-state input ("Off" | "Running"); a
+// transition fires only when Desired differs from the host's actual
+// state. Current is the Computed readback from Hyper-V; useful for
+// downstream resources that key off the actual state ("provision the
+// guest only when state.current = Running").
+//
+// Saved and Paused are out of scope for this slice -- the schema
+// validator on Desired rejects values outside {Off, Running}. Drift
+// from those states surfaces verbatim in Current; the next Update
+// will hard-power-off or start as configured.
+type StateModel struct {
+	Desired types.String `tfsdk:"desired"`
+	Current types.String `tfsdk:"current"`
 }

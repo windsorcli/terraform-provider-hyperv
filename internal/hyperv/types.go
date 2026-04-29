@@ -200,9 +200,16 @@ type SetBootOrderEntryInput struct {
 // reconciliation uses to diff plan vs state. SwitchName identifies
 // which hyperv_virtual_switch the NIC is bound to (or empty when
 // unbound -- Hyper-V allows that, though it's rare).
+//
+// IPAddresses is populated by Hyper-V's integration services running
+// in the guest -- empty when the VM is Off, when integration services
+// haven't loaded yet, or when the guest doesn't ship them. The
+// resource layer flattens IPAddresses across all NICs into a top-
+// level ip_addresses Computed attribute.
 type NetworkAdapter struct {
-	Name       string `json:"Name"`
-	SwitchName string `json:"SwitchName"`
+	Name        string   `json:"Name"`
+	SwitchName  string   `json:"SwitchName"`
+	IPAddresses []string `json:"IPAddresses"`
 }
 
 // AttachNetworkAdapterInput is the stdin JSON shape for
@@ -306,6 +313,17 @@ type NewVMInput struct {
 	MemoryBytes int64   `json:"memory_bytes"`
 	SecureBoot  *bool   `json:"secure_boot,omitempty"`
 	Notes       *string `json:"notes,omitempty"`
+}
+
+// SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.
+// Desired is the only mutation: 'Off' triggers Stop-VM -TurnOff
+// -Force (hard power-off matching destroy semantics); 'Running'
+// triggers Start-VM. Other Hyper-V states (Saved, Paused) are out
+// of scope for this slice -- the script's ValidateSet on Desired
+// rejects them.
+type SetVMStateInput struct {
+	Name    string `json:"name"`
+	Desired string `json:"desired"`
 }
 
 // SetVMInput is the stdin JSON shape for vm/set.ps1.

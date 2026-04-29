@@ -172,6 +172,7 @@ func TestVMScript_LoadsAllVerbs(t *testing.T) {
 		"add-network-adapter", "remove-network-adapter",
 		"add-dvd-drive", "remove-dvd-drive",
 		"set-boot-order",
+		"set-state",
 	} {
 		body, err := VMScript(verb)
 		if err != nil {

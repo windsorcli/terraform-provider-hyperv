@@ -140,8 +140,12 @@ func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	}
 	checkString("id")
 	checkString("notes")
-	checkString("state")
 	checkString("path")
+	// `state` is intentionally NOT in this list -- the nested
+	// `state.current` Computed attribute deliberately omits
+	// UseStateForUnknown so plan vs apply doesn't lock in a stale
+	// value across desired-state transitions. See its
+	// MarkdownDescription for the trade-off.
 
 	if boolAttr, ok := resp.Schema.Attributes["secure_boot"].(schema.BoolAttribute); ok {
 		if !hasPlanModifier(boolAttr.PlanModifiers, "UseStateForUnknown") {
