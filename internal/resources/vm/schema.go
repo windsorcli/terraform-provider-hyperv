@@ -80,8 +80,16 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 // resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
 // slice). MarkdownDescription on each attribute drives the Registry-
 // published doc when `task generate` runs tfplugindocs (PLAN.md S15).
+//
+// Schema version 1: PR #20 shipped v0 with vcpu/memory_bytes as flat
+// Int64 attributes and state as a flat Computed StringAttribute. This
+// PR renames vcpu -> cpu.count, memory_bytes -> memory.startup_bytes,
+// promotes state into a {desired, current} nested block, and adds
+// inline attachment lists. State files written under v0 are bridged
+// by the v0 -> v1 StateUpgrader in upgrade.go.
 func resourceSchema() schema.Schema {
 	return schema.Schema{
+		Version: 1,
 		MarkdownDescription: "Manages a Hyper-V virtual machine. Ships with " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), " +
 			"`notes`, inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and " +
