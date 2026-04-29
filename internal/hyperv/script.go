@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 	"unicode"
-
-	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
 )
@@ -31,27 +28,7 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 	}
 	full := minifyPS(string(preamble) + "\n" + body)
 
-	// tflog start/end + duration is the load-bearing instrumentation
-	// for diagnosing operator hangs ("which cmdlet is wedged?").
-	// Activate with TF_LOG=DEBUG TF_LOG_PATH=...; cost is zero
-	// when TF_LOG is unset. Script name extracted from the body's
-	// first-line comment (every script starts with
-	// `# <family>/<verb>.ps1 -- ...`). See docs/spikes/04-suite-hang.md
-	// for the methodology that locked in this shape.
-	scriptName := extractScriptName(body)
-	tflog.Debug(ctx, "hyperv script start", map[string]any{
-		"script":      scriptName,
-		"body_bytes":  len(full),
-		"stdin_bytes": len(stdinJSON),
-	})
-	start := time.Now()
 	res, err := c.runner.RunScript(ctx, full, stdinJSON)
-	tflog.Debug(ctx, "hyperv script end", map[string]any{
-		"script":   scriptName,
-		"duration": time.Since(start).String(),
-		"exit":     res.ExitCode,
-		"error":    err != nil,
-	})
 	if err != nil {
 		return fmt.Errorf("transport: %w", err)
 	}
@@ -68,34 +45,6 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 		return fmt.Errorf("%w: decode result: %w; stdout=%s", ErrPSExecution, err, string(res.Stdout))
 	}
 	return nil
-}
-
-// extractScriptName pulls the verb identifier from a script's first-line
-// comment (`# vm/set-state.ps1 -- ...` -> `vm/set-state`). Best-effort
-// only -- used solely for tflog instrumentation, so any failure
-// returns "<unknown>" rather than affecting behavior.
-func extractScriptName(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if !strings.HasPrefix(trimmed, "#") {
-			break
-		}
-		// Skip comments that don't look like the path-tag we're after.
-		// The convention is `# <family>/<verb>.ps1 -- description`.
-		if !strings.Contains(trimmed, ".ps1") {
-			continue
-		}
-		// Trim leading '#', whitespace, then split on the literal ".ps1"
-		// to get the family/verb prefix.
-		head := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
-		if i := strings.Index(head, ".ps1"); i > 0 {
-			return head[:i]
-		}
-	}
-	return "<unknown>"
 }
 
 // minifyPS shrinks a PowerShell script for the wire by dropping comment-only
