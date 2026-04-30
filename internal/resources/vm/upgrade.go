@@ -6,6 +6,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // priorModelV0 is the tfsdk-bound shape of hyperv_vm state files written under
@@ -51,11 +53,9 @@ func priorSchemaV0() schema.Schema {
 	}
 }
 
-// UpgradeState bridges schema versions for hyperv_vm.
-//
-// Currently registers a single upgrader (v0 -> v1). Future schema bumps
-// append entries to the returned map; the framework chains them
-// automatically (e.g. v0 state replays v0->v1->v2 on a v2 binary).
+// UpgradeState bridges schema versions for hyperv_vm. Each entry maps
+// from a SOURCE version directly to the current (v2) shape; the
+// framework dispatches based on the on-disk version, NOT a chain.
 func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgrader {
 	return map[int64]resource.StateUpgrader{
 		0: {
@@ -70,6 +70,173 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
+		1: {
+			PriorSchema: ptrSchema(priorSchemaV1()),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior priorModelV1
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				upgraded := upgradeV1ToV2(prior)
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
+	}
+}
+
+// priorStateModelV1 is the v1 shape of the `state` nested block, before
+// shutdown_mode was added. priorModelV1 uses this for its State field
+// so the framework decodes v1 state files cleanly.
+type priorStateModelV1 struct {
+	Desired types.String `tfsdk:"desired"`
+	Current types.String `tfsdk:"current"`
+}
+
+// priorModelV1 mirrors the v1 Model. Identical to the current Model
+// except StateModel lacks shutdown_mode (the only v1 -> v2 change).
+// Carrying a separate type keeps the framework's tfsdk decoder happy
+// when it materializes a v1 state file: the current Model has a
+// shutdown_mode field that the v1 file won't have on disk.
+type priorModelV1 struct {
+	ID              types.String          `tfsdk:"id"`
+	Name            types.String          `tfsdk:"name"`
+	Generation      types.Int64           `tfsdk:"generation"`
+	CPU             *CPUModel             `tfsdk:"cpu"`
+	Memory          *MemoryModel          `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
+	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
+	Notes           types.String          `tfsdk:"notes"`
+	State           *priorStateModelV1    `tfsdk:"state"`
+	IPAddresses     types.List            `tfsdk:"ip_addresses"`
+	Path            types.String          `tfsdk:"path"`
+}
+
+// priorSchemaV1 mirrors the v1 schema's structural shape -- attribute
+// names and types only. Defaults / validators / plan modifiers /
+// MarkdownDescription are intentionally omitted because the framework
+// only needs structural information to decode a stored state file.
+//
+// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
+// the v2-only state.shutdown_mode addition. If a future v2 -> v3
+// migration adds another attribute, snapshot the v2 shape here as a
+// new priorSchemaV2.
+func priorSchemaV1() schema.Schema {
+	return schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id":         schema.StringAttribute{Computed: true},
+			"name":       schema.StringAttribute{Required: true},
+			"generation": schema.Int64Attribute{Required: true},
+			"cpu": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"count": schema.Int64Attribute{Required: true},
+				},
+			},
+			"memory": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"startup_bytes": schema.Int64Attribute{Required: true},
+				},
+			},
+			"hard_disk_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"path":                schema.StringAttribute{CustomType: pathtype.Type, Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"network_adapter": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name":        schema.StringAttribute{Required: true},
+						"switch_name": schema.StringAttribute{Required: true},
+					},
+				},
+			},
+			"dvd_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"iso_path":            schema.StringAttribute{CustomType: pathtype.Type, Optional: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"boot_order": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type":                schema.StringAttribute{Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Optional: true, Computed: true},
+						"controller_location": schema.Int64Attribute{Optional: true, Computed: true},
+						"name":                schema.StringAttribute{Optional: true, Computed: true},
+					},
+				},
+			},
+			"secure_boot": schema.BoolAttribute{Optional: true, Computed: true},
+			"notes":       schema.StringAttribute{Optional: true, Computed: true},
+			"state": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"desired": schema.StringAttribute{Optional: true},
+					"current": schema.StringAttribute{Computed: true},
+				},
+			},
+			"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+			"path":         schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+// upgradeV1ToV2 maps a v1 state struct into the v2 Model. The only
+// shape change is state.shutdown_mode being added; v1 state values
+// migrate with ShutdownMode left null because v1 users never had
+// the option to manage it. The script's wire contract treats absent
+// shutdown_mode as the turn_off behavior (same as v1's implicit
+// behavior), so existing state files come up running the same path
+// without storing a phantom value the user never chose. The user
+// opts into "graceful" by editing the config. Pure function for
+// direct unit testing.
+func upgradeV1ToV2(prior priorModelV1) Model {
+	var state *StateModel
+	if prior.State != nil {
+		state = &StateModel{
+			Desired:      prior.State.Desired,
+			Current:      prior.State.Current,
+			ShutdownMode: types.StringNull(),
+		}
+	}
+	return Model{
+		ID:              prior.ID,
+		Name:            prior.Name,
+		Generation:      prior.Generation,
+		CPU:             prior.CPU,
+		Memory:          prior.Memory,
+		HardDiskDrives:  prior.HardDiskDrives,
+		NetworkAdapters: prior.NetworkAdapters,
+		DvdDrives:       prior.DvdDrives,
+		BootOrder:       prior.BootOrder,
+		SecureBoot:      prior.SecureBoot,
+		Notes:           prior.Notes,
+		State:           state,
+		IPAddresses:     prior.IPAddresses,
+		Path:            prior.Path,
 	}
 }
 

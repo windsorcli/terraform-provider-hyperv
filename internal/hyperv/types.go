@@ -316,14 +316,26 @@ type NewVMInput struct {
 }
 
 // SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.
-// Desired is the only mutation: 'Off' triggers Stop-VM -TurnOff
-// -Force (hard power-off matching destroy semantics); 'Running'
-// triggers Start-VM. Other Hyper-V states (Saved, Paused) are out
-// of scope for this slice -- the script's ValidateSet on Desired
-// rejects them.
+//
+// Desired is the primary mutation: 'Off' invokes Stop-VM, 'Running'
+// invokes Start-VM. Other Hyper-V states (Saved, Paused) are out of
+// scope for this slice -- the script's ValidateSet on Desired rejects
+// them.
+//
+// ShutdownMode is optional and only governs the Stop dispatch:
+//   - "" or "turn_off" (default): Stop-VM -TurnOff -Force (hard
+//     power-off, matches destroy semantics, no integration-services
+//     dependency).
+//   - "graceful": Stop-VM -Force without -TurnOff (ACPI shutdown via
+//     integration services; hangs on guests without them).
+//
+// `omitempty` keeps the wire shape stable for callers that don't care
+// about the mode -- the script defaults to turn_off when the field
+// is absent or empty.
 type SetVMStateInput struct {
-	Name    string `json:"name"`
-	Desired string `json:"desired"`
+	Name         string `json:"name"`
+	Desired      string `json:"desired"`
+	ShutdownMode string `json:"shutdown_mode,omitempty"`
 }
 
 // SetVMInput is the stdin JSON shape for vm/set.ps1.

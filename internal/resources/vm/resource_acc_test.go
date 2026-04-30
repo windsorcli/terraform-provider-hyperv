@@ -755,3 +755,96 @@ func joinHostPath(dir, name string) string {
 func toForwardSlash(p string) string {
 	return strings.ReplaceAll(p, `\`, `/`)
 }
+
+// TestAcc_VM_shutdownModeRoundTrip exercises state.shutdown_mode
+// configuration round-trip without actually firing the graceful path.
+// The graceful path requires Hyper-V integration services running in
+// the guest -- our acc-test fixtures (no-OS VMs) would hang Stop-VM
+// indefinitely. Pester locks the script's dispatch; this test pins
+// the schema-layer plumbing: Default, UseStateForUnknown, Optional+
+// Computed semantics, and reconcileStateBlock carrying the value
+// through.
+//
+// Three steps:
+//
+//  1. Create with state.desired = "Off" only. Asserts shutdown_mode
+//     stays null -- omit means "don't manage" (the script defaults
+//     to turn_off internally on absent input; nothing lands in
+//     state to leak into Hyper-V or surface a phantom diff).
+//  2. Update to add shutdown_mode = "graceful" (still desired = Off,
+//     so no power transition fires). Asserts the value round-trips
+//     into state.
+//  3. Update back to shutdown_mode = "turn_off". Asserts the flip.
+func TestAcc_VM_shutdownModeRoundTrip(t *testing.T) {
+	name := acctest.RandomName("vm-shutdown")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: shutdown_mode omitted -- "don't manage"
+				// semantics. The script treats absent as turn_off;
+				// state stores null.
+				Config: vmShutdownModeConfig(name, "Off", ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("shutdown_mode"),
+						knownvalue.Null(),
+					),
+				},
+			},
+			{
+				// Step 2: explicit graceful. No power transition (desired
+				// is already Off), so set-state.ps1 doesn't fire and the
+				// dangerous graceful Stop-VM never runs against a no-OS
+				// guest.
+				Config: vmShutdownModeConfig(name, "Off", "graceful"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("shutdown_mode"),
+						knownvalue.StringExact("graceful"),
+					),
+				},
+			},
+			{
+				// Step 3: flip back. Confirms shutdown_mode is mutable
+				// without RequiresReplace.
+				Config: vmShutdownModeConfig(name, "Off", "turn_off"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("state").AtMapKey("shutdown_mode"),
+						knownvalue.StringExact("turn_off"),
+					),
+				},
+			},
+		},
+	})
+}
+
+// vmShutdownModeConfig is the HCL template for
+// TestAcc_VM_shutdownModeRoundTrip. An empty `mode` string omits the
+// attribute entirely so the "don't manage" path runs (state stays
+// null, script defaults to turn_off on the wire).
+func vmShutdownModeConfig(vmName, desired, mode string) string {
+	modeLine := ""
+	if mode != "" {
+		modeLine = fmt.Sprintf("    shutdown_mode = %q\n", mode)
+	}
+	return fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  state = {
+    desired = %q
+%s  }
+}
+`, vmName, vmMinimumMemoryBytes, desired, modeLine)
+}

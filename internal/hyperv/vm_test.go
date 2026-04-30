@@ -751,3 +751,61 @@ func TestClient_GetVM_DecodesDvdDrives(t *testing.T) {
 		t.Errorf("second DVD path = %q, want empty (no ISO loaded)", v.DvdDrives[1].Path)
 	}
 }
+
+// TestClient_SetVMState_ForwardsShutdownMode pins the wire payload for
+// the new shutdown_mode attribute. "graceful" lands as a top-level
+// snake_case field; the script's ValidateSet rejects anything else
+// (Pester covers the validation, this just locks the JSON shape).
+func TestClient_SetVMState_ForwardsShutdownMode(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Set-HypervVMState").Return(testutil.VMGen2FixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := SetVMStateInput{
+		Name:         "vm01",
+		Desired:      "Off",
+		ShutdownMode: "graceful",
+	}
+	if _, err := c.SetVMState(t.Context(), in); err != nil {
+		t.Fatalf("SetVMState: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{
+		`"name":"vm01"`,
+		`"desired":"Off"`,
+		`"shutdown_mode":"graceful"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+}
+
+// TestClient_SetVMState_OmitsShutdownModeWhenEmpty locks the omitempty
+// behavior: callers that don't set ShutdownMode produce a wire payload
+// without the field, which the script handles as the turn_off default.
+// This is the backward-compat path for older typed-client callers
+// running against an updated script.
+func TestClient_SetVMState_OmitsShutdownModeWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Set-HypervVMState").Return(testutil.VMGen2FixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := SetVMStateInput{
+		Name:    "vm01",
+		Desired: "Off",
+	}
+	if _, err := c.SetVMState(t.Context(), in); err != nil {
+		t.Fatalf("SetVMState: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if strings.Contains(stdin, "shutdown_mode") {
+		t.Errorf("stdin should omit shutdown_mode when empty; got: %s", stdin)
+	}
+}

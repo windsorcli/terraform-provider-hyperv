@@ -326,8 +326,9 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	if shouldApplyState(plan.State) {
 		var err error
 		v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
-			Name:    plan.Name.ValueString(),
-			Desired: plan.State.Desired.ValueString(),
+			Name:         plan.Name.ValueString(),
+			Desired:      plan.State.Desired.ValueString(),
+			ShutdownMode: plan.State.ShutdownMode.ValueString(),
 		})
 		if err != nil {
 			resp.Diagnostics.AddError("Set VM state failed", fmt.Sprintf(
@@ -546,8 +547,9 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		if stateChanged {
 			var err error
 			v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
-				Name:    plan.Name.ValueString(),
-				Desired: plan.State.Desired.ValueString(),
+				Name:         plan.Name.ValueString(),
+				Desired:      plan.State.Desired.ValueString(),
+				ShutdownMode: plan.State.ShutdownMode.ValueString(),
 			})
 			if err != nil {
 				resp.Diagnostics.AddError("Set VM state failed", fmt.Sprintf(
@@ -580,8 +582,9 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	// transition this turn, do it now and re-read.
 	if stateChanged {
 		v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
-			Name:    plan.Name.ValueString(),
-			Desired: plan.State.Desired.ValueString(),
+			Name:         plan.Name.ValueString(),
+			Desired:      plan.State.Desired.ValueString(),
+			ShutdownMode: plan.State.ShutdownMode.ValueString(),
 		})
 		if err != nil {
 			resp.Diagnostics.AddError("Set VM state failed", fmt.Sprintf(
@@ -1186,18 +1189,32 @@ func reconcileStateBlock(planState, hostState *StateModel) *StateModel {
 	if planState == nil {
 		return nil
 	}
+	// shutdown_mode is config-only -- the host has no notion of it.
+	// On Create with the attribute omitted, the framework leaves
+	// planState.ShutdownMode unknown (Optional+Computed +
+	// UseStateForUnknown, no prior state to fall back to). Resolve
+	// unknown to null at write-time so the framework's "must be known
+	// after apply" check passes; null encodes the "user didn't manage"
+	// semantic, and on the next Update UseStateForUnknown sees null in
+	// state and preserves whatever the user writes (or doesn't).
+	mode := planState.ShutdownMode
+	if mode.IsUnknown() {
+		mode = types.StringNull()
+	}
 	if hostState == nil {
 		// Defensive: Read might have produced a nil state even though
 		// plan has one. Synthesize a current-null block so the plan
 		// shape matches.
 		return &StateModel{
-			Desired: planState.Desired,
-			Current: types.StringNull(),
+			Desired:      planState.Desired,
+			Current:      types.StringNull(),
+			ShutdownMode: mode,
 		}
 	}
 	return &StateModel{
-		Desired: planState.Desired,
-		Current: hostState.Current,
+		Desired:      planState.Desired,
+		Current:      hostState.Current,
+		ShutdownMode: mode,
 	}
 }
 

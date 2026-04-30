@@ -3,8 +3,9 @@
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : {
-#                   "name":    "<vm-name>",
-#                   "desired": "Off" | "Running"
+#                   "name":          "<vm-name>",
+#                   "desired":       "Off" | "Running",
+#                   "shutdown_mode": "turn_off" | "graceful"  (optional, default "turn_off")
 #                 }
 #   stdout JSON : same shape as get.ps1 (the post-transition VM read).
 #   stderr/exit : missing VM -> ObjectNotFound -> ErrNotFound. Other
@@ -16,13 +17,17 @@
 # Dispatch:
 #   - desired=Running: Start-VM. Works from any non-Running state
 #     (Off boots; Saved resumes; Paused isn't supported in this
-#     slice but the cmdlet errors clearly).
-#   - desired=Off: Stop-VM -TurnOff -Force. Hard power-off,
-#     matching destroy semantics in remove.ps1. Graceful shutdown
-#     (Stop-VM -Force without -TurnOff) is a future option once
-#     `state` grows a `shutdown_mode` attribute -- it requires
-#     integration services in the guest, which our acc-test
-#     fixtures don't have.
+#     slice but the cmdlet errors clearly). ShutdownMode is ignored
+#     for the start path -- Start-VM has no graceful analog.
+#   - desired=Off, shutdown_mode=turn_off (default): Stop-VM
+#     -TurnOff -Force. Hard power-off, matching destroy semantics in
+#     remove.ps1. Safe on guests without integration services.
+#   - desired=Off, shutdown_mode=graceful: Stop-VM -Force (no
+#     -TurnOff). Sends an ACPI shutdown signal via Hyper-V
+#     integration services and waits for the guest to ack. Hangs
+#     on guests without integration services running -- documented
+#     at the schema layer; the operator opts in by writing
+#     shutdown_mode = "graceful".
 #
 # Idempotency: Start-VM on an already-Running VM is a no-op (cmdlet
 # emits a warning we silence via -ErrorAction). Same for Stop-VM on
@@ -34,8 +39,9 @@
 function Set-HypervVMState {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string]                       $Name,
-        [Parameter(Mandatory)] [ValidateSet('Off', 'Running')] [string] $Desired
+        [Parameter(Mandatory)] [string]                              $Name,
+        [Parameter(Mandatory)] [ValidateSet('Off', 'Running')]       [string] $Desired,
+        [ValidateSet('turn_off', 'graceful')]                        [string] $ShutdownMode = 'turn_off'
     )
     try {
         $vm = Get-VM -Name $Name -ErrorAction Stop
@@ -73,7 +79,21 @@ function Set-HypervVMState {
             Start-VM -VM $vm -ErrorAction Stop | Out-Null
         }
         'Off' {
-            Stop-VM -VM $vm -TurnOff -Force -ErrorAction Stop | Out-Null
+            if ($ShutdownMode -eq 'graceful') {
+                # Graceful: ACPI shutdown via integration services. The
+                # cmdlet returns once the guest acknowledges OR after
+                # Hyper-V's internal timeout. We don't add a PS-side
+                # timeout because the per-call CommandTimeout in
+                # connection/ssh.go is the authoritative bound -- a
+                # double-timeout would just race.
+                Stop-VM -VM $vm -Force -ErrorAction Stop | Out-Null
+            }
+            else {
+                # turn_off (default): hard power-off, matches
+                # `terraform destroy` semantics. Always safe -- no
+                # integration-services dependency.
+                Stop-VM -VM $vm -TurnOff -Force -ErrorAction Stop | Out-Null
+            }
         }
     }
 
@@ -85,7 +105,21 @@ function Set-HypervVMState {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-        Set-HypervVMState -Name $params.name -Desired $params.desired
+        # shutdown_mode is optional on the wire; absent -> turn_off
+        # default. The Go side always emits the field once it's set on
+        # the resource, but a stale typed client (older Go binary
+        # against an updated script) would omit it -- so don't bind
+        # an empty string to the ValidateSet'd parameter.
+        $bind = @{
+            Name    = $params.name
+            Desired = $params.desired
+        }
+        if ($params.PSObject.Properties.Match('shutdown_mode').Count -gt 0 -and `
+            $null -ne $params.shutdown_mode -and `
+            $params.shutdown_mode -ne '') {
+            $bind['ShutdownMode'] = $params.shutdown_mode
+        }
+        Set-HypervVMState @bind
     }
     catch {
         Write-HypervError $_

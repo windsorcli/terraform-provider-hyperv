@@ -81,15 +81,18 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 // slice). MarkdownDescription on each attribute drives the Registry-
 // published doc when `task generate` runs tfplugindocs (PLAN.md S15).
 //
-// Schema version 1: PR #20 shipped v0 with vcpu/memory_bytes as flat
-// Int64 attributes and state as a flat Computed StringAttribute. This
-// PR renames vcpu -> cpu.count, memory_bytes -> memory.startup_bytes,
-// promotes state into a {desired, current} nested block, and adds
-// inline attachment lists. State files written under v0 are bridged
-// by the v0 -> v1 StateUpgrader in upgrade.go.
+// Schema versions:
+//
+//	v0 (PR #20): flat vcpu / memory_bytes / state(string).
+//	v1: vcpu -> cpu.count; memory_bytes -> memory.startup_bytes; state
+//	    promoted to {desired, current}; inline attachment lists added.
+//	v2: state.shutdown_mode added (Optional+Computed, default "turn_off").
+//	    Adding a field to a SingleNestedAttribute changes the nested
+//	    object's tftype, so v1 state files are bridged by a stub v1->v2
+//	    upgrader in upgrade.go that fills shutdown_mode with the default.
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		Version: 1,
+		Version: 2,
 		MarkdownDescription: "Manages a Hyper-V virtual machine. Ships with " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), " +
 			"`notes`, inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and " +
@@ -473,10 +476,10 @@ func resourceSchema() schema.Schema {
 					"VMs). When set, `state.desired` drives transitions and `state.current` " +
 					"surfaces the host's actual state.\n\n" +
 					"**Transitions:** `Off` -> `Running` calls `Start-VM`; `Running` -> `Off` " +
-					"calls `Stop-VM -TurnOff -Force` (hard power-off, matching `terraform " +
-					"destroy` semantics). Graceful shutdown is a future option (will arrive as " +
-					"an additional `state.shutdown_mode` attribute) -- it requires Hyper-V " +
-					"integration services running in the guest, which not all images carry.\n\n" +
+					"dispatches based on `state.shutdown_mode` (`turn_off` or omitted calls " +
+					"`Stop-VM -TurnOff -Force` for hard power-off; `graceful` calls " +
+					"`Stop-VM -Force` without `-TurnOff` to send an ACPI shutdown via Hyper-V " +
+					"integration services).\n\n" +
 					"**VM-must-be-Off rule:** scalar updates (`cpu.count`, `memory.startup_bytes`, " +
 					"`secure_boot`) generally require the VM to be `Off`. If `state.desired = \"Running\"` " +
 					"and a scalar field also changes in the same plan, the cmdlet errors at " +
@@ -505,6 +508,34 @@ func resourceSchema() schema.Schema {
 							"the actual transition results in a different value. Trade-off: " +
 							"plans show `current = (known after apply)` whenever the block is " +
 							"in scope, even on no-op apply turns.",
+					},
+					"shutdown_mode": schema.StringAttribute{
+						Optional: true,
+						Computed: true,
+						MarkdownDescription: "How `Running` -> `Off` transitions are performed. " +
+							"Optional. Omit to use Hyper-V's hard-power-off behavior (the same " +
+							"as `terraform destroy` semantics) without managing the attribute. " +
+							"One of:\n\n" +
+							"- `turn_off`: `Stop-VM -TurnOff -Force` -- hard power-off (equivalent " +
+							"to pulling the plug). Always safe; no integration-services dependency.\n" +
+							"- `graceful`: `Stop-VM -Force` (no `-TurnOff`) -- sends an ACPI shutdown " +
+							"signal via Hyper-V integration services and waits for the guest to ack. " +
+							"**Hangs indefinitely on guests without integration services running.** " +
+							"Opt in only when the guest is known to ship and start integration services " +
+							"(modern Windows, most Linux distros with hyperv-daemons).\n\n" +
+							"Ignored on `Off` -> `Running` transitions: `Start-VM` has no graceful " +
+							"analog, and the field is preserved in state for the next stop transition.\n\n" +
+							"**Omit semantics** match `notes` and `secure_boot`: omitting from config " +
+							"after a prior apply preserves the existing value via `UseStateForUnknown`. " +
+							"Writing `shutdown_mode = null` explicitly does NOT clear the prior value " +
+							"-- the change isn't forwarded by the partial-update path. To switch " +
+							"behavior, write a different non-null value.",
+						Validators: []validator.String{
+							stringvalidator.OneOf("turn_off", "graceful"),
+						},
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.UseStateForUnknown(),
+						},
 					},
 				},
 			},

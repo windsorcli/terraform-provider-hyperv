@@ -39,11 +39,16 @@ resource "hyperv_vm" "node01" {
   ]
 
   # Power the VM on after attaching everything. Drop or set to "Off"
-  # to power-cycle. Hard power-off semantics on the Off transition
-  # (matches `terraform destroy`) -- graceful shutdown is a future
-  # `state.shutdown_mode` attribute.
+  # to power-cycle. Default `shutdown_mode = "turn_off"` performs a
+  # hard power-off on Running -> Off transitions (matches `terraform
+  # destroy` semantics). Set `shutdown_mode = "graceful"` to send an
+  # ACPI shutdown via Hyper-V integration services -- only safe for
+  # guests that ship and run those services (modern Windows, most
+  # Linux distros with hyperv-daemons). Talos and other minimal
+  # cloud images may not.
   state = {
-    desired = "Running"
+    desired       = "Running"
+    shutdown_mode = "graceful"
   }
 }
 
