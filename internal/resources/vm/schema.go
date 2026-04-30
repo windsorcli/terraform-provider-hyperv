@@ -86,10 +86,15 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 //	v0 (PR #20): flat vcpu / memory_bytes / state(string).
 //	v1: vcpu -> cpu.count; memory_bytes -> memory.startup_bytes; state
 //	    promoted to {desired, current}; inline attachment lists added.
-//	v2: state.shutdown_mode added (Optional+Computed, default "turn_off").
+//	v2: state.shutdown_mode added (Optional+Computed, no Default;
+//	    UseStateForUnknown plan modifier preserves the prior value when
+//	    the user omits the attribute, matching notes / secure_boot).
 //	    Adding a field to a SingleNestedAttribute changes the nested
-//	    object's tftype, so v1 state files are bridged by a stub v1->v2
-//	    upgrader in upgrade.go that fills shutdown_mode with the default.
+//	    object's tftype, so v1 state files are bridged by a v1->v2
+//	    upgrader in upgrade.go that fills shutdown_mode with null --
+//	    v1 users never had a chance to choose a value, and the script's
+//	    wire contract treats absent shutdown_mode as turn_off (same
+//	    on-host behavior as v1).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		Version: 2,
