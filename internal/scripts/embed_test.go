@@ -185,6 +185,23 @@ func TestVMScript_LoadsAllVerbs(t *testing.T) {
 	}
 }
 
+// VMReadResult is the canonical Read-HypervVMResult body shared by the
+// four VM read-emitting verbs (get/new/set/set-state). The Go-side
+// hyperv.Client prepends its body to those scripts at runtime; if the
+// embed glob ever drops it, every VM read silently fails with "command
+// not found." Pin its presence at startup.
+func TestVMReadResult_LoadsCanonicalBody(t *testing.T) {
+	t.Parallel()
+
+	body, err := VMReadResult()
+	if err != nil {
+		t.Fatalf("VMReadResult: %v", err)
+	}
+	if !bytes.Contains(body, []byte("function Read-HypervVMResult")) {
+		t.Errorf("vm/read-result.ps1 missing the canonical function definition")
+	}
+}
+
 // Same anti-bloat sanity check as the other counterparts.
 func TestVMScript_TestFilesNotEmbedded(t *testing.T) {
 	t.Parallel()

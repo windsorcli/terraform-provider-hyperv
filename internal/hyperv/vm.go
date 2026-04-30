@@ -13,9 +13,9 @@ import (
 // for permission errors. SecureBootEnabled in the returned VM is *bool
 // because gen 1 VMs report null (no Secure Boot concept).
 func (c *Client) GetVM(ctx context.Context, name string) (*VM, error) {
-	body, err := scripts.VMScript("get")
+	body, err := loadVMReadEmitter("get")
 	if err != nil {
-		return nil, fmt.Errorf("load vm/get.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(struct {
 		Name string `json:"name"`
@@ -25,7 +25,7 @@ func (c *Client) GetVM(ctx context.Context, name string) (*VM, error) {
 	}
 
 	var v VM
-	if err := c.runScript(ctx, string(body), stdin, &v); err != nil {
+	if err := c.runScript(ctx, body, stdin, &v); err != nil {
 		return nil, err
 	}
 	return &v, nil
@@ -37,9 +37,9 @@ func (c *Client) GetVM(ctx context.Context, name string) (*VM, error) {
 // DynamicMemoryEnabled=$false in the same call), Set-VMProcessor, and the
 // optional Set-VMFirmware (gen 2 + SecureBoot) and Set-VM (Notes) tail.
 func (c *Client) NewVM(ctx context.Context, in NewVMInput) (*VM, error) {
-	body, err := scripts.VMScript("new")
+	body, err := loadVMReadEmitter("new")
 	if err != nil {
-		return nil, fmt.Errorf("load vm/new.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
@@ -47,7 +47,7 @@ func (c *Client) NewVM(ctx context.Context, in NewVMInput) (*VM, error) {
 	}
 
 	var v VM
-	if err := c.runScript(ctx, string(body), stdin, &v); err != nil {
+	if err := c.runScript(ctx, body, stdin, &v); err != nil {
 		return nil, err
 	}
 	return &v, nil
@@ -67,9 +67,9 @@ func (c *Client) NewVM(ctx context.Context, in NewVMInput) (*VM, error) {
 // generally require the VM to be Off. The script surfaces those errors
 // verbatim -- the operator drives power transitions via hyperv_vm_state.
 func (c *Client) SetVM(ctx context.Context, in SetVMInput) (*VM, error) {
-	body, err := scripts.VMScript("set")
+	body, err := loadVMReadEmitter("set")
 	if err != nil {
-		return nil, fmt.Errorf("load vm/set.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
@@ -77,7 +77,7 @@ func (c *Client) SetVM(ctx context.Context, in SetVMInput) (*VM, error) {
 	}
 
 	var v VM
-	if err := c.runScript(ctx, string(body), stdin, &v); err != nil {
+	if err := c.runScript(ctx, body, stdin, &v); err != nil {
 		return nil, err
 	}
 	return &v, nil
@@ -245,17 +245,39 @@ func (c *Client) SetBootOrder(ctx context.Context, in SetBootOrderInput) error {
 // separate GetVM round-trip. Idempotent at the cmdlet level: setting
 // Desired='Running' on an already-Running VM is a no-op.
 func (c *Client) SetVMState(ctx context.Context, in SetVMStateInput) (*VM, error) {
-	body, err := scripts.VMScript("set-state")
+	body, err := loadVMReadEmitter("set-state")
 	if err != nil {
-		return nil, fmt.Errorf("load vm/set-state.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("marshal set-state.ps1 input: %w", err)
 	}
 	var out VM
-	if err := c.runScript(ctx, string(body), stdin, &out); err != nil {
+	if err := c.runScript(ctx, body, stdin, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// loadVMReadEmitter loads a verb script (get/new/set/set-state) and
+// prepends the canonical Read-HypervVMResult body from
+// vm/read-result.ps1 so the verb's tail call to that function resolves.
+//
+// Until 2026-04 each of these four scripts inlined Read-HypervVMResult
+// verbatim because the runtime concatenates only preamble + a single
+// verb script per call (no cross-script helpers). Lifting the function
+// out of each script into a single canonical read-result.ps1 reduces
+// the bug surface (four copies could drift) at the cost of one extra
+// fs read here.
+func loadVMReadEmitter(verb string) (string, error) {
+	body, err := scripts.VMScript(verb)
+	if err != nil {
+		return "", fmt.Errorf("load vm/%s.ps1: %w", verb, err)
+	}
+	rr, err := scripts.VMReadResult()
+	if err != nil {
+		return "", fmt.Errorf("load vm/read-result.ps1: %w", err)
+	}
+	return string(rr) + "\n" + string(body), nil
 }

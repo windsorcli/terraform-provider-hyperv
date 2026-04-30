@@ -88,6 +88,7 @@ func VHDScript(verb string) ([]byte, error) {
 //go:embed vm/add-dvd-drive.ps1 vm/remove-dvd-drive.ps1
 //go:embed vm/set-boot-order.ps1
 //go:embed vm/set-state.ps1
+//go:embed vm/read-result.ps1
 var VM embed.FS
 
 // VMScript returns the contents of vm/<verb>.ps1.
@@ -97,4 +98,13 @@ var VM embed.FS
 // get/new/set/remove; attachment verbs add the specific cmdlet name.
 func VMScript(verb string) ([]byte, error) {
 	return VM.ReadFile("vm/" + verb + ".ps1")
+}
+
+// VMReadResult returns vm/read-result.ps1, the canonical
+// Read-HypervVMResult function shared by the four VM read-emitting
+// scripts (get/new/set/set-state). The Go-side hyperv.Client prepends
+// its body to those scripts at runtime, replacing what used to be four
+// inline copies of the same function.
+func VMReadResult() ([]byte, error) {
+	return VM.ReadFile("vm/read-result.ps1")
 }

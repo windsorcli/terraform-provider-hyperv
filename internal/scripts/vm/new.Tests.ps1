@@ -7,6 +7,7 @@
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
     . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/read-result.ps1
     . $PSScriptRoot/new.ps1
 }
 
