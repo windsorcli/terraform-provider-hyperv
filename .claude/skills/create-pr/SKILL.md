@@ -99,6 +99,10 @@ Does a PR exist for this branch?
             "PR already has a description; leaving it as-is."
 ```
 
+After the PR exists, **always check CI status** (see below). The point
+of opening a PR is to get the change reviewed and merged; surfacing a
+red check immediately lets the user fix it before they walk away.
+
 ## Commands
 
 Always pass body via HEREDOC for proper newline handling. Push first,
@@ -139,6 +143,34 @@ fi
 If `gh` returns `HTTP 401: Bad credentials`, the operator has a stale
 `GITHUB_TOKEN` env var overriding the keychain. Prepend `unset GITHUB_TOKEN`
 to the failing command and retry.
+
+If `gh pr edit` returns a `projectCards` GraphQL error (deprecated API),
+fall back to `gh api -X PATCH "repos/$REPO/pulls/$PR_NUM"` with `-f
+title=...` and `-F body=@/tmp/body.md` -- it bypasses the broken path.
+
+## CI status check
+
+After the PR exists (just created OR already-existed), run a quick
+status check. CI typically kicks off within a few seconds of the push,
+but most pipelines take 1-5 minutes to complete. Two modes:
+
+```bash
+# Snapshot: list current state of every check, no waiting.
+gh pr checks "$PR_NUM"
+```
+
+If any row shows `fail` or `failure`, surface those rows to the user
+verbatim and direct them to the failing job's URL (the rightmost
+column of `gh pr checks`). Don't try to diagnose the failure from the
+skill -- the failing job's logs are the source of truth.
+
+If every row shows `pending` or `queued`, that's expected on a fresh
+push. Print the URL with a "checks running" hint. Do NOT block the
+skill on completion -- the user can run `gh pr checks --watch` to
+follow them.
+
+If every row shows `pass`, say so explicitly. The user shouldn't have
+to scroll back to verify.
 
 ## What NOT to do
 - Don't include a "Test plan" / `- [x]` checklist.
