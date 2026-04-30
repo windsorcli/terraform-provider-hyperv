@@ -525,6 +525,13 @@ func resourceSchema() schema.Schema {
 							"(modern Windows, most Linux distros with hyperv-daemons).\n\n" +
 							"Ignored on `Off` -> `Running` transitions: `Start-VM` has no graceful " +
 							"analog, and the field is preserved in state for the next stop transition.\n\n" +
+							"**Not applied during `terraform destroy`.** Destroy routes through " +
+							"`remove.ps1`, which always hard-powers-off via `Stop-VM -Force -TurnOff` " +
+							"before `Remove-VM` so a guest with absent integration services can't " +
+							"hang the destroy. Setting `shutdown_mode = \"graceful\"` to protect " +
+							"in-flight writes only protects planned `Running` -> `Off` transitions; " +
+							"destroy bypasses it. Drive a graceful shutdown out-of-band before " +
+							"running `terraform destroy` if a clean stop matters.\n\n" +
 							"**Omit semantics** match `notes` and `secure_boot`: omitting from config " +
 							"after a prior apply preserves the existing value via `UseStateForUnknown`. " +
 							"Writing `shutdown_mode = null` explicitly does NOT clear the prior value " +
