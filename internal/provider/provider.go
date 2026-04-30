@@ -86,7 +86,9 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			"timeout": schema.StringAttribute{
 				Optional: true,
 				MarkdownDescription: "Per-call PowerShell execution timeout as a Go duration " +
-					"(e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`.",
+					"(e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`. " +
+					"Set to `0s` to disable. Bump for legitimately slow cmdlets like " +
+					"`New-VHD` on a multi-GB fixed disk.",
 			},
 			"local": schema.SingleNestedAttribute{
 				Optional:            true,

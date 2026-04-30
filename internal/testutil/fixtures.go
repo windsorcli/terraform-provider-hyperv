@@ -80,9 +80,11 @@ const VHDDifferencingFixtureJSON = `{
 	"Attached": false
 }`
 
-// VMGen2FixtureJSON is the canonical 10-field shape vm/{get,new,set}.ps1
-// emit for a small gen 2 VM. SecureBootEnabled is the gen-2-only field --
-// always non-null here to exercise the *bool unmarshal.
+// VMGen2FixtureJSON is the canonical shape vm/{get,new,set}.ps1 emit for
+// a small gen 2 VM. SecureBootEnabled is the gen-2-only field -- always
+// non-null here to exercise the *bool unmarshal. HardDiskDrives is the
+// always-array shape the script's @() wrapper guarantees on the wire,
+// so empty here decodes into an empty (non-nil) slice on the Go side.
 const VMGen2FixtureJSON = `{
 	"Name": "sample-vm",
 	"Id": "12345678-1234-5678-1234-567812345678",
@@ -93,7 +95,11 @@ const VMGen2FixtureJSON = `{
 	"State": "Off",
 	"Notes": "production",
 	"Path": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V\\Virtual Machines",
-	"SecureBootEnabled": true
+	"SecureBootEnabled": true,
+	"HardDiskDrives": [],
+	"NetworkAdapters": [],
+	"DvdDrives": [],
+	"BootOrder": []
 }`
 
 // VMGen1FixtureJSON exercises the gen-1 case: SecureBootEnabled is null
@@ -108,5 +114,9 @@ const VMGen1FixtureJSON = `{
 	"State": "Off",
 	"Notes": "",
 	"Path": "C:\\ProgramData\\Microsoft\\Windows\\Hyper-V\\Virtual Machines",
-	"SecureBootEnabled": null
+	"SecureBootEnabled": null,
+	"HardDiskDrives": [],
+	"NetworkAdapters": [],
+	"DvdDrives": [],
+	"BootOrder": []
 }`

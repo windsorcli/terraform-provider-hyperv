@@ -5,6 +5,7 @@
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
     . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/read-result.ps1
     . $PSScriptRoot/get.ps1
 }
 
@@ -12,17 +13,64 @@ Describe 'Get-HypervVM' {
 
     Context 'happy path' {
 
-        It 'emits the canonical 10-field shape (gen 2)' {
+        It 'emits the canonical read shape (gen 2, no HDDs attached)' {
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample -SecureBoot 'On' }
+            Mock Get-VMHardDiskDrive { @() }
 
             $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'Generation', 'Id', 'MemoryAssignedBytes', 'MemoryStartupBytes',
-                'Name', 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'State'
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
+                'ProcessorCount', 'SecureBootEnabled', 'State'
             )
+        }
+
+        It 'emits an empty HardDiskDrives array when no disks attached' {
+            # The @() wrapper in Read-HypervVMResult forces array-shape on
+            # the JSON wire even when the cmdlet returns nothing. Without
+            # it, ConvertTo-Json would emit `null` for an empty pipeline,
+            # which Go's []HardDiskDrive decode rejects.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+
+            $raw = Get-HypervVM -Name 'sample-vm'
+            $raw | Should -Match '"HardDiskDrives":\[\]'
+        }
+
+        It 'emits HardDiskDrives with the four-field shape per attached disk' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(
+                    New-HypervVMHardDiskDriveSample `
+                        -Path 'C:\hyperv\vhds\root.vhdx' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 0
+                    New-HypervVMHardDiskDriveSample `
+                        -Path 'C:\hyperv\vhds\data.vhdx' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 1
+                )
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.HardDiskDrives.Count | Should -Be 2
+
+            $first = $parsed.HardDiskDrives[0]
+            $first.Path               | Should -Be 'C:\hyperv\vhds\root.vhdx'
+            $first.ControllerType     | Should -Be 'SCSI'
+            $first.ControllerNumber   | Should -Be 0
+            $first.ControllerLocation | Should -Be 0
+
+            # ControllerLocation must round-trip as a JSON number (not a
+            # quoted string) -- a regression that emitted `"0"` would
+            # break the Go-side types.Int64 decode AND would fail the
+            # `Should -Be 0` integer comparison above (Pester's -Be is
+            # strict-typed; "0" -ne 0).
+            $second = $parsed.HardDiskDrives[1]
+            $second.ControllerLocation | Should -Be 1
         }
 
         It 'returns SecureBootEnabled=true when firmware reports SecureBoot=On' {
@@ -91,6 +139,49 @@ Describe 'Get-HypervVM' {
             }
         }
 
+        It 'emits an empty BootOrder array on gen 1 (Get-VMFirmware not called)' {
+            # Same gen-1 guard as SecureBootEnabled -- BootOrder also
+            # comes from Get-VMFirmware so it's gen-2-only.
+            Mock Get-VM { New-HypervVMSample -Generation 1 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            $raw = Get-HypervVM -Name 'gen1-vm'
+            $raw | Should -Match '"BootOrder":\[\]'
+            Should -Invoke Get-VMFirmware -Times 0 -Exactly
+        }
+
+        It 'emits BootOrder discriminated by Type (hard_disk_drive / dvd_drive / network_adapter)' {
+            # The Go-side decode uses Type as the discriminator -- HDD
+            # and DVD entries carry ControllerType / Number / Location;
+            # NIC entries carry Name. Unused fields are zero values.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware {
+                New-HypervVMFirmwareSample -BootOrder @(
+                    New-HypervVMBootOrderEntrySample -DeviceType 'DvdDrive' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 1
+                    New-HypervVMBootOrderEntrySample -DeviceType 'HardDiskDrive' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 0
+                    New-HypervVMBootOrderEntrySample -DeviceType 'VMNetworkAdapter' -Name 'primary'
+                )
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+            $parsed.BootOrder.Count | Should -Be 3
+
+            $parsed.BootOrder[0].Type               | Should -Be 'dvd_drive'
+            $parsed.BootOrder[0].ControllerType     | Should -Be 'SCSI'
+            $parsed.BootOrder[0].ControllerNumber   | Should -Be 0
+            $parsed.BootOrder[0].ControllerLocation | Should -Be 1
+            $parsed.BootOrder[0].Name               | Should -Be ''
+
+            $parsed.BootOrder[1].Type               | Should -Be 'hard_disk_drive'
+            $parsed.BootOrder[1].ControllerLocation | Should -Be 0
+
+            $parsed.BootOrder[2].Type               | Should -Be 'network_adapter'
+            $parsed.BootOrder[2].Name               | Should -Be 'primary'
+            $parsed.BootOrder[2].ControllerType     | Should -Be ''
+        }
+
         It 'compresses output to a single line (Write-HypervResult contract)' {
             Mock Get-VM { New-HypervVMSample }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
@@ -103,10 +194,37 @@ Describe 'Get-HypervVM' {
 
     Context 'error propagation' {
 
-        It 'throws ObjectNotFound when the VM is missing' {
-            # The Go side keys on CategoryInfo.Category for ErrNotFound
-            # routing. ErrorId drift is fine; category drift would silently
-            # mis-route the typed error.
+        It 'translates the cmdlet''s actual "VM not found" error (InvalidArgument + FQId) to the typed envelope' {
+            # Get-VM on Server 2022 + PS 5.1 reports a missing VM with
+            # category=InvalidArgument and FullyQualifiedErrorId
+            # 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM' --
+            # NOT the documented ObjectNotFound. Verified against the
+            # bench 2026-04 by an acceptance-test CheckDestroy failure;
+            # same Hyper-V quirk as Get-VMSwitch (see vswitch/get.Tests.ps1
+            # for the full discussion).
+            Mock Get-VM {
+                $exception = [System.ArgumentException]::new(
+                    "Hyper-V was unable to find a virtual machine with name `"$Name`".")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception,
+                    'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM',
+                    [System.Management.Automation.ErrorCategory]::InvalidArgument,
+                    $Name)
+                throw $errorRecord
+            }
+
+            $captured = $null
+            try { Get-HypervVM -Name 'missing' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'VMNotFound'
+        }
+
+        It 'still handles the documented ObjectNotFound shape (defensive)' {
+            # Belt-and-suspenders: a future Hyper-V version or other
+            # cmdlet path that emits the documented category should
+            # still translate.
             Mock Get-VM {
                 $exception = [System.Management.Automation.ItemNotFoundException]::new(
                     "Hyper-V was unable to find a VM with name 'missing'.")
@@ -119,7 +237,6 @@ Describe 'Get-HypervVM' {
             $captured = $null
             try { Get-HypervVM -Name 'missing' } catch { $captured = $_ }
 
-            $captured | Should -Not -BeNullOrEmpty
             $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
             $captured.FullyQualifiedErrorId | Should -Match 'VMNotFound'
         }

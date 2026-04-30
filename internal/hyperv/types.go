@@ -127,17 +127,176 @@ type NewVHDDifferencingInput struct {
 // VM is the canonical read shape emitted by vm/{get,new,set}.ps1.
 // SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
 // no Secure Boot concept); gen 2 always returns a real bool.
+//
+// HardDiskDrives, NetworkAdapters, and DvdDrives are always (possibly
+// empty) slices -- the script-side @() wrapper guarantees JSON array
+// shape even when nothing is attached, so a freshly-created VM with
+// no attachments round-trips as "[]" rather than null.
 type VM struct {
-	Name                string `json:"Name"`
-	ID                  string `json:"Id"`
-	Generation          int    `json:"Generation"`
-	ProcessorCount      int    `json:"ProcessorCount"`
-	MemoryStartupBytes  int64  `json:"MemoryStartupBytes"`
-	MemoryAssignedBytes int64  `json:"MemoryAssignedBytes"`
-	State               string `json:"State"`
-	Notes               string `json:"Notes"`
-	Path                string `json:"Path"`
-	SecureBootEnabled   *bool  `json:"SecureBootEnabled"`
+	Name                string           `json:"Name"`
+	ID                  string           `json:"Id"`
+	Generation          int              `json:"Generation"`
+	ProcessorCount      int              `json:"ProcessorCount"`
+	MemoryStartupBytes  int64            `json:"MemoryStartupBytes"`
+	MemoryAssignedBytes int64            `json:"MemoryAssignedBytes"`
+	State               string           `json:"State"`
+	Notes               string           `json:"Notes"`
+	Path                string           `json:"Path"`
+	SecureBootEnabled   *bool            `json:"SecureBootEnabled"`
+	HardDiskDrives      []HardDiskDrive  `json:"HardDiskDrives"`
+	NetworkAdapters     []NetworkAdapter `json:"NetworkAdapters"`
+	DvdDrives           []DvdDrive       `json:"DvdDrives"`
+	BootOrder           []BootOrderEntry `json:"BootOrder"`
+}
+
+// BootOrderEntry is the per-entry shape vm/get.ps1 emits inside
+// VM.BootOrder. Type discriminates between hard_disk_drive / dvd_drive
+// (which carry the ControllerType + ControllerNumber + ControllerLocation
+// slot tuple) and network_adapter (which carries Name). Unused fields
+// for a given Type are zero values; consumers branch on Type.
+//
+// Gen 1 VMs always emit []BootOrderEntry{} (the script doesn't fetch
+// firmware for them; gen 1 BIOS StartupOrder is a separate, deferred
+// schema slice).
+type BootOrderEntry struct {
+	Type               string `json:"Type"`
+	ControllerType     string `json:"ControllerType"`
+	ControllerNumber   int    `json:"ControllerNumber"`
+	ControllerLocation int    `json:"ControllerLocation"`
+	Name               string `json:"Name"`
+}
+
+// SetBootOrderInput is the stdin JSON shape for vm/set-boot-order.ps1.
+// BootOrder is the new desired sequence; the script replaces the VM's
+// current order wholesale (Set-VMFirmware -BootOrder is not additive).
+// Per-entry shape mirrors BootOrderEntry above with snake_case keys.
+type SetBootOrderInput struct {
+	Name      string                   `json:"name"`
+	BootOrder []SetBootOrderEntryInput `json:"boot_order"`
+}
+
+// SetBootOrderEntryInput is the per-entry shape inside
+// SetBootOrderInput.BootOrder. Same discriminator pattern as
+// BootOrderEntry: Type drives which subset of fields the script reads.
+//
+// All fields are emitted unconditionally (no omitempty). Reason:
+// PowerShell's Set-StrictMode 3.0 throws on access of an absent
+// property on a PSCustomObject. The script reads $entry.controller_*
+// for HDD/DVD entries and $entry.name for NIC entries; whichever
+// fields are unused for a given Type still need to be present on the
+// wire (zero values are fine -- the script's switch ignores them).
+// Specifically, omitempty on `int` would drop controller_number=0,
+// which is the most common slot index and would break the resolver.
+type SetBootOrderEntryInput struct {
+	Type               string `json:"type"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
+	Name               string `json:"name"`
+}
+
+// NetworkAdapter is the per-NIC shape vm/get.ps1 emits inside
+// VM.NetworkAdapters. Display Name is the slot key the resource-layer
+// reconciliation uses to diff plan vs state. SwitchName identifies
+// which hyperv_virtual_switch the NIC is bound to (or empty when
+// unbound -- Hyper-V allows that, though it's rare).
+//
+// IPAddresses is populated by Hyper-V's integration services running
+// in the guest -- empty when the VM is Off, when integration services
+// haven't loaded yet, or when the guest doesn't ship them. The
+// resource layer flattens IPAddresses across all NICs into a top-
+// level ip_addresses Computed attribute.
+type NetworkAdapter struct {
+	Name        string   `json:"Name"`
+	SwitchName  string   `json:"SwitchName"`
+	IPAddresses []string `json:"IPAddresses"`
+}
+
+// AttachNetworkAdapterInput is the stdin JSON shape for
+// vm/add-network-adapter.ps1. All three fields are required;
+// uniqueness of Name within a VM is enforced by the resource-layer
+// schema validator (Hyper-V itself doesn't enforce it).
+type AttachNetworkAdapterInput struct {
+	Name       string `json:"name"`
+	VMName     string `json:"vm_name"`
+	SwitchName string `json:"switch_name"`
+}
+
+// DetachNetworkAdapterInput is the stdin JSON shape for
+// vm/remove-network-adapter.ps1. Name + VMName identify the NIC to
+// detach; the cmdlet would happily remove ALL NICs sharing the same
+// Name, but the schema-level uniqueness validator means there's only
+// ever one match in our state.
+type DetachNetworkAdapterInput struct {
+	Name   string `json:"name"`
+	VMName string `json:"vm_name"`
+}
+
+// DvdDrive is the per-attachment shape vm/get.ps1 emits inside
+// VM.DvdDrives. Same slot-tuple identity as HardDiskDrive
+// (ControllerType + ControllerNumber + ControllerLocation), but
+// Path may be empty -- a DVD drive without an ISO loaded is a
+// legitimate state (the drive exists, the medium tray is empty).
+type DvdDrive struct {
+	Path               string `json:"Path"`
+	ControllerType     string `json:"ControllerType"`
+	ControllerNumber   int    `json:"ControllerNumber"`
+	ControllerLocation int    `json:"ControllerLocation"`
+}
+
+// AttachDvdDriveInput is the stdin JSON shape for vm/add-dvd-drive.ps1.
+// IsoPath is *string so the wire JSON drops it cleanly when the user
+// wants an empty drive (script's "if not empty" guard then omits
+// -Path from the cmdlet call).
+type AttachDvdDriveInput struct {
+	Name               string  `json:"name"`
+	ControllerType     string  `json:"controller_type"`
+	ControllerNumber   int     `json:"controller_number"`
+	ControllerLocation int     `json:"controller_location"`
+	IsoPath            *string `json:"iso_path,omitempty"`
+}
+
+// DetachDvdDriveInput mirrors DetachHardDiskInput -- slot tuple
+// identifies the DVD to remove, no Path needed.
+type DetachDvdDriveInput struct {
+	Name               string `json:"name"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
+}
+
+// HardDiskDrive is the per-attachment shape vm/get.ps1 emits inside
+// VM.HardDiskDrives. The (ControllerType, ControllerNumber,
+// ControllerLocation) tuple identifies the slot uniquely on a given
+// VM; Path identifies the underlying VHD/VHDX. The same VHD attached
+// at two different slots produces two HardDiskDrive entries.
+type HardDiskDrive struct {
+	Path               string `json:"Path"`
+	ControllerType     string `json:"ControllerType"`
+	ControllerNumber   int    `json:"ControllerNumber"`
+	ControllerLocation int    `json:"ControllerLocation"`
+}
+
+// AttachHardDiskInput is the stdin JSON shape for vm/add-hard-disk-drive.ps1.
+// All fields are required; the script's ValidateSet on ControllerType
+// is the second line of defense against typos that the resource-layer
+// schema validator should catch first.
+type AttachHardDiskInput struct {
+	Name               string `json:"name"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
+	Path               string `json:"path"`
+}
+
+// DetachHardDiskInput is the stdin JSON shape for vm/remove-hard-disk-drive.ps1.
+// Path is intentionally omitted -- the slot tuple identifies the
+// attachment, not the underlying VHD.
+type DetachHardDiskInput struct {
+	Name               string `json:"name"`
+	ControllerType     string `json:"controller_type"`
+	ControllerNumber   int    `json:"controller_number"`
+	ControllerLocation int    `json:"controller_location"`
 }
 
 // NewVMInput is the stdin JSON shape for vm/new.ps1.
@@ -154,6 +313,17 @@ type NewVMInput struct {
 	MemoryBytes int64   `json:"memory_bytes"`
 	SecureBoot  *bool   `json:"secure_boot,omitempty"`
 	Notes       *string `json:"notes,omitempty"`
+}
+
+// SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.
+// Desired is the only mutation: 'Off' triggers Stop-VM -TurnOff
+// -Force (hard power-off matching destroy semantics); 'Running'
+// triggers Start-VM. Other Hyper-V states (Saved, Paused) are out
+// of scope for this slice -- the script's ValidateSet on Desired
+// rejects them.
+type SetVMStateInput struct {
+	Name    string `json:"name"`
+	Desired string `json:"desired"`
 }
 
 // SetVMInput is the stdin JSON shape for vm/set.ps1.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -108,6 +109,16 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 	passphrase := resolveString(sshAttrs.Passphrase, "HYPERV_SSH_PASSPHRASE", "")
 	knownHostsPath := resolveString(sshAttrs.KnownHostsPath, "HYPERV_SSH_KNOWN_HOSTS_PATH", "")
 
+	commandTimeout, err := resolveDuration(m.Timeout, "HYPERV_TIMEOUT")
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("timeout"),
+			"Invalid timeout",
+			err.Error(),
+		)
+		return nil
+	}
+
 	conn, err := connection.NewSSH(connection.SSHOptions{
 		Host:           host,
 		Port:           port,
@@ -117,6 +128,7 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 		PrivateKeyPath: privateKeyPath,
 		Passphrase:     []byte(passphrase),
 		KnownHostsPath: knownHostsPath,
+		CommandTimeout: commandTimeout,
 	})
 	if err != nil {
 		diags.AddError(
@@ -126,6 +138,20 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 		return nil
 	}
 	return conn
+}
+
+// resolveDuration parses attr || $envVar as a Go duration. Returns 0
+// when both are empty so the caller's default applies.
+func resolveDuration(attr types.String, envVar string) (time.Duration, error) {
+	raw := resolveString(attr, envVar, "")
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("not a valid Go duration (e.g. %q, %q): %w", "5m", "30s", err)
+	}
+	return d, nil
 }
 
 func newLocalConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {

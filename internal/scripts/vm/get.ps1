@@ -13,45 +13,53 @@
 #                   "State":                      "Off"|"Running"|"Saved"|"Paused"|...,
 #                   "Notes":                      "<string>",
 #                   "Path":                       "<vm-config-dir>",
-#                   "SecureBootEnabled":          <bool>|null   # null on gen 1
+#                   "SecureBootEnabled":          <bool>|null,    # null on gen 1
+#                   "HardDiskDrives":             [
+#                     { "Path":               "<absolute-path>",
+#                       "ControllerType":     "SCSI"|"IDE",
+#                       "ControllerNumber":   <int>,
+#                       "ControllerLocation": <int> },
+#                     ...
+#                   ],
+#                   "NetworkAdapters":            [
+#                     { "Name":        "<display-name>",
+#                       "SwitchName":  "<vswitch-name>",
+#                       "IPAddresses": ["<ip>", ...] },   # empty when VM is Off
+#                                                         # or integration services
+#                                                         # haven't reported in.
+#                     ...
+#                   ],
+#                   "DvdDrives":                  [
+#                     { "Path":               "<absolute-path>" | "",
+#                       "ControllerType":     "SCSI"|"IDE",
+#                       "ControllerNumber":   <int>,
+#                       "ControllerLocation": <int> },
+#                     ...
+#                   ],
+#                   "BootOrder":                  [
+#                     # gen 2 only; always [] on gen 1.
+#                     # Discriminated by Type: hard_disk_drive / dvd_drive
+#                     # entries carry ControllerType / Number / Location;
+#                     # network_adapter entries carry Name. Unused fields
+#                     # are emitted as zero values (Go decodes via the
+#                     # type discriminator).
+#                     { "Type":               "hard_disk_drive"|"dvd_drive"|"network_adapter",
+#                       "ControllerType":     "SCSI"|"IDE"|"",
+#                       "ControllerNumber":   <int>,
+#                       "ControllerLocation": <int>,
+#                       "Name":               "<nic-name>"|"" },
+#                     ...
+#                   ]
 #                 }
 #   stderr/exit : missing VM -> Write-HypervError envelope with
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side so resource Read calls RemoveResource.
 #
-# boot_order is intentionally absent from the minimal slice -- the gen1/gen2
-# translation deserves its own PR with live-host validation. The VM boots
-# from whatever Hyper-V's default is until that lands.
+# boot_order is gen-2-only in this slice. Gen 1 (BIOS StartupOrder, a
+# 4-string enum from {CD, IDEHardDrive, LegacyNetworkAdapter, Floppy})
+# is deferred to a follow-up; the schema validator rejects boot_order
+# on gen 1 at plan time.
 
-# Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
-# of the same logic in new.ps1 / set.ps1 because the runtime concatenates
-# only preamble + a single verb script per call (no cross-script helpers).
-function Read-HypervVMResult {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] $Vm
-    )
-    # SecureBoot only applies to gen 2 -- Get-VMFirmware errors on gen 1
-    # ("not supported for the current configuration") and we don't want to
-    # surface that to the operator. Emit null for gen 1.
-    $secureBoot = $null
-    if ($Vm.Generation -eq 2) {
-        $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
-        $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
-    }
-    [pscustomobject]@{
-        Name                = $Vm.Name
-        Id                  = $Vm.Id.ToString()
-        Generation          = [int] $Vm.Generation
-        ProcessorCount      = [int] $Vm.ProcessorCount
-        MemoryStartupBytes  = [int64] $Vm.MemoryStartup
-        MemoryAssignedBytes = [int64] $Vm.MemoryAssigned
-        State               = $Vm.State.ToString()
-        Notes               = $Vm.Notes
-        Path                = $Vm.Path
-        SecureBootEnabled   = $secureBoot
-    } | Write-HypervResult
-}
 
 # Get-HypervVM fetches a VM by name. Same Stop + selective ObjectNotFound
 # catch pattern as vswitch/get.ps1 -- a missing VM raises ObjectNotFound
@@ -66,7 +74,22 @@ function Get-HypervVM {
         $vm = Get-VM -Name $Name -ErrorAction Stop
     }
     catch {
-        if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        # "VM missing" surfaces in two shapes (mirror of the
+        # vswitch/get.ps1 fix from the M1d acc-test PR):
+        #   1. CategoryInfo.Category = ObjectNotFound -- the documented
+        #      contract; what some Hyper-V module versions emit.
+        #   2. CategoryInfo.Category = InvalidArgument with
+        #      FullyQualifiedErrorId =
+        #      'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM'
+        #      -- what Get-VM actually emits on Server 2022 + PS 5.1
+        #      (verified 2026-04 against a real bench; the acc test
+        #      for hyperv_vm's CheckDestroy caught this).
+        $isMissing = (
+            $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound
+        ) -or (
+            $_.FullyQualifiedErrorId -eq 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM'
+        )
+        if (-not $isMissing) {
             throw
         }
         $exception = [System.Management.Automation.ItemNotFoundException]::new(

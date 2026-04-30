@@ -56,24 +56,35 @@ function Set-VMProcessor {
 function Set-VMFirmware {
     [CmdletBinding()]
     param(
-        [string] $VMName,
-        [string] $EnableSecureBoot
+        [string]   $VMName,
+        [string]   $EnableSecureBoot,
+        [object[]] $BootOrder
     )
 }
 
 function Get-VMFirmware {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)] $VM
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName
     )
 }
 
 function Stop-VM {
     [CmdletBinding()]
     param(
+        [Parameter(Position = 0)] $VM,
         [string] $Name,
         [switch] $Force,
         [switch] $TurnOff
+    )
+}
+
+function Start-VM {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $Name
     )
 }
 
@@ -82,6 +93,95 @@ function Remove-VM {
     param(
         [string] $Name,
         [switch] $Force
+    )
+}
+
+function Get-VMHardDiskDrive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation
+    )
+}
+
+function Add-VMHardDiskDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation,
+        [string] $Path
+    )
+}
+
+function Remove-VMHardDiskDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation
+    )
+}
+
+function Get-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName,
+        [string] $Name
+    )
+}
+
+function Add-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $Name,
+        [string] $SwitchName
+    )
+}
+
+function Remove-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $Name
+    )
+}
+
+function Get-VMDvdDrive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VM,
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation
+    )
+}
+
+function Add-VMDvdDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $ControllerType,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation,
+        [string] $Path
+    )
+}
+
+function Remove-VMDvdDrive {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [int]    $ControllerNumber,
+        [int]    $ControllerLocation
     )
 }
 
@@ -115,13 +215,120 @@ function New-HypervVMSample {
 }
 
 # New-HypervVMFirmwareSample builds a Get-VMFirmware-shaped object for use
-# in Mock blocks. SecureBoot is the only field the read shape consumes.
+# in Mock blocks. SecureBoot and BootOrder are the fields the read shape
+# consumes; BootOrder defaults to an empty array (gen 2 with default boot
+# order would normally have entries, but tests that don't care about the
+# field can leave it empty).
 function New-HypervVMFirmwareSample {
     [CmdletBinding()]
     param(
-        [string] $SecureBoot = 'On'   # 'On' | 'Off'
+        [string]   $SecureBoot = 'On',  # 'On' | 'Off'
+        [object[]] $BootOrder  = @()
     )
     [pscustomobject]@{
         SecureBoot = $SecureBoot
+        BootOrder  = $BootOrder
+    }
+}
+
+# New-HypervVMBootOrderEntrySample builds a VMComponentObject-shaped
+# pscustomobject for use in Mock blocks. The DeviceType parameter
+# names a CLR type that the production scripts dispatch on (verified
+# against Server 2022 + PS 5.1: $entry.BootType is the high-level
+# category 'Drive'/'Network', NOT the storage subtype, so Device's
+# .GetType().Name is the load-bearing discriminator).
+#
+# Valid DeviceType values:
+#   'HardDiskDrive'    -> emits a Device with ControllerType / Number / Location
+#   'DvdDrive'         -> ditto
+#   'VMNetworkAdapter' -> emits a Device with Name
+#
+# The Device's CLR type name is set via PSObject.TypeNames.Insert
+# so the script's $entry.Device.GetType().Name pseudo-test matches
+# what the real cmdlet emits. (PSObject doesn't actually change the
+# CLR type, but PowerShell's switch on .GetType().Name reads the
+# inserted type name; the production switch behaves identically.)
+function New-HypervVMBootOrderEntrySample {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('HardDiskDrive', 'DvdDrive', 'VMNetworkAdapter')]
+        [string] $DeviceType,
+        [string] $ControllerType     = 'SCSI',
+        [int]    $ControllerNumber   = 0,
+        [int]    $ControllerLocation = 0,
+        [string] $Name               = 'primary'
+    )
+    $device = switch ($DeviceType) {
+        'HardDiskDrive' {
+            New-Object psobject -Property @{
+                ControllerType     = $ControllerType
+                ControllerNumber   = $ControllerNumber
+                ControllerLocation = $ControllerLocation
+            }
+        }
+        'DvdDrive' {
+            New-Object psobject -Property @{
+                ControllerType     = $ControllerType
+                ControllerNumber   = $ControllerNumber
+                ControllerLocation = $ControllerLocation
+            }
+        }
+        'VMNetworkAdapter' {
+            New-Object psobject -Property @{ Name = $Name }
+        }
+    }
+    # Replace the underlying CLR type name surfaced by GetType().Name
+    # with the simulated subtype. The script never inspects the
+    # full type name, only .Name -- so this is sufficient.
+    $device.PSObject.TypeNames.Insert(0, $DeviceType)
+    # Override GetType to return an object whose .Name is the
+    # simulated CLR type. PSObject.TypeNames affects -is, not
+    # GetType(); production-script does $entry.Device.GetType().Name,
+    # so we add a ScriptMethod that shadows it.
+    $device | Add-Member -MemberType ScriptMethod -Name GetType -Force -Value ([scriptblock]::Create("[pscustomobject]@{ Name = '$DeviceType' }"))
+    [pscustomobject]@{
+        BootType = 'Drive'
+        Device   = $device
+    }
+}
+
+# New-HypervVMHardDiskDriveSample builds a Get-VMHardDiskDrive-shaped object
+# for use in Mock blocks. ControllerType is a string (the cmdlet emits an
+# enum that has a friendly .ToString() of "SCSI" or "IDE"; the test stubs
+# can skip the enum machinery by stringifying directly).
+function New-HypervVMHardDiskDriveSample {
+    [CmdletBinding()]
+    param(
+        [string] $Path               = 'C:\hyperv\vhds\sample.vhdx',
+        [string] $ControllerType     = 'SCSI',
+        [int]    $ControllerNumber   = 0,
+        [int]    $ControllerLocation = 0
+    )
+    [pscustomobject]@{
+        Path               = $Path
+        ControllerType     = $ControllerType
+        ControllerNumber   = $ControllerNumber
+        ControllerLocation = $ControllerLocation
+    }
+}
+
+# New-HypervVMNetworkAdapterSample builds a Get-VMNetworkAdapter-shaped
+# object for use in Mock blocks. Three-field shape mirrors what the
+# read script consumes: Name + SwitchName for slot identification +
+# binding, IPAddresses for the top-level ip_addresses flatten on the
+# Go side. IPAddresses defaults to empty (an Off VM or one without
+# integration services running has no reported IPs).
+function New-HypervVMNetworkAdapterSample {
+    [CmdletBinding()]
+    param(
+        [string]   $Name        = 'primary',
+        [string]   $SwitchName  = 'lab-internal',
+        [string[]] $IPAddresses = @()
+    )
+    [pscustomobject]@{
+        Name        = $Name
+        SwitchName  = $SwitchName
+        IPAddresses = $IPAddresses
     }
 }

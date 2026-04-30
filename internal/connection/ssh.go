@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -45,9 +46,19 @@ type SSHOptions struct {
 	// a security regression.
 	KnownHostsPath string
 
-	// Timeout is the dial timeout. Default 30s. RunScript-level timeouts
-	// come from the caller's ctx, not this field.
+	// Timeout is the dial timeout. Default 30s.
 	Timeout time.Duration
+
+	// CommandTimeout bounds an individual RunScript call. Default
+	// 5m. A wedged remote cmdlet surfaces as ErrTimeout instead of
+	// blocking the whole apply. Set to 0 to disable.
+	CommandTimeout time.Duration
+
+	// KeepaliveInterval is how often the backend sends an SSH
+	// keepalive request while the persistent client is open.
+	// Default 30s. Prevents NAT/firewall mid-apply drops. Set to
+	// 0 to disable.
+	KeepaliveInterval time.Duration
 
 	// PwshPath is the binary the remote shell invokes per call. Default:
 	// "powershell.exe" -- universally available on Windows. Set to "pwsh"
@@ -56,9 +67,11 @@ type SSHOptions struct {
 }
 
 const (
-	defaultSSHPort     = 22
-	defaultSSHTimeout  = 30 * time.Second
-	defaultSSHPwshPath = "powershell.exe"
+	defaultSSHPort              = 22
+	defaultSSHTimeout           = 30 * time.Second
+	defaultSSHCommandTimeout    = 5 * time.Minute
+	defaultSSHKeepaliveInterval = 30 * time.Second
+	defaultSSHPwshPath          = "powershell.exe"
 )
 
 // sshBackend implements Connection over a single persistent ssh.Client. The
@@ -72,6 +85,14 @@ type sshBackend struct {
 
 	mu     sync.Mutex
 	client *ssh.Client
+
+	// keepaliveDone is closed by Close() to stop the keepalive loop.
+	keepaliveDone chan struct{}
+
+	// alive flips false on a failed keepalive; RunScript checks at
+	// entry and lazy-reconnects. Atomic so the keepalive goroutine
+	// can update without acquiring mu.
+	alive atomic.Bool
 }
 
 // Compile-time assertion.
@@ -94,6 +115,14 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 	timeout := opts.Timeout
 	if timeout == 0 {
 		timeout = defaultSSHTimeout
+	}
+	commandTimeout := opts.CommandTimeout
+	if commandTimeout == 0 {
+		commandTimeout = defaultSSHCommandTimeout
+	}
+	keepalive := opts.KeepaliveInterval
+	if keepalive == 0 {
+		keepalive = defaultSSHKeepaliveInterval
 	}
 
 	auths, err := buildSSHAuthMethods(opts)
@@ -123,7 +152,15 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 	}
 
 	return &sshBackend{
-		opts:   SSHOptions{Host: opts.Host, Port: port, Username: opts.Username, PwshPath: pwshPath, Timeout: timeout},
+		opts: SSHOptions{
+			Host:              opts.Host,
+			Port:              port,
+			Username:          opts.Username,
+			PwshPath:          pwshPath,
+			Timeout:           timeout,
+			CommandTimeout:    commandTimeout,
+			KeepaliveInterval: keepalive,
+		},
 		config: cfg,
 		addr:   net.JoinHostPort(opts.Host, strconv.Itoa(port)),
 	}, nil
@@ -173,6 +210,13 @@ func (b *sshBackend) Open(ctx context.Context) error {
 			return fmt.Errorf("ssh: handshake with %s: %w", b.addr, r.err)
 		}
 		b.client = ssh.NewClient(r.sshConn, r.chans, r.reqs)
+		b.alive.Store(true)
+		// Capture client+done as locals so a Close()+Open() cycle
+		// can't leak this loop onto the new client.
+		if b.opts.KeepaliveInterval > 0 {
+			b.keepaliveDone = make(chan struct{})
+			go b.keepaliveLoop(b.client, b.keepaliveDone, b.opts.KeepaliveInterval)
+		}
 		return nil
 	case <-ctx.Done():
 		select {
@@ -192,16 +236,50 @@ func (b *sshBackend) Open(ctx context.Context) error {
 	}
 }
 
-// Close shuts down the persistent client. Idempotent.
+// Close shuts down the persistent client and stops the keepalive
+// goroutine. Idempotent.
 func (b *sshBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.client == nil {
 		return nil
 	}
+	if b.keepaliveDone != nil {
+		close(b.keepaliveDone)
+		b.keepaliveDone = nil
+	}
 	err := b.client.Close()
 	b.client = nil
+	b.alive.Store(false)
 	return err
+}
+
+// keepaliveLoop sends a keepalive on a ticker; first failure marks
+// the backend not-alive (RunScript reconnects on the next call) and
+// exits. wantReply=true turns the request into a round-trip so we
+// notice dead connections.
+func (b *sshBackend) keepaliveLoop(client *ssh.Client, done chan struct{}, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				b.alive.Store(false)
+				return
+			}
+		}
+	}
+}
+
+// reconnect tears down and reopens the client. Only called between
+// RunScript calls -- never mid-call, because New-VM / Add-VM* side
+// effects aren't idempotent and a partial cmdlet must not be retried.
+func (b *sshBackend) reconnect(ctx context.Context) error {
+	_ = b.Close()
+	return b.Open(ctx)
 }
 
 // Healthcheck runs a trivial PowerShell round-trip to confirm the dial
@@ -233,6 +311,26 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 	b.mu.Unlock()
 	if client == nil {
 		return Result{}, errors.New("ssh: backend not open -- call Open first")
+	}
+
+	// Lazy reconnect if keepalive saw a dead client. Never retry
+	// mid-call -- see reconnect's docstring.
+	if !b.alive.Load() {
+		if err := b.reconnect(ctx); err != nil {
+			return Result{}, fmt.Errorf("ssh: reconnect after keepalive failure: %w", err)
+		}
+		b.mu.Lock()
+		client = b.client
+		b.mu.Unlock()
+	}
+
+	// Per-call timeout so a wedged remote cmdlet surfaces as
+	// ErrTimeout. Note: ends the operator's wait, not the remote
+	// process -- it keeps running until vmms unblocks.
+	if b.opts.CommandTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.opts.CommandTimeout)
+		defer cancel()
 	}
 
 	remotePath, cleanup, err := stageScript(ctx, client, script)

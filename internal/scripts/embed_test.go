@@ -166,7 +166,14 @@ func TestVHDScript_TestFilesNotEmbedded(t *testing.T) {
 func TestVMScript_LoadsAllVerbs(t *testing.T) {
 	t.Parallel()
 
-	for _, verb := range []string{"get", "new", "set", "remove"} {
+	for _, verb := range []string{
+		"get", "new", "set", "remove",
+		"add-hard-disk-drive", "remove-hard-disk-drive",
+		"add-network-adapter", "remove-network-adapter",
+		"add-dvd-drive", "remove-dvd-drive",
+		"set-boot-order",
+		"set-state",
+	} {
 		body, err := VMScript(verb)
 		if err != nil {
 			t.Errorf("VMScript(%q): %v", verb, err)
@@ -175,6 +182,23 @@ func TestVMScript_LoadsAllVerbs(t *testing.T) {
 		if len(bytes.TrimSpace(body)) == 0 {
 			t.Errorf("VMScript(%q) returned empty body", verb)
 		}
+	}
+}
+
+// VMReadResult is the canonical Read-HypervVMResult body shared by the
+// four VM read-emitting verbs (get/new/set/set-state). The Go-side
+// hyperv.Client prepends its body to those scripts at runtime; if the
+// embed glob ever drops it, every VM read silently fails with "command
+// not found." Pin its presence at startup.
+func TestVMReadResult_LoadsCanonicalBody(t *testing.T) {
+	t.Parallel()
+
+	body, err := VMReadResult()
+	if err != nil {
+		t.Fatalf("VMReadResult: %v", err)
+	}
+	if !bytes.Contains(body, []byte("function Read-HypervVMResult")) {
+		t.Errorf("vm/read-result.ps1 missing the canonical function definition")
 	}
 }
 

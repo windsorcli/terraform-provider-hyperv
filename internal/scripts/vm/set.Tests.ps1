@@ -5,6 +5,7 @@
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
     . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/read-result.ps1
     . $PSScriptRoot/set.ps1
 }
 
@@ -124,13 +125,15 @@ Describe 'Set-HypervVM' {
             Mock Set-VMMemory { }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
 
+            Mock Get-VMHardDiskDrive { @() }
+
             $parsed = Set-HypervVM -Name 'vm01' -Generation 2 -MemoryBytes 4294967296 |
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'Generation', 'Id', 'MemoryAssignedBytes', 'MemoryStartupBytes',
-                'Name', 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'State'
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
+                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
+                'ProcessorCount', 'SecureBootEnabled', 'State'
             )
         }
     }

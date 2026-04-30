@@ -23,32 +23,6 @@
 # Update would be dangerous magic that changes apply semantics -- the
 # operator drives power transitions via hyperv_vm_state.
 
-# Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
-# of get.ps1's tail because the runtime concatenates only preamble + a
-# single verb script per call.
-function Read-HypervVMResult {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] $Vm
-    )
-    $secureBoot = $null
-    if ($Vm.Generation -eq 2) {
-        $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
-        $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
-    }
-    [pscustomobject]@{
-        Name                = $Vm.Name
-        Id                  = $Vm.Id.ToString()
-        Generation          = [int] $Vm.Generation
-        ProcessorCount      = [int] $Vm.ProcessorCount
-        MemoryStartupBytes  = [int64] $Vm.MemoryStartup
-        MemoryAssignedBytes = [int64] $Vm.MemoryAssigned
-        State               = $Vm.State.ToString()
-        Notes               = $Vm.Notes
-        Path                = $Vm.Path
-        SecureBootEnabled   = $secureBoot
-    } | Write-HypervResult
-}
 
 # Set-HypervVM applies the partial update. Same Stop + selective
 # ObjectNotFound catch pattern as get.ps1 -- a missing VM raises

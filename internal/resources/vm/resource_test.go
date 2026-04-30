@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
@@ -39,7 +40,8 @@ func TestResource_Schema(t *testing.T) {
 		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
 	}
 	wantAttrs := []string{
-		"id", "name", "generation", "vcpu", "memory_bytes",
+		"id", "name", "generation", "cpu", "memory",
+		"hard_disk_drive", "network_adapter", "dvd_drive",
 		"secure_boot", "notes", "state", "path",
 	}
 	for _, name := range wantAttrs {
@@ -76,23 +78,40 @@ func TestResource_Schema_RequiresReplaceOnImmutableAttrs(t *testing.T) {
 	}
 }
 
-// TestResource_Schema_VcpuAndMemoryAreInPlaceMutable confirms the two
-// in-place updatables don't carry RequiresReplace -- Set-VMProcessor /
-// Set-VMMemory are the in-place paths.
-func TestResource_Schema_VcpuAndMemoryAreInPlaceMutable(t *testing.T) {
+// TestResource_Schema_CPUAndMemoryAreInPlaceMutable confirms the
+// nested cpu/memory blocks don't carry RequiresReplace -- Set-VMProcessor
+// and Set-VMMemory are the in-place paths. The check looks at the inner
+// scalar attributes (cpu.count, memory.startup_bytes) since those are
+// where the RequiresReplace would be expressed if it were ever added.
+func TestResource_Schema_CPUAndMemoryAreInPlaceMutable(t *testing.T) {
 	t.Parallel()
 
 	r := New()
 	resp := &resource.SchemaResponse{}
 	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
 
-	for _, name := range []string{"vcpu", "memory_bytes"} {
-		intAttr, ok := resp.Schema.Attributes[name].(schema.Int64Attribute)
+	cases := []struct {
+		block, inner string
+	}{
+		{"cpu", "count"},
+		{"memory", "startup_bytes"},
+	}
+	for _, tc := range cases {
+		blockAttr, ok := resp.Schema.Attributes[tc.block].(schema.SingleNestedAttribute)
 		if !ok {
-			t.Fatalf("%q is not an Int64Attribute (got %T)", name, resp.Schema.Attributes[name])
+			t.Fatalf("%q is not a SingleNestedAttribute (got %T)", tc.block, resp.Schema.Attributes[tc.block])
 		}
-		if hasPlanModifier(intAttr.PlanModifiers, "RequiresReplace") {
-			t.Errorf("%q must NOT carry RequiresReplace", name)
+		// Block-level RequiresReplace would propagate through the whole
+		// thing, so check it doesn't carry one either.
+		if hasPlanModifier(blockAttr.PlanModifiers, "RequiresReplace") {
+			t.Errorf("%q (block) must NOT carry RequiresReplace", tc.block)
+		}
+		innerAttr, ok := blockAttr.Attributes[tc.inner].(schema.Int64Attribute)
+		if !ok {
+			t.Fatalf("%q.%q is not an Int64Attribute (got %T)", tc.block, tc.inner, blockAttr.Attributes[tc.inner])
+		}
+		if hasPlanModifier(innerAttr.PlanModifiers, "RequiresReplace") {
+			t.Errorf("%q.%q must NOT carry RequiresReplace", tc.block, tc.inner)
 		}
 	}
 }
@@ -121,8 +140,12 @@ func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	}
 	checkString("id")
 	checkString("notes")
-	checkString("state")
 	checkString("path")
+	// `state` is intentionally NOT in this list -- the nested
+	// `state.current` Computed attribute deliberately omits
+	// UseStateForUnknown so plan vs apply doesn't lock in a stale
+	// value across desired-state transitions. See its
+	// MarkdownDescription for the trade-off.
 
 	if boolAttr, ok := resp.Schema.Attributes["secure_boot"].(schema.BoolAttribute); ok {
 		if !hasPlanModifier(boolAttr.PlanModifiers, "UseStateForUnknown") {
@@ -210,8 +233,11 @@ func TestResource_Configure_WrongTypeIsClearError(t *testing.T) {
 	}
 }
 
-// TestResource_ConfigValidators_RegistersAll confirms the validator is
-// wired into ConfigValidators().
+// TestResource_ConfigValidators_RegistersAll confirms every validator
+// is wired into ConfigValidators(). Drift here means the resource is
+// shipping without a documented validator; usually the cmdlet-error
+// path still catches the problem at apply time, but plan-time
+// diagnostics are the contract.
 func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 	t.Parallel()
 
@@ -220,8 +246,8 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 1 {
-		t.Fatalf("got %d ConfigValidators, want 1 (secure_boot rejected for gen 1)", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d ConfigValidators, want 3 (secure_boot rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1)", len(got))
 	}
 }
 
@@ -341,12 +367,12 @@ func TestBuildNewInput_AllFieldsForwarded(t *testing.T) {
 	t.Parallel()
 
 	plan := Model{
-		Name:        types.StringValue("vm01"),
-		Generation:  types.Int64Value(2),
-		Vcpu:        types.Int64Value(4),
-		MemoryBytes: types.Int64Value(8589934592),
-		SecureBoot:  types.BoolValue(true),
-		Notes:       types.StringValue("production"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(4)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(8589934592)},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringValue("production"),
 	}
 	in := buildNewInput(plan)
 
@@ -367,12 +393,12 @@ func TestBuildNewInput_OmitsNullOptionals(t *testing.T) {
 	t.Parallel()
 
 	plan := Model{
-		Name:        types.StringValue("legacy-vm"),
-		Generation:  types.Int64Value(1),
-		Vcpu:        types.Int64Value(1),
-		MemoryBytes: types.Int64Value(2147483648),
-		SecureBoot:  types.BoolNull(),
-		Notes:       types.StringNull(),
+		Name:       types.StringValue("legacy-vm"),
+		Generation: types.Int64Value(1),
+		CPU:        &CPUModel{Count: types.Int64Value(1)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(2147483648)},
+		SecureBoot: types.BoolNull(),
+		Notes:      types.StringNull(),
 	}
 	in := buildNewInput(plan)
 
@@ -393,12 +419,12 @@ func TestBuildSetInput_OnlyChangedFieldsForwarded(t *testing.T) {
 	t.Parallel()
 
 	state := Model{
-		Name:        types.StringValue("vm01"),
-		Generation:  types.Int64Value(2),
-		Vcpu:        types.Int64Value(2),
-		MemoryBytes: types.Int64Value(4294967296),
-		SecureBoot:  types.BoolValue(true),
-		Notes:       types.StringValue("old"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringValue("old"),
 	}
 	plan := state                         // start identical...
 	plan.Notes = types.StringValue("new") // ...change just notes
@@ -425,12 +451,19 @@ func TestBuildSetInput_OnlyChangedFieldsForwarded(t *testing.T) {
 func TestBuildSetInput_GenerationSourcedFromState(t *testing.T) {
 	t.Parallel()
 
+	// CPU and Memory are *CPUModel/*MemoryModel pointers per the
+	// import-time null requirement; tests must populate them since
+	// buildSetInput dereferences both unconditionally (the schema's
+	// Required guarantee makes that safe in production but not in
+	// hand-built test literals).
 	state := Model{
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
 	}
 	plan := state
-	plan.Vcpu = types.Int64Value(4)
+	plan.CPU = &CPUModel{Count: types.Int64Value(4)}
 
 	in := buildSetInput(plan, state)
 	if in.Generation != 2 {
@@ -579,10 +612,467 @@ func TestModelFromVM_PreservesInt64MemoryAndProcessorCount(t *testing.T) {
 		ProcessorCount:     16,
 		MemoryStartupBytes: 68719476736, // 64 GiB
 	})
-	if got.Vcpu.ValueInt64() != 16 {
-		t.Errorf("Vcpu = %d, want 16", got.Vcpu.ValueInt64())
+	if got.CPU.Count.ValueInt64() != 16 {
+		t.Errorf("CPU.Count = %d, want 16", got.CPU.Count.ValueInt64())
 	}
-	if got.MemoryBytes.ValueInt64() != 68719476736 {
-		t.Errorf("MemoryBytes = %d, want 68719476736", got.MemoryBytes.ValueInt64())
+	if got.Memory.StartupBytes.ValueInt64() != 68719476736 {
+		t.Errorf("Memory.StartupBytes = %d, want 68719476736", got.Memory.StartupBytes.ValueInt64())
+	}
+}
+
+// TestDiffHardDiskDrives_AddsRemovesAndPathSwaps exercises the slot-keyed
+// diff that drives Update reconciliation. The five cases below are the
+// only ones that matter:
+//   - new slot: attach
+//   - removed slot: detach
+//   - same slot, same path: no-op
+//   - same slot, different path: detach + attach (path swap)
+//   - same slot, slash-style-different path (under StringSemanticEquals):
+//     no-op (the custom type folds C:/foo and C:\foo)
+func TestDiffHardDiskDrives_AddsRemovesAndPathSwaps(t *testing.T) {
+	t.Parallel()
+
+	hdd := func(p, ct string, n, l int64) HardDiskDriveModel {
+		return HardDiskDriveModel{
+			Path:               pathtype.NewPathValue(p),
+			ControllerType:     types.StringValue(ct),
+			ControllerNumber:   types.Int64Value(n),
+			ControllerLocation: types.Int64Value(l),
+		}
+	}
+
+	t.Run("new slot in plan -> attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffHardDiskDrives(
+			[]HardDiskDriveModel{hdd("C:\\a.vhdx", "SCSI", 0, 0)},
+			nil,
+		)
+		if len(add) != 1 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 1/0", len(add), len(rm))
+		}
+	})
+
+	t.Run("removed slot -> detach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffHardDiskDrives(
+			nil,
+			[]HardDiskDriveModel{hdd("C:\\a.vhdx", "SCSI", 0, 0)},
+		)
+		if len(add) != 0 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 0/1", len(add), len(rm))
+		}
+	})
+
+	t.Run("same slot same path -> no-op", func(t *testing.T) {
+		t.Parallel()
+		h := hdd("C:\\a.vhdx", "SCSI", 0, 0)
+		add, rm := diffHardDiskDrives([]HardDiskDriveModel{h}, []HardDiskDriveModel{h})
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0", len(add), len(rm))
+		}
+	})
+
+	t.Run("same slot, different path -> detach + attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffHardDiskDrives(
+			[]HardDiskDriveModel{hdd("C:\\new.vhdx", "SCSI", 0, 0)},
+			[]HardDiskDriveModel{hdd("C:\\old.vhdx", "SCSI", 0, 0)},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1", len(add), len(rm))
+		}
+		if add[0].Path.ValueString() != "C:\\new.vhdx" {
+			t.Errorf("attach path = %q, want C:\\new.vhdx", add[0].Path.ValueString())
+		}
+		if rm[0].Path.ValueString() != "C:\\old.vhdx" {
+			t.Errorf("detach path = %q, want C:\\old.vhdx", rm[0].Path.ValueString())
+		}
+	})
+
+	t.Run("same slot, slash-style differs -> no-op (semantic equals)", func(t *testing.T) {
+		t.Parallel()
+		// pathtype.Path's StringSemanticEquals folds slash style;
+		// without that, the change here would falsely look like a
+		// path swap and trigger detach+attach on every plan.
+		add, rm := diffHardDiskDrives(
+			[]HardDiskDriveModel{hdd("C:/foo/disk.vhdx", "SCSI", 0, 0)},
+			[]HardDiskDriveModel{hdd("C:\\foo\\disk.vhdx", "SCSI", 0, 0)},
+		)
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0 (slash-style differences must not trigger detach+attach)", len(add), len(rm))
+		}
+	})
+}
+
+// TestAttachInputFor_DefaultsControllerTypeToSCSI pins the schema-default
+// behaviour: a HardDiskDriveModel with null ControllerType (the
+// schema's StaticString default kicks in at plan time, but defensive
+// guards in attachInputFor handle the unknown-during-plan-modification
+// case too) still produces a valid AttachHardDiskInput targeting SCSI.
+func TestAttachInputFor_DefaultsControllerTypeToSCSI(t *testing.T) {
+	t.Parallel()
+
+	h := HardDiskDriveModel{
+		Path:               pathtype.NewPathValue("C:\\a.vhdx"),
+		ControllerType:     types.StringNull(),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(0),
+	}
+	got := attachInputFor("vm01", h)
+	if got.ControllerType != "SCSI" {
+		t.Errorf("ControllerType = %q, want SCSI", got.ControllerType)
+	}
+	if got.Name != "vm01" || got.Path != "C:\\a.vhdx" {
+		t.Errorf("attach input round-trip wrong: %+v", got)
+	}
+}
+
+// TestDetachInputFor_OmitsPath confirms the wire payload for a detach
+// doesn't carry path -- the slot tuple alone identifies the
+// attachment, and DetachHardDiskInput is intentionally pathless to
+// match the cmdlet's contract.
+func TestDetachInputFor_OmitsPath(t *testing.T) {
+	t.Parallel()
+
+	h := HardDiskDriveModel{
+		Path:               pathtype.NewPathValue("C:\\a.vhdx"),
+		ControllerType:     types.StringValue("SCSI"),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(0),
+	}
+	got := detachInputFor("vm01", h)
+	if got.Name != "vm01" || got.ControllerType != "SCSI" {
+		t.Errorf("detach input wrong: %+v", got)
+	}
+	// Compile-time check: DetachHardDiskInput has no Path field. If
+	// someone adds one, this test still passes -- but its existence
+	// is the schema-level invariant we care about; the JSON-tag
+	// pinning test in internal/hyperv/vm_test.go enforces wire shape.
+}
+
+// TestModelFromVM_PopulatesHardDiskDrives confirms the cmdlet's
+// HardDiskDrives slice round-trips into the framework's HardDiskDriveModel
+// list, with Path going through pathtype.Path.
+func TestModelFromVM_PopulatesHardDiskDrives(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		HardDiskDrives: []hyperv.HardDiskDrive{
+			{Path: "C:\\a.vhdx", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 0},
+			{Path: "C:\\b.vhdx", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 1},
+		},
+	})
+	if len(got.HardDiskDrives) != 2 {
+		t.Fatalf("len(HardDiskDrives) = %d, want 2", len(got.HardDiskDrives))
+	}
+	if got.HardDiskDrives[0].Path.ValueString() != "C:\\a.vhdx" {
+		t.Errorf("first HDD path = %q, want C:\\a.vhdx", got.HardDiskDrives[0].Path.ValueString())
+	}
+	if got.HardDiskDrives[1].ControllerLocation.ValueInt64() != 1 {
+		t.Errorf("second HDD location = %d, want 1", got.HardDiskDrives[1].ControllerLocation.ValueInt64())
+	}
+}
+
+// TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice locks the script-side
+// @() wrapper guarantee on the Go side: an empty cmdlet result becomes
+// an empty (but non-nil) slice in the model. Nil here would make the
+// framework treat the attribute as null/unset, triggering a phantom
+// diff against a config that explicitly writes hard_disk_drive = [].
+func TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:           "vm01",
+		Generation:     2,
+		HardDiskDrives: []hyperv.HardDiskDrive{},
+	})
+	if got.HardDiskDrives == nil {
+		t.Error("HardDiskDrives = nil, want empty []HardDiskDriveModel")
+	}
+	if len(got.HardDiskDrives) != 0 {
+		t.Errorf("HardDiskDrives length = %d, want 0", len(got.HardDiskDrives))
+	}
+}
+
+// TestNetworkAdapterUniqueNamesValidator pins the plan-time uniqueness
+// check on network_adapter[].name. Hyper-V allows duplicate-named NICs
+// at the cmdlet level; the validator is what makes the slot key
+// well-defined for our diff logic.
+func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		nics      []NetworkAdapterModel
+		wantError bool
+	}{
+		{
+			name: "two NICs with distinct names -> ok",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
+				{Name: types.StringValue("secondary"), SwitchName: types.StringValue("b")},
+			},
+		},
+		{
+			name: "two NICs sharing the same name -> fires",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("b")},
+			},
+			wantError: true,
+		},
+		{
+			name: "single NIC -> ok (trivially unique)",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("only"), SwitchName: types.StringValue("a")},
+			},
+		},
+		{
+			name: "empty list -> ok",
+			nics: []NetworkAdapterModel{},
+		},
+		{
+			name: "unknown name in second slot -> skip (deferred dep)",
+			nics: []NetworkAdapterModel{
+				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
+				{Name: types.StringUnknown(), SwitchName: types.StringValue("b")},
+			},
+		},
+	}
+	v := networkAdapterUniqueNamesValidator{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(Model{NetworkAdapters: tc.nics})
+			if got := diags.HasError(); got != tc.wantError {
+				t.Errorf("HasError = %v, want %v; diags: %v", got, tc.wantError, diags)
+			}
+		})
+	}
+}
+
+// TestDiffNetworkAdapters mirrors the HDD diff test shape: same name +
+// same switch is no-op; same name + different switch is detach +
+// attach; new name is attach; removed name is detach.
+func TestDiffNetworkAdapters(t *testing.T) {
+	t.Parallel()
+
+	nic := func(name, sw string) NetworkAdapterModel {
+		return NetworkAdapterModel{
+			Name:       types.StringValue(name),
+			SwitchName: types.StringValue(sw),
+		}
+	}
+
+	t.Run("new name -> attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffNetworkAdapters([]NetworkAdapterModel{nic("a", "lab")}, nil)
+		if len(add) != 1 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 1/0", len(add), len(rm))
+		}
+	})
+	t.Run("removed name -> detach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffNetworkAdapters(nil, []NetworkAdapterModel{nic("a", "lab")})
+		if len(add) != 0 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 0/1", len(add), len(rm))
+		}
+	})
+	t.Run("same name same switch -> no-op", func(t *testing.T) {
+		t.Parallel()
+		n := nic("a", "lab")
+		add, rm := diffNetworkAdapters([]NetworkAdapterModel{n}, []NetworkAdapterModel{n})
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0", len(add), len(rm))
+		}
+	})
+	t.Run("same name different switch -> detach + attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffNetworkAdapters(
+			[]NetworkAdapterModel{nic("a", "new-switch")},
+			[]NetworkAdapterModel{nic("a", "old-switch")},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1", len(add), len(rm))
+		}
+		if add[0].SwitchName.ValueString() != "new-switch" {
+			t.Errorf("attach switch = %q, want new-switch", add[0].SwitchName.ValueString())
+		}
+		if rm[0].SwitchName.ValueString() != "old-switch" {
+			t.Errorf("detach switch = %q, want old-switch", rm[0].SwitchName.ValueString())
+		}
+	})
+}
+
+// TestModelFromVM_PopulatesNetworkAdapters confirms the cmdlet's NIC
+// list round-trips through modelFromVM, sorted by Name.
+func TestModelFromVM_PopulatesNetworkAdapters(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		NetworkAdapters: []hyperv.NetworkAdapter{
+			// Cmdlet emits in some order; modelFromVM sorts by Name.
+			{Name: "secondary", SwitchName: "lab-external"},
+			{Name: "primary", SwitchName: "lab-internal"},
+		},
+	})
+	if len(got.NetworkAdapters) != 2 {
+		t.Fatalf("got %d NICs, want 2", len(got.NetworkAdapters))
+	}
+	// After sort, primary comes first.
+	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
+		t.Errorf("first NIC name = %q, want primary (sorted)", got.NetworkAdapters[0].Name.ValueString())
+	}
+	if got.NetworkAdapters[1].SwitchName.ValueString() != "lab-external" {
+		t.Errorf("second NIC switch = %q, want lab-external", got.NetworkAdapters[1].SwitchName.ValueString())
+	}
+}
+
+// TestDiffDvdDrives covers the slot-keyed diff including the
+// null/non-null IsoPath transitions ("eject" and "load") that don't
+// apply to HDDs.
+func TestDiffDvdDrives(t *testing.T) {
+	t.Parallel()
+
+	dvd := func(iso *string, ct string, n, l int64) DvdDriveModel {
+		isoPath := pathtype.NewPathNull()
+		if iso != nil {
+			isoPath = pathtype.NewPathValue(*iso)
+		}
+		return DvdDriveModel{
+			IsoPath:            isoPath,
+			ControllerType:     types.StringValue(ct),
+			ControllerNumber:   types.Int64Value(n),
+			ControllerLocation: types.Int64Value(l),
+		}
+	}
+	str := func(s string) *string { return &s }
+
+	t.Run("new slot with iso -> attach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+			nil,
+		)
+		if len(add) != 1 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 1/0", len(add), len(rm))
+		}
+	})
+	t.Run("removed slot -> detach", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffDvdDrives(
+			nil,
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+		)
+		if len(add) != 0 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 0/1", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, both empty -> no-op", func(t *testing.T) {
+		t.Parallel()
+		empty := dvd(nil, "SCSI", 0, 1)
+		add, rm := diffDvdDrives([]DvdDriveModel{empty}, []DvdDriveModel{empty})
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, plan loads ISO into empty -> detach + attach (load)", func(t *testing.T) {
+		t.Parallel()
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+			[]DvdDriveModel{dvd(nil, "SCSI", 0, 1)},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1 (load = swap)", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, plan ejects ISO -> detach + attach (Talos pattern)", func(t *testing.T) {
+		t.Parallel()
+		// This is the Flow C eject-after-install case: the user
+		// declared the DVD with an ISO, install completes, on the
+		// next apply they remove iso_path. Reconciliation detaches
+		// the loaded drive, attaches an empty one at the same slot.
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(nil, "SCSI", 0, 1)},
+			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
+		)
+		if len(add) != 1 || len(rm) != 1 {
+			t.Errorf("got attach=%d detach=%d, want 1/1 (eject = swap)", len(add), len(rm))
+		}
+	})
+	t.Run("same slot, slash-style differs -> no-op", func(t *testing.T) {
+		t.Parallel()
+		// Same StringSemanticEquals defense as the HDD test.
+		add, rm := diffDvdDrives(
+			[]DvdDriveModel{dvd(str("C:/isos/boot.iso"), "SCSI", 0, 1)},
+			[]DvdDriveModel{dvd(str(`C:\isos\boot.iso`), "SCSI", 0, 1)},
+		)
+		if len(add) != 0 || len(rm) != 0 {
+			t.Errorf("got attach=%d detach=%d, want 0/0 (slash-folding via Path semantic-equals)", len(add), len(rm))
+		}
+	})
+}
+
+// TestAttachDvdInputFor_NilIsoPath confirms the null IsoPath case
+// produces a nil *string on the wire (the script's "if not empty"
+// guard then creates an empty drive).
+func TestAttachDvdInputFor_NilIsoPath(t *testing.T) {
+	t.Parallel()
+
+	d := DvdDriveModel{
+		IsoPath:            pathtype.NewPathNull(),
+		ControllerType:     types.StringValue("SCSI"),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(1),
+	}
+	got := attachDvdInputFor("vm01", d)
+	if got.IsoPath != nil {
+		t.Errorf("IsoPath = %v (target = %q), want nil", got.IsoPath, *got.IsoPath)
+	}
+}
+
+// TestAttachDvdInputFor_SetIsoPath confirms the set case populates
+// the *string.
+func TestAttachDvdInputFor_SetIsoPath(t *testing.T) {
+	t.Parallel()
+
+	d := DvdDriveModel{
+		IsoPath:            pathtype.NewPathValue("C:\\boot.iso"),
+		ControllerType:     types.StringValue("SCSI"),
+		ControllerNumber:   types.Int64Value(0),
+		ControllerLocation: types.Int64Value(1),
+	}
+	got := attachDvdInputFor("vm01", d)
+	if got.IsoPath == nil || *got.IsoPath != "C:\\boot.iso" {
+		t.Errorf("IsoPath = %v, want pointer to C:\\boot.iso", got.IsoPath)
+	}
+}
+
+// TestModelFromVM_DvdDrivesEmptyPathBecomesNull: cmdlet's "" Path on a
+// drive with no medium loaded collapses to schema-null IsoPath, so a
+// user's plan that omits iso_path matches state cleanly.
+func TestModelFromVM_DvdDrivesEmptyPathBecomesNull(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(&hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		DvdDrives: []hyperv.DvdDrive{
+			{Path: "", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 1},
+			{Path: `C:\boot.iso`, ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 2},
+		},
+	})
+	if len(got.DvdDrives) != 2 {
+		t.Fatalf("got %d DVDs, want 2", len(got.DvdDrives))
+	}
+	if !got.DvdDrives[0].IsoPath.IsNull() {
+		t.Errorf("first DVD IsoPath = %v, want null (empty drive)", got.DvdDrives[0].IsoPath)
+	}
+	if got.DvdDrives[1].IsoPath.ValueString() != `C:\boot.iso` {
+		t.Errorf("second DVD IsoPath = %q, want C:\\boot.iso", got.DvdDrives[1].IsoPath.ValueString())
 	}
 }

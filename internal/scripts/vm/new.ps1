@@ -21,32 +21,6 @@
 # secure_boot only), Set-VM Notes. Each Set-* is its own cmdlet call --
 # New-VM doesn't accept all of these in one shot.
 
-# Read-HypervVMResult emits the canonical 10-field shape. Inline duplicate
-# of get.ps1's tail because the runtime concatenates only preamble + a
-# single verb script per call.
-function Read-HypervVMResult {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] $Vm
-    )
-    $secureBoot = $null
-    if ($Vm.Generation -eq 2) {
-        $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
-        $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
-    }
-    [pscustomobject]@{
-        Name                = $Vm.Name
-        Id                  = $Vm.Id.ToString()
-        Generation          = [int] $Vm.Generation
-        ProcessorCount      = [int] $Vm.ProcessorCount
-        MemoryStartupBytes  = [int64] $Vm.MemoryStartup
-        MemoryAssignedBytes = [int64] $Vm.MemoryAssigned
-        State               = $Vm.State.ToString()
-        Notes               = $Vm.Notes
-        Path                = $Vm.Path
-        SecureBootEnabled   = $secureBoot
-    } | Write-HypervResult
-}
 
 # New-HypervVM creates a VM and applies the post-create Set-* tail. -NoVHD
 # means New-VM doesn't auto-attach a VHD; -BootDevice is intentionally
@@ -66,6 +40,20 @@ function New-HypervVM {
     New-VM -Name $Name -Generation $Generation `
         -MemoryStartupBytes $MemoryBytes `
         -NoVHD -ErrorAction Stop | Out-Null
+
+    # New-VM auto-creates a default "Network Adapter" NIC with empty
+    # SwitchName. Strip it so the VM starts with zero NICs -- the
+    # resource-layer Create then attaches exactly what the user
+    # declared in network_adapter. Without this, the user's plan
+    # (network_adapter omitted -> empty list) doesn't match state
+    # (one auto-created NIC after refresh) and the framework's
+    # "Provider produced inconsistent result after apply" check
+    # fires. Verified empirically against Server 2022 + PS 5.1.
+    #
+    # Pipe form (rather than `Remove-VMNetworkAdapter -Name '*'`)
+    # because the cmdlet doesn't accept wildcards on -Name.
+    Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop |
+        Remove-VMNetworkAdapter -ErrorAction Stop
 
     # Atomicity guard: New-VM has now committed the VM to the host. Any
     # failure in the post-create Set-* sequence below would leave a
