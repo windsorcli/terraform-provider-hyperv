@@ -140,3 +140,84 @@ func keysOf[V any](m map[int64]V) []int64 {
 	}
 	return out
 }
+
+// TestUpgradeV1ToV2_LeavesShutdownModeNull locks the only v1 -> v2
+// shape change: state.shutdown_mode is added to the nested state
+// block but populated with null (not a "turn_off" placeholder).
+// v1 users never had a chance to choose a value; storing null after
+// upgrade preserves the "user didn't manage" semantic, and the
+// script defaults to turn_off on absent input -- same on-host
+// behavior as v1.
+func TestUpgradeV1ToV2_LeavesShutdownModeNull(t *testing.T) {
+	prior := priorModelV1{
+		ID:         types.StringValue("vm01"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringNull(),
+		Path:       types.StringValue("C:/foo"),
+		State: &priorStateModelV1{
+			Desired: types.StringValue("Running"),
+			Current: types.StringValue("Running"),
+		},
+	}
+
+	got := upgradeV1ToV2(prior)
+
+	if got.State == nil {
+		t.Fatal("State: got nil, want populated v2 block")
+	}
+	if got.State.Desired.ValueString() != "Running" {
+		t.Errorf("State.Desired: got %q, want Running", got.State.Desired.ValueString())
+	}
+	if got.State.Current.ValueString() != "Running" {
+		t.Errorf("State.Current: got %q, want Running", got.State.Current.ValueString())
+	}
+	if !got.State.ShutdownMode.IsNull() {
+		t.Errorf("State.ShutdownMode: got %+v, want null (v1 users never managed shutdown_mode)",
+			got.State.ShutdownMode)
+	}
+}
+
+// TestUpgradeV1ToV2_PreservesNullState covers the v1 case where the
+// user never opted into managing power state (state block null on
+// disk). The v2 state block stays nil; the user opts in by writing
+// `state = {}` later.
+func TestUpgradeV1ToV2_PreservesNullState(t *testing.T) {
+	prior := priorModelV1{
+		ID:         types.StringValue("vm01"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SecureBoot: types.BoolNull(),
+		Notes:      types.StringNull(),
+		Path:       types.StringValue("C:/foo"),
+		State:      nil,
+	}
+
+	got := upgradeV1ToV2(prior)
+
+	if got.State != nil {
+		t.Errorf("State: got %+v, want nil (user never opted into power-state management)", got.State)
+	}
+}
+
+// TestUpgradeStateRegistration_V1Entry verifies the v1 upgrader is
+// registered alongside the v0 one. Sister test of
+// TestUpgradeStateRegistration but pinned to the v1 source.
+func TestUpgradeStateRegistration_V1Entry(t *testing.T) {
+	r := &Resource{}
+	upgraders := r.UpgradeState(t.Context())
+	if _, ok := upgraders[1]; !ok {
+		t.Fatalf("UpgradeState: missing v1 upgrader; got versions %+v", keysOf(upgraders))
+	}
+	if upgraders[1].PriorSchema == nil {
+		t.Error("UpgradeState[1].PriorSchema: got nil, want priorSchemaV1()")
+	}
+	if upgraders[1].StateUpgrader == nil {
+		t.Error("UpgradeState[1].StateUpgrader: got nil, want non-nil migration func")
+	}
+}

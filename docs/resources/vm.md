@@ -66,9 +66,13 @@ resource "hyperv_vm" "node01" {
   ]
 
   # Power the VM on after attaching everything. Drop or set to "Off"
-  # to power-cycle. Hard power-off semantics on the Off transition
-  # (matches `terraform destroy`) -- graceful shutdown is a future
-  # `state.shutdown_mode` attribute.
+  # to power-cycle. Omitting `shutdown_mode` (this example's choice)
+  # uses Hyper-V's hard-power-off behavior on `Running` -> `Off`,
+  # which is always safe and matches `terraform destroy` semantics.
+  # Add `shutdown_mode = "graceful"` to send an ACPI shutdown via
+  # Hyper-V integration services -- only enable that on guests known
+  # to ship and run them (modern Windows, most Linux distros with
+  # hyperv-daemons; Talos and other minimal cloud images may not).
   state = {
     desired = "Running"
   }
@@ -154,7 +158,7 @@ To change `notes`, write a different non-empty value. To remove notes from a VM,
 **Cannot be cleared in-place.** Once `secure_boot` has been set in config and applied, writing `secure_boot = null` (or removing the attribute and re-adding it later) will NOT revert to the host default -- the change isn't forwarded by the partial-update path, the host keeps the previous value, and every subsequent plan shows the same diff. To revert, either explicitly set the desired bool (e.g. `secure_boot = true`) or destroy and recreate the VM.
 - `state` (Attributes) Power-state block. Optional: omit to leave the VM at whatever power state Hyper-V's default applies (Off for newly created VMs). When set, `state.desired` drives transitions and `state.current` surfaces the host's actual state.
 
-**Transitions:** `Off` -> `Running` calls `Start-VM`; `Running` -> `Off` calls `Stop-VM -TurnOff -Force` (hard power-off, matching `terraform destroy` semantics). Graceful shutdown is a future option (will arrive as an additional `state.shutdown_mode` attribute) -- it requires Hyper-V integration services running in the guest, which not all images carry.
+**Transitions:** `Off` -> `Running` calls `Start-VM`; `Running` -> `Off` dispatches based on `state.shutdown_mode` (`turn_off` or omitted calls `Stop-VM -TurnOff -Force` for hard power-off; `graceful` calls `Stop-VM -Force` without `-TurnOff` to send an ACPI shutdown via Hyper-V integration services).
 
 **VM-must-be-Off rule:** scalar updates (`cpu.count`, `memory.startup_bytes`, `secure_boot`) generally require the VM to be `Off`. If `state.desired = "Running"` and a scalar field also changes in the same plan, the cmdlet errors at apply time -- split the change across two applies (transition first, then the scalar update) or set `state.desired = "Off"` for the duration.
 
@@ -242,6 +246,18 @@ Required:
 Optional:
 
 - `desired` (String) Desired power state. `Off` or `Running`. Omit to surface only the current state without managing transitions.
+- `shutdown_mode` (String) How `Running` -> `Off` transitions are performed. Optional. Omit to use Hyper-V's hard-power-off behavior (the same as `terraform destroy` semantics) without managing the attribute. One of:
+
+- `turn_off`: `Stop-VM -TurnOff -Force` -- hard power-off (equivalent to pulling the plug). Always safe; no integration-services dependency.
+- `graceful`: `Stop-VM -Force` (no `-TurnOff`) -- sends an ACPI shutdown signal via Hyper-V integration services and waits for the guest to ack. **Hangs indefinitely on guests without integration services running.** Opt in only when the guest is known to ship and start integration services (modern Windows, most Linux distros with hyperv-daemons).
+
+Ignored on `Off` -> `Running` transitions: `Start-VM` has no graceful analog, and the field is preserved in state for the next stop transition.
+
+**Not applied during `terraform destroy`.** Destroy routes through `remove.ps1`, which always hard-powers-off via `Stop-VM -Force -TurnOff` before `Remove-VM` so a guest with absent integration services can't hang the destroy. Setting `shutdown_mode = "graceful"` to protect in-flight writes only protects planned `Running` -> `Off` transitions; destroy bypasses it. Drive a graceful shutdown out-of-band before running `terraform destroy` if a clean stop matters.
+
+**Omit semantics:** *omitting* `shutdown_mode` from config after a prior apply preserves the existing value via `UseStateForUnknown` (the planned value is unknown, the modifier carries state's value into the plan). Same shape as `notes` and `secure_boot`.
+
+**Explicit `null` semantics differ from `notes` / `secure_boot`.** Unlike those attributes -- which have a host-side value that survives a null write -- `shutdown_mode` has no host backing. Writing `shutdown_mode = null` after a prior `"graceful"` value resets state to null, and the next `Running` -> `Off` transition reverts to `turn_off` (hard power-off) because the wire payload omits the field and the script defaults to turn_off on absent input. To preserve a value across applies, omit the attribute (don't write null); to switch between `"turn_off"` and `"graceful"`, write the desired value explicitly.
 
 Read-Only:
 

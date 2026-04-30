@@ -28,9 +28,9 @@ Describe 'Set-HypervVMState' {
         }
     }
 
-    Context 'transition: Running -> Off' {
+    Context 'transition: Running -> Off (default shutdown_mode = turn_off)' {
 
-        It 'calls Stop-VM -TurnOff -Force (hard power-off semantics)' {
+        It 'calls Stop-VM -TurnOff -Force when ShutdownMode is omitted' {
             Mock Get-VM { New-HypervVMSample -Name 'vm01' -State 'Off' }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
             Mock Get-VMHardDiskDrive { @() }
@@ -44,12 +44,75 @@ Describe 'Set-HypervVMState' {
             }
             Should -Invoke Start-VM -Times 0 -Exactly
         }
+
+        It 'calls Stop-VM -TurnOff -Force when ShutdownMode = "turn_off" explicitly' {
+            Mock Get-VM { New-HypervVMSample -Name 'vm01' -State 'Off' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Start-VM { }
+            Mock Stop-VM  { }
+
+            Set-HypervVMState -Name 'vm01' -Desired 'Off' -ShutdownMode 'turn_off' | Out-Null
+
+            Should -Invoke Stop-VM -Times 1 -Exactly -ParameterFilter {
+                $TurnOff.IsPresent -and $Force.IsPresent
+            }
+        }
+    }
+
+    Context 'transition: Running -> Off (shutdown_mode = graceful)' {
+
+        # Stop-VM -Force without -TurnOff sends the ACPI shutdown signal
+        # via Hyper-V integration services. The cmdlet returns once the
+        # guest acknowledges OR after Hyper-V's internal timeout (no
+        # PS-level timeout knob in PS 5.1). Guests without integration
+        # services hang -- documented at the schema layer.
+
+        It 'calls Stop-VM -Force without -TurnOff (graceful ACPI shutdown)' {
+            Mock Get-VM { New-HypervVMSample -Name 'vm01' -State 'Off' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Start-VM { }
+            Mock Stop-VM  { }
+
+            Set-HypervVMState -Name 'vm01' -Desired 'Off' -ShutdownMode 'graceful' | Out-Null
+
+            Should -Invoke Stop-VM -Times 1 -Exactly -ParameterFilter {
+                -not $TurnOff.IsPresent -and $Force.IsPresent
+            }
+            Should -Invoke Start-VM -Times 0 -Exactly
+        }
+    }
+
+    Context 'transition: Off -> Running ignores ShutdownMode' {
+
+        # ShutdownMode only governs Stop dispatch -- Start-VM has no
+        # analog. Asserted to lock the design: a future graceful-start
+        # would need a separate attribute, not a re-purposed shutdown_mode.
+
+        It 'calls Start-VM regardless of ShutdownMode value' {
+            Mock Get-VM { New-HypervVMSample -Name 'vm01' -State 'Running' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Start-VM { }
+            Mock Stop-VM  { }
+
+            Set-HypervVMState -Name 'vm01' -Desired 'Running' -ShutdownMode 'graceful' | Out-Null
+
+            Should -Invoke Start-VM -Times 1 -Exactly
+            Should -Invoke Stop-VM  -Times 0 -Exactly
+        }
     }
 
     Context 'parameter validation' {
 
         It 'rejects Desired values outside {Off, Running}' {
             { Set-HypervVMState -Name 'vm01' -Desired 'Saved' } |
+                Should -Throw -ExpectedMessage '*does not belong to the set*'
+        }
+
+        It 'rejects ShutdownMode values outside {turn_off, graceful}' {
+            { Set-HypervVMState -Name 'vm01' -Desired 'Off' -ShutdownMode 'kill' } |
                 Should -Throw -ExpectedMessage '*does not belong to the set*'
         }
     }

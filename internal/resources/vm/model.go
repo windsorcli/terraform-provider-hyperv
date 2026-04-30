@@ -156,6 +156,7 @@ type BootOrderEntryModel struct {
 // from those states surfaces verbatim in Current; the next Update
 // will hard-power-off or start as configured.
 type StateModel struct {
-	Desired types.String `tfsdk:"desired"`
-	Current types.String `tfsdk:"current"`
+	Desired      types.String `tfsdk:"desired"`
+	Current      types.String `tfsdk:"current"`
+	ShutdownMode types.String `tfsdk:"shutdown_mode"`
 }
