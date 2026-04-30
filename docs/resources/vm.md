@@ -256,7 +256,9 @@ Ignored on `Off` -> `Running` transitions: `Start-VM` has no graceful analog, an
 
 **Not applied during `terraform destroy`.** Destroy routes through `remove.ps1`, which always hard-powers-off via `Stop-VM -Force -TurnOff` before `Remove-VM` so a guest with absent integration services can't hang the destroy. Setting `shutdown_mode = "graceful"` to protect in-flight writes only protects planned `Running` -> `Off` transitions; destroy bypasses it. Drive a graceful shutdown out-of-band before running `terraform destroy` if a clean stop matters.
 
-**Omit semantics** match `notes` and `secure_boot`: omitting from config after a prior apply preserves the existing value via `UseStateForUnknown`. Writing `shutdown_mode = null` explicitly does NOT clear the prior value -- the change isn't forwarded by the partial-update path. To switch behavior, write a different non-null value.
+**Omit semantics:** *omitting* `shutdown_mode` from config after a prior apply preserves the existing value via `UseStateForUnknown` (the planned value is unknown, the modifier carries state's value into the plan). Same shape as `notes` and `secure_boot`.
+
+**Explicit `null` semantics differ from `notes` / `secure_boot`.** Unlike those attributes -- which have a host-side value that survives a null write -- `shutdown_mode` has no host backing. Writing `shutdown_mode = null` after a prior `"graceful"` value resets state to null, and the next `Running` -> `Off` transition reverts to `turn_off` (hard power-off) because the wire payload omits the field and the script defaults to turn_off on absent input. To preserve a value across applies, omit the attribute (don't write null); to switch between `"turn_off"` and `"graceful"`, write the desired value explicitly.
 
 Read-Only:
 
