@@ -186,31 +186,32 @@ Describe 'Set-HypervVM' {
             }
         }
 
-        It 'fires Set-VMMemory when only min_memory_bytes changes (dynamic-already-enabled flow)' {
-            # User has dynamic=true in state from a prior apply and only
-            # changes min_bytes. memory_bytes / dynamic_memory aren't on
-            # the wire (omitempty). The script must still fire one
-            # Set-VMMemory call so the new min lands.
+        It 'never passes MinimumBytes alone -- requires DynamicMemoryEnabled in the same call' {
+            # Direct-invoker corner case: -MinMemoryBytes supplied but
+            # -DynamicMemory omitted (and no -MemoryBytes either). The
+            # Go-side buildSetInput's fallback prevents this in practice
+            # by always co-sending dynamic_memory whenever min/max
+            # change, but the script's contract is still that
+            # MinimumBytes/MaximumBytes are gated on
+            # DynamicMemoryEnabled being in the splatting hashtable
+            # (otherwise Set-VMMemory rejects the combination).
+            #
+            # The assertion below pins that gate: when only -MinMemoryBytes
+            # arrives, neither MinimumBytes nor DynamicMemoryEnabled
+            # land in the cmdlet call. The script still fires one
+            # Set-VMMemory call (with just -VMName), which is a harmless
+            # no-op on the cmdlet side -- noted as a known corner case
+            # in set.ps1's wire-contract header.
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Set-VMMemory { }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
 
             Set-HypervVM -Name 'vm01' -Generation 2 -MinMemoryBytes 3221225472 | Out-Null
 
-            Should -Invoke Set-VMMemory -Times 0 -Exactly -ParameterFilter {
-                # Without the dynamic_memory flag, the cmdlet path that
-                # carries Min/Max isn't reached -- the script can't safely
-                # send Min/Max without the flag (cmdlet rejects). This
-                # case is properly the responsibility of the Go-side
-                # Update path, which forwards dynamic_memory whenever
-                # any dynamic-related field changes.
+            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
+                -not $PSBoundParameters.ContainsKey('MinimumBytes') -and
+                -not $PSBoundParameters.ContainsKey('DynamicMemoryEnabled')
             }
-            # The call DID fire (one of the no-min/no-max-no-dynamic
-            # branches), so the test instead confirms the script doesn't
-            # silently drop the change. Document the contract: the Go
-            # side always forwards dynamic_memory when Min/Max do, so
-            # this no-flag-just-min case is unreachable in practice.
-            Should -Invoke Set-VMMemory -Times 1 -Exactly
         }
 
         It 'does NOT call Set-VMMemory when no memory field changed' {
