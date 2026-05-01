@@ -3,15 +3,18 @@
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : {
-#                   "name":         "<string>",   # required
-#                   "generation":   1|2,          # required (validation hint
-#                                                 #  for the secure_boot guard)
-#                   "vcpu":         <int>,        # optional, only when changed
-#                   "memory_bytes": <int64>,      # optional
-#                   "secure_boot":  <bool>,       # optional, gen 2 only
-#                   "notes":        "<string>"    # optional
+#                   "name":             "<string>",  # required
+#                   "generation":       1|2,         # required (validation hint
+#                                                    #  for the secure_boot guard)
+#                   "vcpu":             <int>,       # optional, only when changed
+#                   "memory_bytes":     <int64>,     # optional (startup)
+#                   "dynamic_memory":   <bool>,      # optional
+#                   "min_memory_bytes": <int64>,     # optional, only when dynamic_memory=true
+#                   "max_memory_bytes": <int64>,     # optional, only when dynamic_memory=true
+#                   "secure_boot":      <bool>,      # optional, gen 2 only
+#                   "notes":            "<string>"   # optional
 #                 }
-#   stdout JSON : same 10-field shape as get.ps1.
+#   stdout JSON : same shape as get.ps1.
 #
 # Mutability semantics: name and generation are RequiresReplace at the
 # schema layer and never reach this script. Everything else is in-place
@@ -36,6 +39,9 @@ function Set-HypervVM {
         [Parameter(Mandatory)] [int]    $Generation,
         [Nullable[int]]                 $Vcpu,
         [Nullable[int64]]               $MemoryBytes,
+        [Nullable[bool]]                $DynamicMemory,
+        [Nullable[int64]]               $MinMemoryBytes,
+        [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
         [string]                        $Notes
     )
@@ -56,9 +62,31 @@ function Set-HypervVM {
 
     # Only forward what the caller supplied. The Go-side Update sends only
     # changed fields, so each branch is gated on presence.
-    if ($null -ne $MemoryBytes) {
-        Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false `
-            -StartupBytes ([int64] $MemoryBytes) -ErrorAction Stop
+    #
+    # Memory is one Set-VMMemory call that bundles startup + dynamic
+    # toggles + min/max. We fire the call when ANY memory field
+    # changed, so a dynamic-only flip (e.g., min_bytes only) goes
+    # through on its own. When DynamicMemory is unset but MemoryBytes
+    # changed, we lock static (DynamicMemoryEnabled=$false) to
+    # preserve the v2-and-prior behavior; otherwise the cmdlet might
+    # reject StartupBytes against the existing dynamic min/max range.
+    $memChanged = $null -ne $MemoryBytes -or $null -ne $DynamicMemory `
+        -or $null -ne $MinMemoryBytes -or $null -ne $MaxMemoryBytes
+    if ($memChanged) {
+        $memoryArgs = @{ VMName = $Name }
+        if ($null -ne $MemoryBytes) {
+            $memoryArgs.StartupBytes = [int64] $MemoryBytes
+        }
+        if ($null -ne $DynamicMemory) {
+            $memoryArgs.DynamicMemoryEnabled = [bool] $DynamicMemory
+        } elseif ($null -ne $MemoryBytes) {
+            $memoryArgs.DynamicMemoryEnabled = $false
+        }
+        if ($memoryArgs.ContainsKey('DynamicMemoryEnabled') -and $memoryArgs.DynamicMemoryEnabled) {
+            if ($null -ne $MinMemoryBytes) { $memoryArgs.MinimumBytes = [int64] $MinMemoryBytes }
+            if ($null -ne $MaxMemoryBytes) { $memoryArgs.MaximumBytes = [int64] $MaxMemoryBytes }
+        }
+        Set-VMMemory @memoryArgs -ErrorAction Stop
     }
     if ($null -ne $Vcpu) {
         Set-VMProcessor -VMName $Name -Count ([int] $Vcpu) -ErrorAction Stop
@@ -91,6 +119,18 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($params.PSObject.Properties.Name -contains 'memory_bytes' -and
             $null -ne $params.memory_bytes) {
             $callArgs.MemoryBytes = [int64] $params.memory_bytes
+        }
+        if ($params.PSObject.Properties.Name -contains 'dynamic_memory' -and
+            $null -ne $params.dynamic_memory) {
+            $callArgs.DynamicMemory = [bool] $params.dynamic_memory
+        }
+        if ($params.PSObject.Properties.Name -contains 'min_memory_bytes' -and
+            $null -ne $params.min_memory_bytes) {
+            $callArgs.MinMemoryBytes = [int64] $params.min_memory_bytes
+        }
+        if ($params.PSObject.Properties.Name -contains 'max_memory_bytes' -and
+            $null -ne $params.max_memory_bytes) {
+            $callArgs.MaxMemoryBytes = [int64] $params.max_memory_bytes
         }
         if ($params.PSObject.Properties.Name -contains 'secure_boot' -and
             $null -ne $params.secure_boot) {

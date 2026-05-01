@@ -41,7 +41,17 @@ function Set-VMMemory {
     param(
         [string] $VMName,
         [bool]   $DynamicMemoryEnabled,
-        [int64]  $StartupBytes
+        [int64]  $StartupBytes,
+        [int64]  $MinimumBytes,
+        [int64]  $MaximumBytes
+    )
+}
+
+function Get-VMMemory {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [Parameter(Position = 0)] $VM
     )
 }
 
@@ -211,6 +221,28 @@ function New-HypervVMSample {
         State          = $State
         Notes          = $Notes
         Path           = $Path
+    }
+}
+
+# New-HypervVMMemorySample builds a Get-VMMemory-shaped object for use in
+# Mock blocks. The read shape pulls DynamicMemoryEnabled / Minimum /
+# Maximum off this object; tests that exercise the static-only path can
+# leave the defaults (DynamicMemoryEnabled=$false; Hyper-V's default
+# legacy Minimum=512MiB / Maximum=1TiB are preserved on the cmdlet but
+# ignored by the read-back when DynamicMemoryEnabled is false).
+function New-HypervVMMemorySample {
+    [CmdletBinding()]
+    param(
+        [bool]  $DynamicMemoryEnabled = $false,
+        [int64] $Startup               = 4294967296,    # 4 GiB
+        [int64] $Minimum               = 536870912,     # 512 MiB (Hyper-V default)
+        [int64] $Maximum               = 1099511627776  # 1 TiB (Hyper-V default)
+    )
+    [pscustomobject]@{
+        DynamicMemoryEnabled = $DynamicMemoryEnabled
+        Startup              = $Startup
+        Minimum              = $Minimum
+        Maximum              = $Maximum
     }
 }
 

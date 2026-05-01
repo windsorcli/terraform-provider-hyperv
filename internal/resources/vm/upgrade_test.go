@@ -154,7 +154,7 @@ func TestUpgradeV1ToV2_LeavesShutdownModeNull(t *testing.T) {
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
 		CPU:        &CPUModel{Count: types.Int64Value(2)},
-		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		Memory:     &priorMemoryModelV1V2{StartupBytes: types.Int64Value(4294967296)},
 		SecureBoot: types.BoolValue(true),
 		Notes:      types.StringNull(),
 		Path:       types.StringValue("C:/foo"),
@@ -191,7 +191,7 @@ func TestUpgradeV1ToV2_PreservesNullState(t *testing.T) {
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
 		CPU:        &CPUModel{Count: types.Int64Value(2)},
-		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		Memory:     &priorMemoryModelV1V2{StartupBytes: types.Int64Value(4294967296)},
 		SecureBoot: types.BoolNull(),
 		Notes:      types.StringNull(),
 		Path:       types.StringValue("C:/foo"),
@@ -219,5 +219,68 @@ func TestUpgradeStateRegistration_V1Entry(t *testing.T) {
 	}
 	if upgraders[1].StateUpgrader == nil {
 		t.Error("UpgradeState[1].StateUpgrader: got nil, want non-nil migration func")
+	}
+}
+
+// TestUpgradeV2ToV3_AddsDynamicMemoryNullFields locks the v2 -> v3
+// shape change: memory.{dynamic, min_bytes, max_bytes} land null on
+// migration. v2 users never had a chance to choose values; the script's
+// wire contract treats absent dynamic_memory as the static path,
+// preserving on-host behavior.
+func TestUpgradeV2ToV3_AddsDynamicMemoryNullFields(t *testing.T) {
+	prior := priorModelV2{
+		ID:         types.StringValue("vm01"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory: &priorMemoryModelV1V2{
+			StartupBytes: types.Int64Value(4294967296),
+		},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringNull(),
+		Path:       types.StringValue("C:/foo"),
+		State: &StateModel{
+			Desired:      types.StringValue("Running"),
+			Current:      types.StringValue("Running"),
+			ShutdownMode: types.StringNull(),
+		},
+	}
+
+	got := upgradeV2ToV3(prior)
+
+	if got.Memory == nil {
+		t.Fatal("Memory: got nil, want populated v3 block")
+	}
+	if got.Memory.StartupBytes.ValueInt64() != 4294967296 {
+		t.Errorf("StartupBytes: got %d, want 4294967296", got.Memory.StartupBytes.ValueInt64())
+	}
+	if !got.Memory.Dynamic.IsNull() {
+		t.Errorf("Dynamic: got %+v, want null", got.Memory.Dynamic)
+	}
+	if !got.Memory.MinBytes.IsNull() {
+		t.Errorf("MinBytes: got %+v, want null", got.Memory.MinBytes)
+	}
+	if !got.Memory.MaxBytes.IsNull() {
+		t.Errorf("MaxBytes: got %+v, want null", got.Memory.MaxBytes)
+	}
+	// State block carries through unchanged.
+	if got.State == nil || got.State.Desired.ValueString() != "Running" {
+		t.Errorf("State: got %+v, want Desired=Running", got.State)
+	}
+}
+
+// TestUpgradeStateRegistration_V2Entry verifies the v2 upgrader is
+// registered alongside the v0 and v1 ones.
+func TestUpgradeStateRegistration_V2Entry(t *testing.T) {
+	r := &Resource{}
+	upgraders := r.UpgradeState(t.Context())
+	if _, ok := upgraders[2]; !ok {
+		t.Fatalf("UpgradeState: missing v2 upgrader; got versions %+v", keysOf(upgraders))
+	}
+	if upgraders[2].PriorSchema == nil {
+		t.Error("UpgradeState[2].PriorSchema: got nil, want priorSchemaV2()")
+	}
+	if upgraders[2].StateUpgrader == nil {
+		t.Error("UpgradeState[2].StateUpgrader: got nil, want non-nil migration func")
 	}
 }

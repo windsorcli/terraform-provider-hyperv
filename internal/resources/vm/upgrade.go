@@ -82,6 +82,18 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
+		2: {
+			PriorSchema: ptrSchema(priorSchemaV2()),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior priorModelV2
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				upgraded := upgradeV2ToV3(prior)
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
 	}
 }
 
@@ -93,17 +105,24 @@ type priorStateModelV1 struct {
 	Current types.String `tfsdk:"current"`
 }
 
+// priorMemoryModelV1V2 is the shape of the `memory` nested block on v1
+// and v2 (before dynamic / min_bytes / max_bytes were added in v3).
+// Shared between priorModelV1 and priorModelV2.
+type priorMemoryModelV1V2 struct {
+	StartupBytes types.Int64 `tfsdk:"startup_bytes"`
+}
+
 // priorModelV1 mirrors the v1 Model. Identical to the current Model
-// except StateModel lacks shutdown_mode (the only v1 -> v2 change).
-// Carrying a separate type keeps the framework's tfsdk decoder happy
-// when it materializes a v1 state file: the current Model has a
-// shutdown_mode field that the v1 file won't have on disk.
+// except StateModel lacks shutdown_mode and MemoryModel lacks the
+// dynamic-memory fields. Carrying separate types keeps the framework's
+// tfsdk decoder happy when it materializes a v1 state file: the current
+// Model has fields the v1 file won't have on disk.
 type priorModelV1 struct {
 	ID              types.String          `tfsdk:"id"`
 	Name            types.String          `tfsdk:"name"`
 	Generation      types.Int64           `tfsdk:"generation"`
 	CPU             *CPUModel             `tfsdk:"cpu"`
-	Memory          *MemoryModel          `tfsdk:"memory"`
+	Memory          *priorMemoryModelV1V2 `tfsdk:"memory"`
 	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
 	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
 	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
@@ -111,6 +130,27 @@ type priorModelV1 struct {
 	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
 	Notes           types.String          `tfsdk:"notes"`
 	State           *priorStateModelV1    `tfsdk:"state"`
+	IPAddresses     types.List            `tfsdk:"ip_addresses"`
+	Path            types.String          `tfsdk:"path"`
+}
+
+// priorModelV2 mirrors the v2 Model. Identical to the current Model
+// except MemoryModel lacks the dynamic-memory fields (the only v2 ->
+// v3 change). State carries shutdown_mode (added in v2) so the
+// current StateModel works.
+type priorModelV2 struct {
+	ID              types.String          `tfsdk:"id"`
+	Name            types.String          `tfsdk:"name"`
+	Generation      types.Int64           `tfsdk:"generation"`
+	CPU             *CPUModel             `tfsdk:"cpu"`
+	Memory          *priorMemoryModelV1V2 `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
+	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
+	Notes           types.String          `tfsdk:"notes"`
+	State           *StateModel           `tfsdk:"state"`
 	IPAddresses     types.List            `tfsdk:"ip_addresses"`
 	Path            types.String          `tfsdk:"path"`
 }
@@ -204,6 +244,94 @@ func priorSchemaV1() schema.Schema {
 	}
 }
 
+// priorSchemaV2 mirrors the v2 schema's structural shape: the v1 shape
+// plus the v2-only state.shutdown_mode field. Memory still has only
+// startup_bytes -- dynamic / min_bytes / max_bytes are the v3 addition.
+//
+// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
+// the v3-only memory.{dynamic, min_bytes, max_bytes} additions. Same
+// "structural-only" rule as priorSchemaV1.
+func priorSchemaV2() schema.Schema {
+	return schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id":         schema.StringAttribute{Computed: true},
+			"name":       schema.StringAttribute{Required: true},
+			"generation": schema.Int64Attribute{Required: true},
+			"cpu": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"count": schema.Int64Attribute{Required: true},
+				},
+			},
+			"memory": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"startup_bytes": schema.Int64Attribute{Required: true},
+				},
+			},
+			"hard_disk_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"path":                schema.StringAttribute{CustomType: pathtype.Type, Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"network_adapter": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name":        schema.StringAttribute{Required: true},
+						"switch_name": schema.StringAttribute{Required: true},
+					},
+				},
+			},
+			"dvd_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"iso_path":            schema.StringAttribute{CustomType: pathtype.Type, Optional: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"boot_order": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type":                schema.StringAttribute{Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Optional: true, Computed: true},
+						"controller_location": schema.Int64Attribute{Optional: true, Computed: true},
+						"name":                schema.StringAttribute{Optional: true, Computed: true},
+					},
+				},
+			},
+			"secure_boot": schema.BoolAttribute{Optional: true, Computed: true},
+			"notes":       schema.StringAttribute{Optional: true, Computed: true},
+			"state": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"desired":       schema.StringAttribute{Optional: true},
+					"current":       schema.StringAttribute{Computed: true},
+					"shutdown_mode": schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+			"path":         schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
 // upgradeV1ToV2 maps a v1 state struct into the v2 Model. The only
 // shape change is state.shutdown_mode being added; v1 state values
 // migrate with ShutdownMode left null because v1 users never had
@@ -227,7 +355,7 @@ func upgradeV1ToV2(prior priorModelV1) Model {
 		Name:            prior.Name,
 		Generation:      prior.Generation,
 		CPU:             prior.CPU,
-		Memory:          prior.Memory,
+		Memory:          expandPriorMemoryV1V2(prior.Memory),
 		HardDiskDrives:  prior.HardDiskDrives,
 		NetworkAdapters: prior.NetworkAdapters,
 		DvdDrives:       prior.DvdDrives,
@@ -235,6 +363,47 @@ func upgradeV1ToV2(prior priorModelV1) Model {
 		SecureBoot:      prior.SecureBoot,
 		Notes:           prior.Notes,
 		State:           state,
+		IPAddresses:     prior.IPAddresses,
+		Path:            prior.Path,
+	}
+}
+
+// expandPriorMemoryV1V2 maps the v1/v2 memory shape into the v3 model.
+// v1/v2 had only StartupBytes; v3 adds dynamic / min_bytes / max_bytes.
+// The new fields land null because pre-v3 users never had a chance to
+// choose values, and the script's wire contract treats absent
+// dynamic_memory as static (matches v1/v2 on-host behavior).
+func expandPriorMemoryV1V2(prior *priorMemoryModelV1V2) *MemoryModel {
+	if prior == nil {
+		return nil
+	}
+	return &MemoryModel{
+		StartupBytes: prior.StartupBytes,
+		Dynamic:      types.BoolNull(),
+		MinBytes:     types.Int64Null(),
+		MaxBytes:     types.Int64Null(),
+	}
+}
+
+// upgradeV2ToV3 maps a v2 state struct into the v3 Model. The only
+// shape change is memory.{dynamic, min_bytes, max_bytes} being added;
+// v2 state values migrate with the new fields null because v2 users
+// never had a chance to choose values, and absent dynamic_memory on
+// the wire is the same on-host behavior as v2.
+func upgradeV2ToV3(prior priorModelV2) Model {
+	return Model{
+		ID:              prior.ID,
+		Name:            prior.Name,
+		Generation:      prior.Generation,
+		CPU:             prior.CPU,
+		Memory:          expandPriorMemoryV1V2(prior.Memory),
+		HardDiskDrives:  prior.HardDiskDrives,
+		NetworkAdapters: prior.NetworkAdapters,
+		DvdDrives:       prior.DvdDrives,
+		BootOrder:       prior.BootOrder,
+		SecureBoot:      prior.SecureBoot,
+		Notes:           prior.Notes,
+		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
 		Path:            prior.Path,
 	}

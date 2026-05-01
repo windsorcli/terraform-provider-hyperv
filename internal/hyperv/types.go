@@ -133,20 +133,23 @@ type NewVHDDifferencingInput struct {
 // shape even when nothing is attached, so a freshly-created VM with
 // no attachments round-trips as "[]" rather than null.
 type VM struct {
-	Name                string           `json:"Name"`
-	ID                  string           `json:"Id"`
-	Generation          int              `json:"Generation"`
-	ProcessorCount      int              `json:"ProcessorCount"`
-	MemoryStartupBytes  int64            `json:"MemoryStartupBytes"`
-	MemoryAssignedBytes int64            `json:"MemoryAssignedBytes"`
-	State               string           `json:"State"`
-	Notes               string           `json:"Notes"`
-	Path                string           `json:"Path"`
-	SecureBootEnabled   *bool            `json:"SecureBootEnabled"`
-	HardDiskDrives      []HardDiskDrive  `json:"HardDiskDrives"`
-	NetworkAdapters     []NetworkAdapter `json:"NetworkAdapters"`
-	DvdDrives           []DvdDrive       `json:"DvdDrives"`
-	BootOrder           []BootOrderEntry `json:"BootOrder"`
+	Name                 string           `json:"Name"`
+	ID                   string           `json:"Id"`
+	Generation           int              `json:"Generation"`
+	ProcessorCount       int              `json:"ProcessorCount"`
+	MemoryStartupBytes   int64            `json:"MemoryStartupBytes"`
+	MemoryAssignedBytes  int64            `json:"MemoryAssignedBytes"`
+	MemoryDynamicEnabled bool             `json:"MemoryDynamicEnabled"`
+	MemoryMinimumBytes   *int64           `json:"MemoryMinimumBytes"`
+	MemoryMaximumBytes   *int64           `json:"MemoryMaximumBytes"`
+	State                string           `json:"State"`
+	Notes                string           `json:"Notes"`
+	Path                 string           `json:"Path"`
+	SecureBootEnabled    *bool            `json:"SecureBootEnabled"`
+	HardDiskDrives       []HardDiskDrive  `json:"HardDiskDrives"`
+	NetworkAdapters      []NetworkAdapter `json:"NetworkAdapters"`
+	DvdDrives            []DvdDrive       `json:"DvdDrives"`
+	BootOrder            []BootOrderEntry `json:"BootOrder"`
 }
 
 // BootOrderEntry is the per-entry shape vm/get.ps1 emits inside
@@ -301,18 +304,29 @@ type DetachHardDiskInput struct {
 
 // NewVMInput is the stdin JSON shape for vm/new.ps1.
 //
-// Required fields: Name, Generation, Vcpu, MemoryBytes. Optionals use
-// pointer types so missing-vs-explicit-false round-trips correctly through
-// the wire contract: the entry block in new.ps1 treats absent keys and
-// explicit null as equivalent (both skip the corresponding Set-*), so
-// omitempty + nil pointer yields the "use cmdlet default" behavior.
+// Required fields: Name, Generation, Vcpu, MemoryBytes (startup).
+// Optionals use pointer types so missing-vs-explicit-false round-trips
+// correctly through the wire contract: the entry block in new.ps1 treats
+// absent keys and explicit null as equivalent (both skip the corresponding
+// Set-*), so omitempty + nil pointer yields the "use cmdlet default"
+// behavior.
+//
+// Dynamic memory: DynamicMemory opts in to Hyper-V's dynamic memory mode.
+// MinMemoryBytes / MaxMemoryBytes are the minimum and maximum bounds and
+// are only meaningful when DynamicMemory is true (the script gates
+// forwarding accordingly). When DynamicMemory is nil, the script defaults
+// to static memory (DynamicMemoryEnabled=$false), preserving the v2-and-
+// prior behavior for callers that don't manage dynamic memory.
 type NewVMInput struct {
-	Name        string  `json:"name"`
-	Generation  int     `json:"generation"`
-	Vcpu        int     `json:"vcpu"`
-	MemoryBytes int64   `json:"memory_bytes"`
-	SecureBoot  *bool   `json:"secure_boot,omitempty"`
-	Notes       *string `json:"notes,omitempty"`
+	Name           string  `json:"name"`
+	Generation     int     `json:"generation"`
+	Vcpu           int     `json:"vcpu"`
+	MemoryBytes    int64   `json:"memory_bytes"`
+	DynamicMemory  *bool   `json:"dynamic_memory,omitempty"`
+	MinMemoryBytes *int64  `json:"min_memory_bytes,omitempty"`
+	MaxMemoryBytes *int64  `json:"max_memory_bytes,omitempty"`
+	SecureBoot     *bool   `json:"secure_boot,omitempty"`
+	Notes          *string `json:"notes,omitempty"`
 }
 
 // SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.
@@ -349,10 +363,13 @@ type SetVMStateInput struct {
 //     Update path; it's a validation hint for set.ps1's gen-2-only
 //     SecureBoot guard, not a mutation.
 type SetVMInput struct {
-	Name        string  `json:"name"`
-	Generation  int     `json:"generation"`
-	Vcpu        *int    `json:"vcpu,omitempty"`
-	MemoryBytes *int64  `json:"memory_bytes,omitempty"`
-	SecureBoot  *bool   `json:"secure_boot,omitempty"`
-	Notes       *string `json:"notes,omitempty"`
+	Name           string  `json:"name"`
+	Generation     int     `json:"generation"`
+	Vcpu           *int    `json:"vcpu,omitempty"`
+	MemoryBytes    *int64  `json:"memory_bytes,omitempty"`
+	DynamicMemory  *bool   `json:"dynamic_memory,omitempty"`
+	MinMemoryBytes *int64  `json:"min_memory_bytes,omitempty"`
+	MaxMemoryBytes *int64  `json:"max_memory_bytes,omitempty"`
+	SecureBoot     *bool   `json:"secure_boot,omitempty"`
+	Notes          *string `json:"notes,omitempty"`
 }

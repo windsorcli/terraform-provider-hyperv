@@ -3,23 +3,27 @@
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : {
-#                   "name":         "<string>",        # required
-#                   "generation":   1|2,               # required
-#                   "vcpu":         <int>,             # required
-#                   "memory_bytes": <int64>,           # required
-#                   "secure_boot":  <bool>,            # optional, gen 2 only
-#                   "notes":        "<string>"         # optional
+#                   "name":             "<string>",   # required
+#                   "generation":       1|2,          # required
+#                   "vcpu":             <int>,        # required
+#                   "memory_bytes":     <int64>,      # required (startup)
+#                   "dynamic_memory":   <bool>,       # optional; locks static when false/omitted
+#                   "min_memory_bytes": <int64>,      # optional, only when dynamic_memory=true
+#                   "max_memory_bytes": <int64>,      # optional, only when dynamic_memory=true
+#                   "secure_boot":      <bool>,       # optional, gen 2 only
+#                   "notes":            "<string>"    # optional
 #                 }
-#   stdout JSON : same 10-field shape as get.ps1.
+#   stdout JSON : same shape as get.ps1.
 #
 # Sequence: New-VM (with -NoVHD so we don't auto-attach storage; the
 # BootDevice enum on this Hyper-V module has no "None" value, so we
 # simply omit -BootDevice and let Hyper-V's default apply -- the VM has
 # nothing to boot from until storage is attached separately, which is
-# expected for the minimal slice), Set-VMMemory (with DynamicMemoryEnabled
-# =false to lock static), Set-VMProcessor, Set-VMFirmware (gen 2 +
-# secure_boot only), Set-VM Notes. Each Set-* is its own cmdlet call --
-# New-VM doesn't accept all of these in one shot.
+# expected for the minimal slice), Set-VMMemory (DynamicMemoryEnabled
+# defaults to false to lock static; the optional dynamic_memory wire
+# field opts in to dynamic with min/max), Set-VMProcessor, Set-VMFirmware
+# (gen 2 + secure_boot only), Set-VM Notes. Each Set-* is its own cmdlet
+# call -- New-VM doesn't accept all of these in one shot.
 
 
 # New-HypervVM creates a VM and applies the post-create Set-* tail. -NoVHD
@@ -34,6 +38,9 @@ function New-HypervVM {
         [Parameter(Mandatory)] [int]    $Generation,
         [Parameter(Mandatory)] [int]    $Vcpu,
         [Parameter(Mandatory)] [int64]  $MemoryBytes,
+        [Nullable[bool]]                $DynamicMemory,
+        [Nullable[int64]]               $MinMemoryBytes,
+        [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
         [string]                        $Notes
     )
@@ -67,12 +74,23 @@ function New-HypervVM {
     # cleanup itself fails the worst case is the same orphan we'd have
     # had without the guard, so no regression.
     try {
-        # DynamicMemoryEnabled=$false MUST land in the same call as
-        # StartupBytes; otherwise the cmdlet rejects the StartupBytes
-        # value as out-of-range against the (still-default) dynamic
-        # min/max.
-        Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false `
-            -StartupBytes $MemoryBytes -ErrorAction Stop
+        # DynamicMemoryEnabled MUST land in the same call as
+        # StartupBytes; otherwise the cmdlet rejects StartupBytes as
+        # out-of-range against the existing dynamic min/max. When the
+        # user opts into dynamic, StartupBytes also has to fall inside
+        # [MinimumBytes, MaximumBytes] -- the cmdlet's clear error
+        # passes through as ErrPSExecution if the resource-layer
+        # validators didn't catch it at plan time.
+        $memoryArgs = @{
+            VMName               = $Name
+            StartupBytes         = $MemoryBytes
+            DynamicMemoryEnabled = if ($null -ne $DynamicMemory) { [bool] $DynamicMemory } else { $false }
+        }
+        if ($memoryArgs.DynamicMemoryEnabled) {
+            if ($null -ne $MinMemoryBytes) { $memoryArgs.MinimumBytes = [int64] $MinMemoryBytes }
+            if ($null -ne $MaxMemoryBytes) { $memoryArgs.MaximumBytes = [int64] $MaxMemoryBytes }
+        }
+        Set-VMMemory @memoryArgs -ErrorAction Stop
 
         Set-VMProcessor -VMName $Name -Count $Vcpu -ErrorAction Stop
 
@@ -125,6 +143,18 @@ if ($MyInvocation.InvocationName -ne '.') {
             Generation  = [int] $params.generation
             Vcpu        = [int] $params.vcpu
             MemoryBytes = [int64] $params.memory_bytes
+        }
+        if ($params.PSObject.Properties.Name -contains 'dynamic_memory' -and
+            $null -ne $params.dynamic_memory) {
+            $callArgs.DynamicMemory = [bool] $params.dynamic_memory
+        }
+        if ($params.PSObject.Properties.Name -contains 'min_memory_bytes' -and
+            $null -ne $params.min_memory_bytes) {
+            $callArgs.MinMemoryBytes = [int64] $params.min_memory_bytes
+        }
+        if ($params.PSObject.Properties.Name -contains 'max_memory_bytes' -and
+            $null -ne $params.max_memory_bytes) {
+            $callArgs.MaxMemoryBytes = [int64] $params.max_memory_bytes
         }
         if ($params.PSObject.Properties.Name -contains 'secure_boot' -and
             $null -ne $params.secure_boot) {

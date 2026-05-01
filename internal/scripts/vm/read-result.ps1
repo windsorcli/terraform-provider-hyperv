@@ -123,20 +123,35 @@ function Read-HypervVMResult {
                 @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
                 @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
     )
+    # Memory dynamic fields come from Get-VMMemory -- the Get-VM object
+    # only exposes MemoryStartup / MemoryAssigned, not
+    # DynamicMemoryEnabled / Minimum / Maximum. When dynamic is off the
+    # host still stores Minimum / Maximum (Hyper-V's defaults: 512MiB
+    # min, 1TiB max), but the values aren't in effect, so we surface
+    # null on the wire to keep state honest about what's actually
+    # being managed. The Go decode into *int64 handles null cleanly.
+    $mem = Get-VMMemory -VMName $Vm.Name -ErrorAction Stop
+    $memoryDynamicEnabled = [bool] $mem.DynamicMemoryEnabled
+    $memoryMinimumBytes   = if ($memoryDynamicEnabled) { [int64] $mem.Minimum } else { $null }
+    $memoryMaximumBytes   = if ($memoryDynamicEnabled) { [int64] $mem.Maximum } else { $null }
+
     [pscustomobject]@{
-        Name                = $Vm.Name
-        Id                  = $Vm.Id.ToString()
-        Generation          = [int] $Vm.Generation
-        ProcessorCount      = [int] $Vm.ProcessorCount
-        MemoryStartupBytes  = [int64] $Vm.MemoryStartup
-        MemoryAssignedBytes = [int64] $Vm.MemoryAssigned
-        State               = $Vm.State.ToString()
-        Notes               = $Vm.Notes
-        Path                = $Vm.Path
-        SecureBootEnabled   = $secureBoot
-        HardDiskDrives      = $hdds
-        NetworkAdapters     = $nics
-        DvdDrives           = $dvds
-        BootOrder           = $bootOrder
+        Name                 = $Vm.Name
+        Id                   = $Vm.Id.ToString()
+        Generation           = [int] $Vm.Generation
+        ProcessorCount       = [int] $Vm.ProcessorCount
+        MemoryStartupBytes   = [int64] $Vm.MemoryStartup
+        MemoryAssignedBytes  = [int64] $Vm.MemoryAssigned
+        MemoryDynamicEnabled = $memoryDynamicEnabled
+        MemoryMinimumBytes   = $memoryMinimumBytes
+        MemoryMaximumBytes   = $memoryMaximumBytes
+        State                = $Vm.State.ToString()
+        Notes                = $Vm.Notes
+        Path                 = $Vm.Path
+        SecureBootEnabled    = $secureBoot
+        HardDiskDrives       = $hdds
+        NetworkAdapters      = $nics
+        DvdDrives            = $dvds
+        BootOrder            = $bootOrder
     } | Write-HypervResult
 }

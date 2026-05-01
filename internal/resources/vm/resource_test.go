@@ -246,8 +246,8 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 3 {
-		t.Fatalf("got %d ConfigValidators, want 3 (secure_boot rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1)", len(got))
+	if len(got) != 4 {
+		t.Fatalf("got %d ConfigValidators, want 4 (secure_boot rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1, dynamic memory bounds)", len(got))
 	}
 }
 

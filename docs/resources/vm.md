@@ -108,7 +108,9 @@ resource "hyperv_vm" "legacy" {
 
 - `cpu` (Attributes) Virtual processor configuration. Static count only in this slice; dynamic-CPU attributes (`weight`, `reserve`, `limit`) attach to this same block in a follow-up. (see [below for nested schema](#nestedatt--cpu))
 - `generation` (Number) VM generation. `1` (BIOS, legacy boot, IDE/VHD) or `2` (UEFI, Secure Boot capable, SCSI/VHDX). **Forces replacement** -- Hyper-V cannot convert a VM from one generation to another.
-- `memory` (Attributes) Memory configuration. **Static memory only** in this slice (`Set-VMMemory -DynamicMemoryEnabled $false`); dynamic memory (`min_bytes`, `max_bytes`, optional `buffer` and `priority`) attaches to this same block in a follow-up. (see [below for nested schema](#nestedatt--memory))
+- `memory` (Attributes) Memory configuration. `startup_bytes` is the only required field; `dynamic` opts in to Hyper-V's dynamic memory mode and unlocks `min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set `dynamic = false`) for the static-memory path that always-safe and matches the v2-and-prior behavior.
+
+**`buffer` and `priority`** are deferred to a follow-up -- they're advanced dynamic-memory tuning knobs (memory pressure buffer percentage and balancer priority) that most users don't need. (see [below for nested schema](#nestedatt--memory))
 - `name` (String) VM name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a VM in place.
 
 ### Optional
@@ -185,7 +187,19 @@ Required:
 
 Required:
 
-- `startup_bytes` (Number) Static memory size in bytes (e.g. `4294967296` for 4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; the VM generally must be `Off`.
+- `startup_bytes` (Number) Memory size in bytes the VM boots with (e.g. `4294967296` for 4 GiB). When `dynamic = false` (or omitted), this is also the fixed memory size. When `dynamic = true`, `startup_bytes` must fall within `[min_bytes, max_bytes]` -- the cmdlet errors otherwise. In-place updatable via `Set-VMMemory -StartupBytes`; the VM generally must be `Off`.
+
+Optional:
+
+- `dynamic` (Boolean) Whether Hyper-V dynamic memory is enabled. Optional. Omit (or set `false`) for the static-memory default. When `true`, the cmdlet uses `min_bytes` / `max_bytes` if supplied, else Hyper-V's defaults (Minimum = 512 MiB, Maximum = 1 TiB).
+
+**Omit semantics** match `notes` / `secure_boot` / `state.shutdown_mode`: omitting from config after a prior apply preserves the existing value via `UseStateForUnknown`. Writing `dynamic = null` explicitly resets state to null and the next memory mutation reverts to the static-memory default; to switch behavior, write `true` or `false` explicitly.
+- `max_bytes` (Number) Upper bound (in bytes) for Hyper-V's dynamic memory mode. **Only valid when `dynamic = true`** -- a config validator rejects `max_bytes` set with `dynamic` unset or false at plan time. Must be >= `startup_bytes` (the cmdlet rejects the call otherwise).
+
+Same omit-preserves semantic as `dynamic`. Read-back surfaces null when `dynamic` is false on the host -- the host still stores Hyper-V's defaults (1 TiB) but they aren't in effect.
+- `min_bytes` (Number) Lower bound (in bytes) for Hyper-V's dynamic memory mode. **Only valid when `dynamic = true`** -- a config validator rejects `min_bytes` set with `dynamic` unset or false at plan time. Must be <= `startup_bytes` (the cmdlet rejects the call otherwise).
+
+Same omit-preserves semantic as `dynamic`. Read-back surfaces null when `dynamic` is false on the host -- the host still stores Hyper-V's defaults (512 MiB) but they aren't in effect.
 
 
 <a id="nestedatt--boot_order"></a>

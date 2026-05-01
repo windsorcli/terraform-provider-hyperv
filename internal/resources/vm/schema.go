@@ -89,15 +89,17 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 //	v2: state.shutdown_mode added (Optional+Computed, no Default;
 //	    UseStateForUnknown plan modifier preserves the prior value when
 //	    the user omits the attribute, matching notes / secure_boot).
-//	    Adding a field to a SingleNestedAttribute changes the nested
-//	    object's tftype, so v1 state files are bridged by a v1->v2
-//	    upgrader in upgrade.go that fills shutdown_mode with null --
-//	    v1 users never had a chance to choose a value, and the script's
-//	    wire contract treats absent shutdown_mode as turn_off (same
-//	    on-host behavior as v1).
+//	v3: memory.dynamic / memory.min_bytes / memory.max_bytes added
+//	    (Optional+Computed, no Default; same omit-preserves shape as
+//	    state.shutdown_mode). Adding fields to a SingleNestedAttribute
+//	    changes the nested object's tftype, so v2 state files are
+//	    bridged by a v2->v3 upgrader in upgrade.go that fills the new
+//	    fields with null -- v2 users never had a chance to choose
+//	    values, and the script's wire contract treats absent
+//	    dynamic_memory as static (same on-host behavior as v2).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		Version: 2,
+		Version: 3,
 		MarkdownDescription: "Manages a Hyper-V virtual machine. Ships with " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), " +
 			"`notes`, inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and " +
@@ -163,16 +165,68 @@ func resourceSchema() schema.Schema {
 			},
 			"memory": schema.SingleNestedAttribute{
 				Required: true,
-				MarkdownDescription: "Memory configuration. **Static memory only** in this slice " +
-					"(`Set-VMMemory -DynamicMemoryEnabled $false`); dynamic memory (`min_bytes`, " +
-					"`max_bytes`, optional `buffer` and `priority`) attaches to this same block in " +
-					"a follow-up.",
+				MarkdownDescription: "Memory configuration. `startup_bytes` is the only required " +
+					"field; `dynamic` opts in to Hyper-V's dynamic memory mode and unlocks " +
+					"`min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set " +
+					"`dynamic = false`) for the static-memory path that always-safe and matches " +
+					"the v2-and-prior behavior.\n\n" +
+					"**`buffer` and `priority`** are deferred to a follow-up -- they're advanced " +
+					"dynamic-memory tuning knobs (memory pressure buffer percentage and balancer " +
+					"priority) that most users don't need.",
 				Attributes: map[string]schema.Attribute{
 					"startup_bytes": schema.Int64Attribute{
 						Required: true,
-						MarkdownDescription: "Static memory size in bytes (e.g. `4294967296` for " +
-							"4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with " +
-							"`DynamicMemoryEnabled=$false`; the VM generally must be `Off`.",
+						MarkdownDescription: "Memory size in bytes the VM boots with " +
+							"(e.g. `4294967296` for 4 GiB). When `dynamic = false` (or omitted), " +
+							"this is also the fixed memory size. When `dynamic = true`, " +
+							"`startup_bytes` must fall within `[min_bytes, max_bytes]` -- the " +
+							"cmdlet errors otherwise. In-place updatable via " +
+							"`Set-VMMemory -StartupBytes`; the VM generally must be `Off`.",
+					},
+					"dynamic": schema.BoolAttribute{
+						Optional: true,
+						Computed: true,
+						MarkdownDescription: "Whether Hyper-V dynamic memory is enabled. Optional. " +
+							"Omit (or set `false`) for the static-memory default. When `true`, " +
+							"the cmdlet uses `min_bytes` / `max_bytes` if supplied, else " +
+							"Hyper-V's defaults (Minimum = 512 MiB, Maximum = 1 TiB).\n\n" +
+							"**Omit semantics** match `notes` / `secure_boot` / " +
+							"`state.shutdown_mode`: omitting from config after a prior apply " +
+							"preserves the existing value via `UseStateForUnknown`. Writing " +
+							"`dynamic = null` explicitly resets state to null and the next memory " +
+							"mutation reverts to the static-memory default; to switch behavior, " +
+							"write `true` or `false` explicitly.",
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"min_bytes": schema.Int64Attribute{
+						Optional: true,
+						Computed: true,
+						MarkdownDescription: "Lower bound (in bytes) for Hyper-V's dynamic memory " +
+							"mode. **Only valid when `dynamic = true`** -- a config validator " +
+							"rejects `min_bytes` set with `dynamic` unset or false at plan time. " +
+							"Must be <= `startup_bytes` (the cmdlet rejects the call otherwise).\n\n" +
+							"Read-back surfaces null when `dynamic` is false on the host (the " +
+							"host still stores Hyper-V's default of 512 MiB but it isn't in " +
+							"effect). **No `UseStateForUnknown` plan modifier**: a plan that " +
+							"flips `dynamic` to false must show `min_bytes` becoming null " +
+							"otherwise the framework's post-apply consistency check rejects " +
+							"the apply. Trade-off: plans show `min_bytes = (known after apply)` " +
+							"whenever the block is in scope and the attribute is omitted, even " +
+							"on no-op apply turns.",
+					},
+					"max_bytes": schema.Int64Attribute{
+						Optional: true,
+						Computed: true,
+						MarkdownDescription: "Upper bound (in bytes) for Hyper-V's dynamic memory " +
+							"mode. **Only valid when `dynamic = true`** -- a config validator " +
+							"rejects `max_bytes` set with `dynamic` unset or false at plan time. " +
+							"Must be >= `startup_bytes` (the cmdlet rejects the call otherwise).\n\n" +
+							"Read-back surfaces null when `dynamic` is false on the host. **No " +
+							"`UseStateForUnknown`** -- same rationale as `min_bytes`. Trade-off: " +
+							"plans show `max_bytes = (known after apply)` whenever the block is " +
+							"in scope and the attribute is omitted.",
 					},
 				},
 			},
