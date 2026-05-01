@@ -879,7 +879,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 			{
 				// Step 1: static memory, dynamic omitted -> state shows
 				// dynamic=false (read from host) and null min/max.
-				Config: vmDynamicMemoryConfig(name, "", 0, 0),
+				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "", 0, 0),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
@@ -902,7 +902,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				// Step 2: opt in to dynamic memory with explicit bounds.
 				// startup_bytes (256 MiB) must fall inside [min, max] --
 				// 128 MiB / 512 MiB brackets it.
-				Config: vmDynamicMemoryConfig(name, "true", 134217728, 536870912),
+				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "true", 134217728, 536870912),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
@@ -922,9 +922,31 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: bump min_bytes (still <= startup_bytes). Pins
+				// Step 3 (regression for #36 review): bump startup_bytes
+				// only (256 -> 384 MiB) on a dynamic-enabled VM, leaving
+				// dynamic / min / max unchanged. Without buildSetInput's
+				// MemoryBytes co-forwarding guard, the script-side "lock
+				// static" elseif would fire (DynamicMemoryEnabled = $false)
+				// and silently flip the VM to static memory; the next plan
+				// would detect drift back. dynamic must stay true.
+				Config: vmDynamicMemoryConfig(name, 402653184, "true", 134217728, 536870912),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("startup_bytes"),
+						knownvalue.Int64Exact(402653184),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("dynamic"),
+						knownvalue.Bool(true),
+					),
+				},
+			},
+			{
+				// Step 4: bump min_bytes (still <= startup_bytes). Pins
 				// in-place mutation without RequiresReplace.
-				Config: vmDynamicMemoryConfig(name, "true", 209715200, 536870912),
+				Config: vmDynamicMemoryConfig(name, 402653184, "true", 209715200, 536870912),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
@@ -934,11 +956,11 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 4: flip dynamic = false. min/max go null on
+				// Step 5: flip dynamic = false. min/max go null on
 				// read-back (the host still stores them but they're not
 				// in effect, and the script's wire emission gates them
 				// on dynamic=true).
-				Config: vmDynamicMemoryConfig(name, "false", 0, 0),
+				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "false", 0, 0),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
@@ -959,9 +981,10 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 // vmDynamicMemoryConfig is the HCL template for
 // TestAcc_VM_dynamicMemoryRoundTrip. dynamic="" omits the attribute
 // entirely (the "don't manage" path); minB/maxB == 0 omit those too.
-// startup_bytes is fixed at vmMinimumMemoryBytes for every step --
-// only the dynamic-memory toggles change between steps.
-func vmDynamicMemoryConfig(vmName string, dynamic string, minB, maxB int64) string {
+// startupBytes varies between steps so the regression test for the
+// startup-only-change path on a dynamic VM can exercise that code
+// path without having to re-flip dynamic in the same step.
+func vmDynamicMemoryConfig(vmName string, startupBytes int64, dynamic string, minB, maxB int64) string {
 	dynamicLine := ""
 	if dynamic != "" {
 		dynamicLine = fmt.Sprintf("    dynamic = %s\n", dynamic)
@@ -983,5 +1006,5 @@ resource "hyperv_vm" "test" {
     startup_bytes = %d
 %s%s%s  }
 }
-`, vmName, vmMinimumMemoryBytes, dynamicLine, minLine, maxLine)
+`, vmName, startupBytes, dynamicLine, minLine, maxLine)
 }

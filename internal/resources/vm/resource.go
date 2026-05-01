@@ -825,14 +825,22 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		v := plan.Memory.MaxBytes.ValueInt64()
 		in.MaxMemoryBytes = &v
 	}
-	// If any dynamic-memory field changed but the dynamic flag itself
-	// didn't, still forward the current dynamic flag so the script has
-	// full context. Set-VMMemory's Min/Max parameters require
-	// DynamicMemoryEnabled to be specified in the same call when min/
-	// max are present; the script gates Min/Max forwarding on the flag
-	// being in the splatting hashtable.
+	// If ANY memory field changed but the dynamic flag itself didn't,
+	// still forward the current dynamic flag so the script has full
+	// context. Two reasons:
+	//
+	//   1. Set-VMMemory's Min/Max parameters require DynamicMemoryEnabled
+	//      to be specified in the same call when min/max are present;
+	//      the script gates Min/Max forwarding on the flag being in the
+	//      splatting hashtable.
+	//   2. When ONLY startup_bytes changes on a VM the user has set
+	//      `dynamic = true`, omitting dynamic_memory from the wire would
+	//      let set.ps1's "lock static" elseif fire (DynamicMemoryEnabled
+	//      = $false), silently flipping the VM to static memory. Keep
+	//      the dynamic flag pinned through any memory mutation so the
+	//      script keeps the user's mode.
 	if in.DynamicMemory == nil &&
-		(in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil) &&
+		(in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil || in.MemoryBytes != nil) &&
 		!plan.Memory.Dynamic.IsNull() && !plan.Memory.Dynamic.IsUnknown() {
 		v := plan.Memory.Dynamic.ValueBool()
 		in.DynamicMemory = &v
