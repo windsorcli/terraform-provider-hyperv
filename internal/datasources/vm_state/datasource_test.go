@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
@@ -162,15 +163,23 @@ func TestReadVMState_FlattenIPAddresses(t *testing.T) {
 		t.Fatalf("IPAddresses len = %d, want 3", l)
 	}
 	// Order matters -- per-NIC then per-IP within a NIC, NICs in cmdlet
-	// order. A regression that lex-sorts would surface here.
+	// order. A regression that lex-sorts would surface here. Uses
+	// types.String.ValueString() rather than attr.Value.String(): the
+	// former is the public contract for unwrapping a string value;
+	// the latter is debug-display and currently quotes its output,
+	// which couples the test to an undocumented format choice.
 	got := make([]string, 0, 3)
 	for _, e := range state.IPAddresses.Elements() {
-		got = append(got, e.String())
+		s, ok := e.(types.String)
+		if !ok {
+			t.Fatalf("IPAddresses element is not types.String: %T", e)
+		}
+		got = append(got, s.ValueString())
 	}
-	want := []string{`"10.0.0.5"`, `"fe80::1"`, `"10.99.0.5"`}
+	want := []string{"10.0.0.5", "fe80::1", "10.99.0.5"}
 	for i, w := range want {
 		if got[i] != w {
-			t.Errorf("IPAddresses[%d] = %s, want %s", i, got[i], w)
+			t.Errorf("IPAddresses[%d] = %q, want %q", i, got[i], w)
 		}
 	}
 }
