@@ -96,16 +96,21 @@ func TestAcc_DataVMState_TracksResource(t *testing.T) {
 // mapping breaks against actual cmdlet output (vs the canned
 // JSON envelope the fakeRunner emits).
 func TestAcc_DataVMState_NotFound(t *testing.T) {
+	// RandomName-prefixed lookup so a bench VM can't accidentally
+	// shadow the literal: a real Get-VM hit would mask the regression
+	// path with a confusing "expected error, got none" failure.
+	missingName := acctest.RandomName("no-such-vm")
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 data "hyperv_vm_state" "missing" {
-  name = "this-vm-does-not-exist-on-the-bench"
+  name = %q
 }
-`,
+`, missingName),
 				ExpectError: regexp.MustCompile(`Hyper-V virtual machine not found`),
 			},
 		},
