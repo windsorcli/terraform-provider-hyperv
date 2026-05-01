@@ -622,11 +622,18 @@ func resourceSchema() schema.Schema {
 					"entries. Empty when the VM is `Off`, when the guest is still booting, or " +
 					"when the guest doesn't ship integration services (rare for modern Windows " +
 					"and Linux).\n\n" +
-					"**Order is host-driven** (per-NIC, then per-IP within a NIC) and not " +
-					"stable across reboots. Downstream resources should reference specific " +
-					"indices (`hyperv_vm.web.ip_addresses[0]`) only when the VM has a single " +
-					"known-stable IP; multi-homed VMs should attach a per-NIC binding via the " +
-					"underlying `network_adapter[]` once that schema slice ships.",
+					"**Order is host-driven and not stable across VM restarts.** Hyper-V's " +
+					"per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a " +
+					"DHCP lease, so downstream resources that reference " +
+					"`hyperv_vm.web.ip_addresses[0]` may see the value flip when the host " +
+					"happens to surface a different IP first, planning a spurious update. " +
+					"**Index into this list only when the VM is single-NIC, single-IP and the " +
+					"user trusts that contract operationally.** Multi-homed VMs should pin to a " +
+					"specific NIC via the underlying `network_adapter[]` once that schema slice " +
+					"exposes per-NIC IPs (deferred). The List-vs-Set trade-off is documented " +
+					"and intentional: indexing is the dominant single-IP use case, and the type " +
+					"may flip to `Set` in a future major release if multi-homed users surface " +
+					"real pain.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
