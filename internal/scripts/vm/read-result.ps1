@@ -130,7 +130,9 @@ function Read-HypervVMResult {
     # min, 1TiB max), but the values aren't in effect, so we surface
     # null on the wire to keep state honest about what's actually
     # being managed. The Go decode into *int64 handles null cleanly.
-    $mem = Get-VMMemory -VMName $Vm.Name -ErrorAction Stop
+    # -VM (not -VMName) skips the redundant name resolution; the
+    # caller already handed us the resolved VM object.
+    $mem = Get-VMMemory -VM $Vm -ErrorAction Stop
     $memoryDynamicEnabled = [bool] $mem.DynamicMemoryEnabled
     $memoryMinimumBytes   = if ($memoryDynamicEnabled) { [int64] $mem.Minimum } else { $null }
     $memoryMaximumBytes   = if ($memoryDynamicEnabled) { [int64] $mem.Maximum } else { $null }
