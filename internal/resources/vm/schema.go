@@ -168,7 +168,7 @@ func resourceSchema() schema.Schema {
 				MarkdownDescription: "Memory configuration. `startup_bytes` is the only required " +
 					"field; `dynamic` opts in to Hyper-V's dynamic memory mode and unlocks " +
 					"`min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set " +
-					"`dynamic = false`) for the static-memory path that always-safe and matches " +
+					"`dynamic = false`) for the static-memory path that is always safe and matches " +
 					"the v2-and-prior behavior.\n\n" +
 					"**`buffer` and `priority`** are deferred to a follow-up -- they're advanced " +
 					"dynamic-memory tuning knobs (memory pressure buffer percentage and balancer " +

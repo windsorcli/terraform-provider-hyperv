@@ -131,7 +131,7 @@ resource "hyperv_vm" "elastic" {
 
 - `cpu` (Attributes) Virtual processor configuration. Static count only in this slice; dynamic-CPU attributes (`weight`, `reserve`, `limit`) attach to this same block in a follow-up. (see [below for nested schema](#nestedatt--cpu))
 - `generation` (Number) VM generation. `1` (BIOS, legacy boot, IDE/VHD) or `2` (UEFI, Secure Boot capable, SCSI/VHDX). **Forces replacement** -- Hyper-V cannot convert a VM from one generation to another.
-- `memory` (Attributes) Memory configuration. `startup_bytes` is the only required field; `dynamic` opts in to Hyper-V's dynamic memory mode and unlocks `min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set `dynamic = false`) for the static-memory path that always-safe and matches the v2-and-prior behavior.
+- `memory` (Attributes) Memory configuration. `startup_bytes` is the only required field; `dynamic` opts in to Hyper-V's dynamic memory mode and unlocks `min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set `dynamic = false`) for the static-memory path that is always safe and matches the v2-and-prior behavior.
 
 **`buffer` and `priority`** are deferred to a follow-up -- they're advanced dynamic-memory tuning knobs (memory pressure buffer percentage and balancer priority) that most users don't need. (see [below for nested schema](#nestedatt--memory))
 - `name` (String) VM name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a VM in place.
