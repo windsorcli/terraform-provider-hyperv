@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -14,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/typeflatten"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
@@ -1014,29 +1014,9 @@ func modelFromVM(v *hyperv.VM) Model {
 		SecureBoot:      secureBoot,
 		Notes:           notes,
 		State:           &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
-		IPAddresses:     flattenIPAddresses(v.NetworkAdapters),
+		IPAddresses:     typeflatten.IPAddresses(v.NetworkAdapters),
 		Path:            types.StringValue(v.Path),
 	}
-}
-
-// flattenIPAddresses unions the per-NIC IPAddresses arrays from
-// Get-VMNetworkAdapter into the top-level ip_addresses Computed
-// list. Order is preserved (NICs in cmdlet order, IPs in cmdlet
-// order within each NIC) -- not lexically sorted, because Hyper-V
-// reports a stable per-boot order and re-sorting would mask drift
-// for downstream consumers that key off ip_addresses[0].
-//
-// Returns a known empty list (not null) when no IPs are present.
-// The schema's ListAttribute decode requires a known value, and an
-// empty Off-VM is the steady state for most acc-test fixtures.
-func flattenIPAddresses(nics []hyperv.NetworkAdapter) types.List {
-	var ips []attr.Value
-	for _, n := range nics {
-		for _, ip := range n.IPAddresses {
-			ips = append(ips, types.StringValue(ip))
-		}
-	}
-	return types.ListValueMust(types.StringType, ips)
 }
 
 // hddSlotKey identifies a slot tuple. The diff is keyed on this so a

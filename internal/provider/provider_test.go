@@ -72,9 +72,9 @@ func TestProvider_DataSources(t *testing.T) {
 	p := New("test")()
 	got := p.DataSources(t.Context())
 
-	// hyperv_host + hyperv_virtual_switch (PLAN S7).
-	if len(got) != 2 {
-		t.Fatalf("got %d data sources, want 2 (hyperv_host, hyperv_virtual_switch)", len(got))
+	// hyperv_host + hyperv_vm_state + hyperv_virtual_switch.
+	if len(got) != 3 {
+		t.Fatalf("got %d data sources, want 3 (hyperv_host, hyperv_vm_state, hyperv_virtual_switch)", len(got))
 	}
 
 	for i, factory := range got {
