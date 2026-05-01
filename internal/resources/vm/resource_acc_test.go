@@ -848,3 +848,163 @@ resource "hyperv_vm" "test" {
 }
 `, vmName, vmMinimumMemoryBytes, desired, modeLine)
 }
+
+// TestAcc_VM_dynamicMemoryRoundTrip exercises memory.{dynamic,
+// min_bytes, max_bytes} round-trip against a real Hyper-V host:
+//
+//  1. Create with static memory only (dynamic omitted). State has
+//     dynamic=false (host's actual reading), min_bytes/max_bytes null.
+//  2. Flip to dynamic = true with explicit min/max bounds. State
+//     reflects the cmdlet-applied values verbatim.
+//  3. Update min_bytes upward (still inside startup<=max). Confirms
+//     in-place mutability without RequiresReplace.
+//  4. Flip back to static (dynamic = false). State drops to
+//     dynamic=false; null min/max again because the read-back gates
+//     them on dynamic=true.
+//
+// The VM stays Off throughout; Hyper-V applies dynamic memory config
+// even on an Off VM, so the cmdlet path is exercised without booting
+// a guest. (The actual ACPI-driven memory rebalance only happens when
+// the guest is Running with integration services -- but the schema/
+// wire/cmdlet path is all we need to validate here.)
+func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
+	name := acctest.RandomName("vm-dynmem")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: static memory, dynamic omitted -> state shows
+				// dynamic=false (read from host) and null min/max.
+				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "", 0, 0),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("dynamic"),
+						knownvalue.Bool(false),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("min_bytes"),
+						knownvalue.Null(),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("max_bytes"),
+						knownvalue.Null(),
+					),
+				},
+			},
+			{
+				// Step 2: opt in to dynamic memory with explicit bounds.
+				// startup_bytes (256 MiB) must fall inside [min, max] --
+				// 128 MiB / 512 MiB brackets it.
+				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "true", 134217728, 536870912),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("dynamic"),
+						knownvalue.Bool(true),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("min_bytes"),
+						knownvalue.Int64Exact(134217728),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("max_bytes"),
+						knownvalue.Int64Exact(536870912),
+					),
+				},
+			},
+			{
+				// Step 3 (regression for #36 review): bump startup_bytes
+				// only (256 -> 384 MiB) on a dynamic-enabled VM, leaving
+				// dynamic / min / max unchanged. Without buildSetInput's
+				// MemoryBytes co-forwarding guard, the script-side "lock
+				// static" elseif would fire (DynamicMemoryEnabled = $false)
+				// and silently flip the VM to static memory; the next plan
+				// would detect drift back. dynamic must stay true.
+				Config: vmDynamicMemoryConfig(name, 402653184, "true", 134217728, 536870912),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("startup_bytes"),
+						knownvalue.Int64Exact(402653184),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("dynamic"),
+						knownvalue.Bool(true),
+					),
+				},
+			},
+			{
+				// Step 4: bump min_bytes (still <= startup_bytes). Pins
+				// in-place mutation without RequiresReplace.
+				Config: vmDynamicMemoryConfig(name, 402653184, "true", 209715200, 536870912),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("min_bytes"),
+						knownvalue.Int64Exact(209715200),
+					),
+				},
+			},
+			{
+				// Step 5: flip dynamic = false. min/max go null on
+				// read-back (the host still stores them but they're not
+				// in effect, and the script's wire emission gates them
+				// on dynamic=true).
+				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "false", 0, 0),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("dynamic"),
+						knownvalue.Bool(false),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("memory").AtMapKey("min_bytes"),
+						knownvalue.Null(),
+					),
+				},
+			},
+		},
+	})
+}
+
+// vmDynamicMemoryConfig is the HCL template for
+// TestAcc_VM_dynamicMemoryRoundTrip. dynamic="" omits the attribute
+// entirely (the "don't manage" path); minB/maxB == 0 omit those too.
+// startupBytes varies between steps so the regression test for the
+// startup-only-change path on a dynamic VM can exercise that code
+// path without having to re-flip dynamic in the same step.
+func vmDynamicMemoryConfig(vmName string, startupBytes int64, dynamic string, minB, maxB int64) string {
+	dynamicLine := ""
+	if dynamic != "" {
+		dynamicLine = fmt.Sprintf("    dynamic = %s\n", dynamic)
+	}
+	minLine := ""
+	if minB > 0 {
+		minLine = fmt.Sprintf("    min_bytes = %d\n", minB)
+	}
+	maxLine := ""
+	if maxB > 0 {
+		maxLine = fmt.Sprintf("    max_bytes = %d\n", maxB)
+	}
+	return fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = {
+    startup_bytes = %d
+%s%s%s  }
+}
+`, vmName, startupBytes, dynamicLine, minLine, maxLine)
+}

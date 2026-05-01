@@ -3,9 +3,12 @@
 # Boot is off here because cloud images and Linux distros (Talos, Ubuntu
 # cloud-images, etc.) don't always carry Microsoft-signed bootloaders.
 resource "hyperv_vm" "node01" {
-  name        = "node01"
-  generation  = 2
-  cpu         = { count = 2 }
+  name       = "node01"
+  generation = 2
+  cpu        = { count = 2 }
+  # Static memory: locks 4 GiB. Add `dynamic = true` plus `min_bytes` /
+  # `max_bytes` to opt into Hyper-V dynamic memory; only safe on guests
+  # that ship and run Hyper-V integration services.
   memory      = { startup_bytes = 4294967296 } # 4 GiB
   secure_boot = false
   notes       = "k8s control plane"
@@ -67,6 +70,26 @@ resource "hyperv_vm" "legacy" {
   cpu        = { count = 1 }
   memory     = { startup_bytes = 2147483648 } # 2 GiB
   notes      = "legacy windows app server"
+}
+
+# Generation 2 VM with Hyper-V dynamic memory enabled. The guest gets
+# 4 GiB at boot and Hyper-V re-balances between 2 GiB (under pressure
+# elsewhere on the host) and 8 GiB (when the guest needs more) based on
+# the integration-services memory pressure signal. Requires the guest to
+# ship and run Hyper-V integration services -- modern Windows has them by
+# default; most Linux distros bundle them in a `hyperv-daemons` package.
+# Static-memory guests (Talos, OpenBSD, etc.) shouldn't use this.
+resource "hyperv_vm" "elastic" {
+  name       = "web-elastic"
+  generation = 2
+  cpu        = { count = 2 }
+  memory = {
+    startup_bytes = 4294967296 # 4 GiB at boot
+    dynamic       = true
+    min_bytes     = 2147483648 # 2 GiB floor
+    max_bytes     = 8589934592 # 8 GiB ceiling
+  }
+  notes = "auto-scaling web tier"
 }
 
 # Note: this resource intentionally omits boot_order, dynamic memory,

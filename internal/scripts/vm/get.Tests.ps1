@@ -13,6 +13,13 @@ Describe 'Get-HypervVM' {
 
     Context 'happy path' {
 
+        # Read-HypervVMResult always calls Get-VMMemory (added in the
+        # dynamic-memory slice). The default mock returns a static-only
+        # shape; tests that exercise dynamic memory override per-It.
+        BeforeEach {
+            Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
+        }
+
         It 'emits the canonical read shape (gen 2, no HDDs attached)' {
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample -SecureBoot 'On' }
@@ -21,10 +28,44 @@ Describe 'Get-HypervVM' {
             $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
-                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
-                'ProcessorCount', 'SecureBootEnabled', 'State'
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
+                'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
+                'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
+        }
+
+        It 'emits Memory dynamic fields as null when DynamicMemoryEnabled is false' {
+            # Static-memory case: Get-VMMemory still returns Hyper-V's
+            # Min/Max defaults (512MiB / 1TiB), but those values aren't
+            # in effect, so the read-back surfaces null. Keeps the wire
+            # honest about what's actually being managed.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
+
+            $parsed = Get-HypervVM -Name 'static-vm' | ConvertFrom-Json
+
+            $parsed.MemoryDynamicEnabled | Should -BeFalse
+            $parsed.MemoryMinimumBytes   | Should -BeNullOrEmpty
+            $parsed.MemoryMaximumBytes   | Should -BeNullOrEmpty
+        }
+
+        It 'emits Memory dynamic fields verbatim when DynamicMemoryEnabled is true' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 -MemoryStartup 4294967296 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Get-VMMemory {
+                New-HypervVMMemorySample -DynamicMemoryEnabled $true `
+                    -Startup 4294967296 -Minimum 2147483648 -Maximum 8589934592
+            }
+
+            $parsed = Get-HypervVM -Name 'dyn-vm' | ConvertFrom-Json
+
+            $parsed.MemoryDynamicEnabled | Should -BeTrue
+            $parsed.MemoryMinimumBytes   | Should -Be 2147483648
+            $parsed.MemoryMaximumBytes   | Should -Be 8589934592
         }
 
         It 'emits an empty HardDiskDrives array when no disks attached' {

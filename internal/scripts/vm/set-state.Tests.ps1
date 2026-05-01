@@ -12,6 +12,14 @@ BeforeAll {
 
 Describe 'Set-HypervVMState' {
 
+    # Read-HypervVMResult always calls Get-VMMemory (added in the
+    # dynamic-memory slice). Default mock returns a static-only shape;
+    # this script doesn't directly mutate memory, so all tests share
+    # the default.
+    BeforeEach {
+        Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
+    }
+
     Context 'transition: Off -> Running' {
 
         It 'calls Start-VM with the resolved VM and emits the post-transition read shape' {
@@ -160,9 +168,10 @@ Describe 'Set-HypervVMState' {
 
             $parsed = $output | ConvertFrom-Json
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
-                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
-                'ProcessorCount', 'SecureBootEnabled', 'State'
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
+                'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
+                'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
         }
     }

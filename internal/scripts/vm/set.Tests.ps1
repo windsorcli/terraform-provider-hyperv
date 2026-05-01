@@ -11,6 +11,12 @@ BeforeAll {
 
 Describe 'Set-HypervVM' {
 
+    # Read-HypervVMResult always calls Get-VMMemory. Default mock returns
+    # a static-only shape; tests that exercise dynamic memory override.
+    BeforeEach {
+        Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
+    }
+
     Context 'partial updates' {
 
         It 'forwards only -StartupBytes when only memory_bytes is supplied' {
@@ -131,10 +137,83 @@ Describe 'Set-HypervVM' {
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
-                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
-                'ProcessorCount', 'SecureBootEnabled', 'State'
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
+                'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
+                'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
+        }
+    }
+
+    Context 'dynamic memory partial updates' {
+
+        # The script bundles all memory mutations into one Set-VMMemory
+        # call, gated on whether ANY memory field changed. Tests pin the
+        # combinations: dynamic-only flip, min-only flip, etc.
+
+        It 'forwards DynamicMemoryEnabled=$true plus Min/Max when dynamic is opted in' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Set-VMMemory { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 -DynamicMemory $true `
+                -MinMemoryBytes 2147483648 -MaxMemoryBytes 8589934592 |
+                Out-Null
+
+            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
+                $VMName -eq 'vm01' -and
+                $DynamicMemoryEnabled -eq $true -and
+                $MinimumBytes -eq 2147483648 -and
+                $MaximumBytes -eq 8589934592 -and
+                -not $PSBoundParameters.ContainsKey('StartupBytes')
+            }
+        }
+
+        It 'changes startup_bytes alone WITHOUT touching DynamicMemoryEnabled flag forwarding (locks static)' {
+            # When the user updates only memory_bytes (no dynamic flag),
+            # the script defaults DynamicMemoryEnabled=$false to preserve
+            # the v2-and-prior locked-static behavior. Otherwise the
+            # cmdlet might reject StartupBytes against an existing
+            # dynamic min/max range.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Set-VMMemory { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 -MemoryBytes 4294967296 | Out-Null
+
+            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
+                $StartupBytes -eq 4294967296 -and $DynamicMemoryEnabled -eq $false
+            }
+        }
+
+        It 'skips Set-VMMemory entirely when only -MinMemoryBytes arrives without -DynamicMemory' {
+            # Direct-invoker corner case: -MinMemoryBytes supplied but
+            # -DynamicMemory omitted (and no -MemoryBytes either). The
+            # Go-side buildSetInput's fallback prevents this in practice
+            # by always co-sending dynamic_memory whenever min/max
+            # change. The script-side guard then short-circuits the
+            # Set-VMMemory call entirely -- no cmdlet invocation, no
+            # wasted SSH round-trip. Min/Max alone can't be passed to
+            # Set-VMMemory anyway (the cmdlet rejects them without
+            # DynamicMemoryEnabled in the same call).
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Set-VMMemory { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 -MinMemoryBytes 3221225472 | Out-Null
+
+            Should -Invoke Set-VMMemory -Times 0 -Exactly
+        }
+
+        It 'does NOT call Set-VMMemory when no memory field changed' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 -Vcpu 4 | Out-Null
+
+            Should -Invoke Set-VMMemory -Times 0 -Exactly
         }
     }
 

@@ -50,7 +50,109 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 		secureBootRejectedForGen1Validator{},
 		networkAdapterUniqueNamesValidator{},
 		bootOrderRejectedForGen1Validator{},
+		dynamicMemoryBoundsValidator{},
 	}
+}
+
+// dynamicMemoryBoundsValidator enforces three rules on memory.{dynamic,
+// min_bytes, max_bytes}:
+//
+//  1. min_bytes / max_bytes set with dynamic unset or false -> reject.
+//     Set-VMMemory rejects MinimumBytes/MaximumBytes without
+//     DynamicMemoryEnabled=$true; catching at plan time gives a clean
+//     attribute-anchored diagnostic.
+//  2. min_bytes > startup_bytes -> reject. The cmdlet errors anyway,
+//     but plan-time rejection is clearer.
+//  3. max_bytes < startup_bytes -> reject. Same rationale.
+//
+// Skips validation when any participating attribute is unknown (deferred
+// dependency). Skips when dynamic is null and min/max are also null --
+// the no-op static path.
+type dynamicMemoryBoundsValidator struct{}
+
+// Description / MarkdownDescription surface in `terraform validate -json`
+// and schema-introspection paths.
+func (v dynamicMemoryBoundsValidator) Description(_ context.Context) string {
+	return "memory.min_bytes / memory.max_bytes are only valid when memory.dynamic = true; both must bracket memory.startup_bytes"
+}
+
+// MarkdownDescription mirrors Description -- no markdown-only formatting.
+func (v dynamicMemoryBoundsValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateResource pulls the typed Model from the Config and dispatches to
+// validate, which holds the actual rule logic. Split for direct unit
+// testing without tfsdk.Config plumbing.
+func (v dynamicMemoryBoundsValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate is the pure-Go core. Returns no diagnostics when the user
+// didn't manage dynamic memory at all; fires only when the user opted
+// into dynamic semantics with an inconsistent combination.
+func (v dynamicMemoryBoundsValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.Memory == nil {
+		return diags
+	}
+	mem := data.Memory
+
+	// Rule 1: min/max without dynamic=true.
+	dynamicTrue := !mem.Dynamic.IsNull() && !mem.Dynamic.IsUnknown() && mem.Dynamic.ValueBool()
+	if !dynamicTrue {
+		if !mem.MinBytes.IsNull() && !mem.MinBytes.IsUnknown() {
+			diags.AddAttributeError(
+				path.Root("memory").AtName("min_bytes"),
+				"memory.min_bytes requires memory.dynamic = true",
+				"Set-VMMemory rejects -MinimumBytes without -DynamicMemoryEnabled $true. "+
+					"Add memory.dynamic = true to the config or remove memory.min_bytes.",
+			)
+		}
+		if !mem.MaxBytes.IsNull() && !mem.MaxBytes.IsUnknown() {
+			diags.AddAttributeError(
+				path.Root("memory").AtName("max_bytes"),
+				"memory.max_bytes requires memory.dynamic = true",
+				"Set-VMMemory rejects -MaximumBytes without -DynamicMemoryEnabled $true. "+
+					"Add memory.dynamic = true to the config or remove memory.max_bytes.",
+			)
+		}
+		return diags
+	}
+
+	// Rules 2 / 3: bracket startup_bytes when set.
+	if mem.StartupBytes.IsNull() || mem.StartupBytes.IsUnknown() {
+		return diags
+	}
+	startup := mem.StartupBytes.ValueInt64()
+	if !mem.MinBytes.IsNull() && !mem.MinBytes.IsUnknown() {
+		if minB := mem.MinBytes.ValueInt64(); minB > startup {
+			diags.AddAttributeError(
+				path.Root("memory").AtName("min_bytes"),
+				"memory.min_bytes must be <= memory.startup_bytes",
+				fmt.Sprintf("min_bytes=%d > startup_bytes=%d. Set-VMMemory rejects this combination; "+
+					"adjust the bounds so startup_bytes falls inside [min_bytes, max_bytes].",
+					minB, startup),
+			)
+		}
+	}
+	if !mem.MaxBytes.IsNull() && !mem.MaxBytes.IsUnknown() {
+		if maxB := mem.MaxBytes.ValueInt64(); maxB < startup {
+			diags.AddAttributeError(
+				path.Root("memory").AtName("max_bytes"),
+				"memory.max_bytes must be >= memory.startup_bytes",
+				fmt.Sprintf("max_bytes=%d < startup_bytes=%d. Set-VMMemory rejects this combination; "+
+					"adjust the bounds so startup_bytes falls inside [min_bytes, max_bytes].",
+					maxB, startup),
+			)
+		}
+	}
+	return diags
 }
 
 // secureBootRejectedForGen1Validator enforces that secure_boot is only
@@ -351,6 +453,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	state := modelFromVM(v)
 	state.BootOrder = reconcileBootOrderState(plan.BootOrder, state.BootOrder)
 	state.State = reconcileStateBlock(plan.State, state.State)
+	state.Memory = reconcileMemoryBlock(plan.Memory, state.Memory)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -388,6 +491,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	newState := modelFromVM(v)
 	newState.BootOrder = reconcileBootOrderState(state.BootOrder, newState.BootOrder)
 	newState.State = reconcileStateBlock(state.State, newState.State)
+	newState.Memory = reconcileMemoryBlock(state.Memory, newState.Memory)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -568,6 +672,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		newState := modelFromVM(v)
 		newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
 		newState.State = reconcileStateBlock(plan.State, newState.State)
+		newState.Memory = reconcileMemoryBlock(plan.Memory, newState.Memory)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -597,6 +702,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	newState := modelFromVM(v)
 	newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
 	newState.State = reconcileStateBlock(plan.State, newState.State)
+	newState.Memory = reconcileMemoryBlock(plan.Memory, newState.Memory)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -607,6 +713,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 // something" -- only the *T fields do.
 func setInputHasChanges(in hyperv.SetVMInput) bool {
 	return in.Vcpu != nil || in.MemoryBytes != nil ||
+		in.DynamicMemory != nil || in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil ||
 		in.SecureBoot != nil || in.Notes != nil
 }
 
@@ -659,6 +766,18 @@ func buildNewInput(plan Model) hyperv.NewVMInput {
 		Vcpu:        int(plan.CPU.Count.ValueInt64()),
 		MemoryBytes: plan.Memory.StartupBytes.ValueInt64(),
 	}
+	if !plan.Memory.Dynamic.IsNull() && !plan.Memory.Dynamic.IsUnknown() {
+		v := plan.Memory.Dynamic.ValueBool()
+		in.DynamicMemory = &v
+	}
+	if !plan.Memory.MinBytes.IsNull() && !plan.Memory.MinBytes.IsUnknown() {
+		v := plan.Memory.MinBytes.ValueInt64()
+		in.MinMemoryBytes = &v
+	}
+	if !plan.Memory.MaxBytes.IsNull() && !plan.Memory.MaxBytes.IsUnknown() {
+		v := plan.Memory.MaxBytes.ValueInt64()
+		in.MaxMemoryBytes = &v
+	}
 	if !plan.SecureBoot.IsNull() && !plan.SecureBoot.IsUnknown() {
 		v := plan.SecureBoot.ValueBool()
 		in.SecureBoot = &v
@@ -691,6 +810,41 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		v := plan.Memory.StartupBytes.ValueInt64()
 		in.MemoryBytes = &v
 	}
+	if !plan.Memory.Dynamic.Equal(state.Memory.Dynamic) &&
+		!plan.Memory.Dynamic.IsNull() && !plan.Memory.Dynamic.IsUnknown() {
+		v := plan.Memory.Dynamic.ValueBool()
+		in.DynamicMemory = &v
+	}
+	if !plan.Memory.MinBytes.Equal(state.Memory.MinBytes) &&
+		!plan.Memory.MinBytes.IsNull() && !plan.Memory.MinBytes.IsUnknown() {
+		v := plan.Memory.MinBytes.ValueInt64()
+		in.MinMemoryBytes = &v
+	}
+	if !plan.Memory.MaxBytes.Equal(state.Memory.MaxBytes) &&
+		!plan.Memory.MaxBytes.IsNull() && !plan.Memory.MaxBytes.IsUnknown() {
+		v := plan.Memory.MaxBytes.ValueInt64()
+		in.MaxMemoryBytes = &v
+	}
+	// If ANY memory field changed but the dynamic flag itself didn't,
+	// still forward the current dynamic flag so the script has full
+	// context. Two reasons:
+	//
+	//   1. Set-VMMemory's Min/Max parameters require DynamicMemoryEnabled
+	//      to be specified in the same call when min/max are present;
+	//      the script gates Min/Max forwarding on the flag being in the
+	//      splatting hashtable.
+	//   2. When ONLY startup_bytes changes on a VM the user has set
+	//      `dynamic = true`, omitting dynamic_memory from the wire would
+	//      let set.ps1's "lock static" elseif fire (DynamicMemoryEnabled
+	//      = $false), silently flipping the VM to static memory. Keep
+	//      the dynamic flag pinned through any memory mutation so the
+	//      script keeps the user's mode.
+	if in.DynamicMemory == nil &&
+		(in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil || in.MemoryBytes != nil) &&
+		!plan.Memory.Dynamic.IsNull() && !plan.Memory.Dynamic.IsUnknown() {
+		v := plan.Memory.Dynamic.ValueBool()
+		in.DynamicMemory = &v
+	}
 	if !plan.SecureBoot.Equal(state.SecureBoot) &&
 		!plan.SecureBoot.IsNull() && !plan.SecureBoot.IsUnknown() {
 		v := plan.SecureBoot.ValueBool()
@@ -702,6 +856,29 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		in.Notes = &v
 	}
 	return in
+}
+
+// memoryModelFromVM builds the nested MemoryModel from the VM read
+// shape. The script's read-result emits null Min/Max when
+// MemoryDynamicEnabled is false (the host's stored values aren't in
+// effect); we translate the *int64 wire representation back to
+// types.Int64Null() / types.Int64Value(). Dynamic is types.BoolValue
+// directly (the wire field is a non-pointer bool so it always has a
+// known value -- false means "not enabled" rather than "unknown").
+func memoryModelFromVM(v *hyperv.VM) *MemoryModel {
+	m := &MemoryModel{
+		StartupBytes: types.Int64Value(v.MemoryStartupBytes),
+		Dynamic:      types.BoolValue(v.MemoryDynamicEnabled),
+		MinBytes:     types.Int64Null(),
+		MaxBytes:     types.Int64Null(),
+	}
+	if v.MemoryMinimumBytes != nil {
+		m.MinBytes = types.Int64Value(*v.MemoryMinimumBytes)
+	}
+	if v.MemoryMaximumBytes != nil {
+		m.MaxBytes = types.Int64Value(*v.MemoryMaximumBytes)
+	}
+	return m
 }
 
 // modelFromVM hydrates a Model from a typed VM DTO. Two collapse rules:
@@ -829,7 +1006,7 @@ func modelFromVM(v *hyperv.VM) Model {
 		Name:            types.StringValue(v.Name),
 		Generation:      types.Int64Value(int64(v.Generation)),
 		CPU:             &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:          &MemoryModel{StartupBytes: types.Int64Value(v.MemoryStartupBytes)},
+		Memory:          memoryModelFromVM(v),
 		HardDiskDrives:  hdds,
 		NetworkAdapters: nics,
 		DvdDrives:       dvds,
@@ -1170,6 +1347,50 @@ func stateDesiredChanged(planState, stateState *StateModel) bool {
 		return true
 	}
 	return planState.Desired.ValueString() != stateState.Current.ValueString()
+}
+
+// reconcileMemoryBlock picks what to write to Model.Memory after a
+// Create / Update / Read, parallel to reconcileStateBlock. Three-rule
+// shape:
+//
+//   - StartupBytes always comes from the host -- it's the post-apply
+//     truth (cmdlet may have applied the value verbatim, but reading
+//     back is the safe source).
+//   - Dynamic / MinBytes / MaxBytes default to the host's value, BUT
+//     when the user writes the attribute explicitly as null in config,
+//     prefer null. This mirrors the shutdown_mode escape hatch from
+//     PR #33: "writing null means stop managing this attribute, even
+//     if the host has a concrete value." Without this rule, a user
+//     who writes `dynamic = null` after `dynamic = true` would see a
+//     "Provider produced inconsistent result after apply" diagnostic
+//     because plan = null but state = true (host's actual).
+//   - Plan modifiers (UseStateForUnknown) handle the omit case
+//     transparently before this function runs, so an unknown plan
+//     value here means "Create with omitted attribute and no prior
+//     state to fall back on" -- the host's value is the right answer.
+func reconcileMemoryBlock(planMem, hostMem *MemoryModel) *MemoryModel {
+	if hostMem == nil {
+		return planMem
+	}
+	out := &MemoryModel{
+		StartupBytes: hostMem.StartupBytes,
+		Dynamic:      hostMem.Dynamic,
+		MinBytes:     hostMem.MinBytes,
+		MaxBytes:     hostMem.MaxBytes,
+	}
+	if planMem == nil {
+		return out
+	}
+	if planMem.Dynamic.IsNull() {
+		out.Dynamic = types.BoolNull()
+	}
+	if planMem.MinBytes.IsNull() {
+		out.MinBytes = types.Int64Null()
+	}
+	if planMem.MaxBytes.IsNull() {
+		out.MaxBytes = types.Int64Null()
+	}
+	return out
 }
 
 // reconcileStateBlock picks what to write to Model.State after a

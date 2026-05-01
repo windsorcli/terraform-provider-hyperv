@@ -75,11 +75,25 @@ type CPUModel struct {
 	Count types.Int64 `tfsdk:"count"`
 }
 
-// MemoryModel is the nested `memory` block. Static memory only in this
-// slice (DynamicMemoryEnabled=$false on the wire); dynamic memory adds
-// MinBytes / MaxBytes alongside StartupBytes in a follow-up.
+// MemoryModel is the nested `memory` block. StartupBytes is the only
+// required field; Dynamic / MinBytes / MaxBytes opt in to Hyper-V's
+// dynamic memory mode.
+//
+// Dynamic is types.Bool (not pointer) because the framework's null
+// representation handles both "user didn't manage" and "explicit
+// false" cleanly via the wire-side *bool with omitempty: null on
+// the wire means absent, which the script treats as static. MinBytes
+// and MaxBytes follow the same Optional+Computed +
+// UseStateForUnknown pattern as state.shutdown_mode (PR #33).
+//
+// Buffer and Priority are deferred -- they're Hyper-V dynamic-memory
+// niceties (~5% of users) and adding them later is a strict superset
+// of the current schema.
 type MemoryModel struct {
 	StartupBytes types.Int64 `tfsdk:"startup_bytes"`
+	Dynamic      types.Bool  `tfsdk:"dynamic"`
+	MinBytes     types.Int64 `tfsdk:"min_bytes"`
+	MaxBytes     types.Int64 `tfsdk:"max_bytes"`
 }
 
 // HardDiskDriveModel is one element of the `hard_disk_drive` nested set

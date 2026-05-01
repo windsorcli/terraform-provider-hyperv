@@ -13,6 +13,13 @@ BeforeAll {
 
 Describe 'New-HypervVM' {
 
+    # Read-HypervVMResult always calls Get-VMMemory. The default mock
+    # returns a static-only shape; tests that exercise dynamic memory
+    # override per-It.
+    BeforeEach {
+        Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
+    }
+
     Context 'minimal create (gen 2, no optionals)' {
 
         It 'forwards -Name -Generation -MemoryStartupBytes -NoVHD to New-VM (no -BootDevice)' {
@@ -119,10 +126,91 @@ Describe 'New-HypervVM' {
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id', 'MemoryAssignedBytes',
-                'MemoryStartupBytes', 'Name', 'NetworkAdapters', 'Notes', 'Path',
-                'ProcessorCount', 'SecureBootEnabled', 'State'
+                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
+                'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
+                'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled', 'State'
             )
+        }
+    }
+
+    Context 'dynamic memory' {
+
+        # The dynamic_memory wire field opts in to dynamic memory.
+        # Set-VMMemory takes Minimum/Maximum only when
+        # DynamicMemoryEnabled is true; passing them with the static
+        # path errors. The script gates Min/Max forwarding on the
+        # dynamic flag.
+
+        It 'forwards DynamicMemoryEnabled=$true with Minimum/Maximum when DynamicMemory=$true' {
+            Mock New-VM { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 `
+                -DynamicMemory $true -MinMemoryBytes 2147483648 -MaxMemoryBytes 8589934592 |
+                Out-Null
+
+            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
+                $VMName -eq 'vm01' -and
+                $DynamicMemoryEnabled -eq $true -and
+                $StartupBytes -eq 4294967296 -and
+                $MinimumBytes -eq 2147483648 -and
+                $MaximumBytes -eq 8589934592
+            }
+        }
+
+        It 'forwards DynamicMemoryEnabled=$true without Min/Max when only the flag is set' {
+            # Hyper-V keeps existing min/max defaults (512MiB/1TiB) when
+            # they're not specified. Verifies the script doesn't pass
+            # zero or null bytes through.
+            Mock New-VM { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 `
+                -DynamicMemory $true | Out-Null
+
+            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
+                $DynamicMemoryEnabled -eq $true -and
+                -not $PSBoundParameters.ContainsKey('MinimumBytes') -and
+                -not $PSBoundParameters.ContainsKey('MaximumBytes')
+            }
+        }
+
+        It 'ignores Min/Max when DynamicMemory is $false (cmdlet would reject the combination)' {
+            Mock New-VM { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+
+            # User-error case the Go-side ConfigValidator should catch.
+            # If it slips through (direct invocation, future caller bug),
+            # the script must not pass Min/Max along -- the cmdlet
+            # would error.
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 `
+                -DynamicMemory $false -MinMemoryBytes 2147483648 -MaxMemoryBytes 8589934592 |
+                Out-Null
+
+            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
+                $DynamicMemoryEnabled -eq $false -and
+                -not $PSBoundParameters.ContainsKey('MinimumBytes') -and
+                -not $PSBoundParameters.ContainsKey('MaximumBytes')
+            }
         }
     }
 

@@ -30,9 +30,12 @@ Manages a Hyper-V virtual machine. Ships with `name`, `generation`, nested `cpu`
 # Boot is off here because cloud images and Linux distros (Talos, Ubuntu
 # cloud-images, etc.) don't always carry Microsoft-signed bootloaders.
 resource "hyperv_vm" "node01" {
-  name        = "node01"
-  generation  = 2
-  cpu         = { count = 2 }
+  name       = "node01"
+  generation = 2
+  cpu        = { count = 2 }
+  # Static memory: locks 4 GiB. Add `dynamic = true` plus `min_bytes` /
+  # `max_bytes` to opt into Hyper-V dynamic memory; only safe on guests
+  # that ship and run Hyper-V integration services.
   memory      = { startup_bytes = 4294967296 } # 4 GiB
   secure_boot = false
   notes       = "k8s control plane"
@@ -96,6 +99,26 @@ resource "hyperv_vm" "legacy" {
   notes      = "legacy windows app server"
 }
 
+# Generation 2 VM with Hyper-V dynamic memory enabled. The guest gets
+# 4 GiB at boot and Hyper-V re-balances between 2 GiB (under pressure
+# elsewhere on the host) and 8 GiB (when the guest needs more) based on
+# the integration-services memory pressure signal. Requires the guest to
+# ship and run Hyper-V integration services -- modern Windows has them by
+# default; most Linux distros bundle them in a `hyperv-daemons` package.
+# Static-memory guests (Talos, OpenBSD, etc.) shouldn't use this.
+resource "hyperv_vm" "elastic" {
+  name       = "web-elastic"
+  generation = 2
+  cpu        = { count = 2 }
+  memory = {
+    startup_bytes = 4294967296 # 4 GiB at boot
+    dynamic       = true
+    min_bytes     = 2147483648 # 2 GiB floor
+    max_bytes     = 8589934592 # 8 GiB ceiling
+  }
+  notes = "auto-scaling web tier"
+}
+
 # Note: this resource intentionally omits boot_order, dynamic memory,
 # integration services, and power state. Each ships in a follow-up PR.
 # Storage, NICs, and DVD drives attach inline above (ADR-0001).
@@ -108,7 +131,9 @@ resource "hyperv_vm" "legacy" {
 
 - `cpu` (Attributes) Virtual processor configuration. Static count only in this slice; dynamic-CPU attributes (`weight`, `reserve`, `limit`) attach to this same block in a follow-up. (see [below for nested schema](#nestedatt--cpu))
 - `generation` (Number) VM generation. `1` (BIOS, legacy boot, IDE/VHD) or `2` (UEFI, Secure Boot capable, SCSI/VHDX). **Forces replacement** -- Hyper-V cannot convert a VM from one generation to another.
-- `memory` (Attributes) Memory configuration. **Static memory only** in this slice (`Set-VMMemory -DynamicMemoryEnabled $false`); dynamic memory (`min_bytes`, `max_bytes`, optional `buffer` and `priority`) attaches to this same block in a follow-up. (see [below for nested schema](#nestedatt--memory))
+- `memory` (Attributes) Memory configuration. `startup_bytes` is the only required field; `dynamic` opts in to Hyper-V's dynamic memory mode and unlocks `min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set `dynamic = false`) for the static-memory path that is always safe and matches the v2-and-prior behavior.
+
+**`buffer` and `priority`** are deferred to a follow-up -- they're advanced dynamic-memory tuning knobs (memory pressure buffer percentage and balancer priority) that most users don't need. (see [below for nested schema](#nestedatt--memory))
 - `name` (String) VM name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a VM in place.
 
 ### Optional
@@ -185,7 +210,19 @@ Required:
 
 Required:
 
-- `startup_bytes` (Number) Static memory size in bytes (e.g. `4294967296` for 4 GiB). In-place updatable via `Set-VMMemory -StartupBytes` with `DynamicMemoryEnabled=$false`; the VM generally must be `Off`.
+- `startup_bytes` (Number) Memory size in bytes the VM boots with (e.g. `4294967296` for 4 GiB). When `dynamic = false` (or omitted), this is also the fixed memory size. When `dynamic = true`, `startup_bytes` must fall within `[min_bytes, max_bytes]` -- the cmdlet errors otherwise. In-place updatable via `Set-VMMemory -StartupBytes`; the VM generally must be `Off`.
+
+Optional:
+
+- `dynamic` (Boolean) Whether Hyper-V dynamic memory is enabled. Optional. Omit (or set `false`) for the static-memory default. When `true`, the cmdlet uses `min_bytes` / `max_bytes` if supplied, else Hyper-V's defaults (Minimum = 512 MiB, Maximum = 1 TiB).
+
+**Omit semantics** match `notes` / `secure_boot` / `state.shutdown_mode`: omitting from config after a prior apply preserves the existing value via `UseStateForUnknown`. Writing `dynamic = null` explicitly resets state to null and the next memory mutation reverts to the static-memory default; to switch behavior, write `true` or `false` explicitly.
+- `max_bytes` (Number) Upper bound (in bytes) for Hyper-V's dynamic memory mode. **Only valid when `dynamic = true`** -- a config validator rejects `max_bytes` set with `dynamic` unset or false at plan time. Must be >= `startup_bytes` (the cmdlet rejects the call otherwise).
+
+Read-back surfaces null when `dynamic` is false on the host. **No `UseStateForUnknown`** -- same rationale as `min_bytes`. Trade-off: plans show `max_bytes = (known after apply)` whenever the block is in scope and the attribute is omitted.
+- `min_bytes` (Number) Lower bound (in bytes) for Hyper-V's dynamic memory mode. **Only valid when `dynamic = true`** -- a config validator rejects `min_bytes` set with `dynamic` unset or false at plan time. Must be <= `startup_bytes` (the cmdlet rejects the call otherwise).
+
+Read-back surfaces null when `dynamic` is false on the host (the host still stores Hyper-V's default of 512 MiB but it isn't in effect). **No `UseStateForUnknown` plan modifier**: a plan that flips `dynamic` to false must show `min_bytes` becoming null otherwise the framework's post-apply consistency check rejects the apply. Trade-off: plans show `min_bytes = (known after apply)` whenever the block is in scope and the attribute is omitted, even on no-op apply turns.
 
 
 <a id="nestedatt--boot_order"></a>

@@ -809,3 +809,170 @@ func TestClient_SetVMState_OmitsShutdownModeWhenEmpty(t *testing.T) {
 		t.Errorf("stdin should omit shutdown_mode when empty; got: %s", stdin)
 	}
 }
+
+// TestClient_NewVM_ForwardsDynamicMemory pins the wire payload for
+// dynamic memory: dynamic_memory plus min_memory_bytes and
+// max_memory_bytes all present as snake_case top-level fields.
+func TestClient_NewVM_ForwardsDynamicMemory(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVM").Return(testutil.VMGen2FixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	dynamic := true
+	minB := int64(2147483648)
+	maxB := int64(8589934592)
+	in := NewVMInput{
+		Name:           "vm01",
+		Generation:     2,
+		Vcpu:           2,
+		MemoryBytes:    4294967296,
+		DynamicMemory:  &dynamic,
+		MinMemoryBytes: &minB,
+		MaxMemoryBytes: &maxB,
+	}
+	if _, err := c.NewVM(t.Context(), in); err != nil {
+		t.Fatalf("NewVM: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{
+		`"dynamic_memory":true`,
+		`"min_memory_bytes":2147483648`,
+		`"max_memory_bytes":8589934592`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+}
+
+// TestClient_NewVM_OmitsDynamicMemoryWhenNil locks the omitempty
+// behavior for the new memory fields. Static-memory callers (most
+// existing users) produce a wire payload without dynamic_memory /
+// min_memory_bytes / max_memory_bytes.
+func TestClient_NewVM_OmitsDynamicMemoryWhenNil(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVM").Return(testutil.VMGen1FixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := NewVMInput{
+		Name:        "legacy-vm",
+		Generation:  1,
+		Vcpu:        1,
+		MemoryBytes: 2147483648,
+	}
+	if _, err := c.NewVM(t.Context(), in); err != nil {
+		t.Fatalf("NewVM: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, omit := range []string{"dynamic_memory", "min_memory_bytes", "max_memory_bytes"} {
+		if strings.Contains(stdin, omit) {
+			t.Errorf("stdin should omit %q when not specified; got: %s", omit, stdin)
+		}
+	}
+}
+
+// TestClient_SetVM_ForwardsDynamicMemory: partial-update path.
+func TestClient_SetVM_ForwardsDynamicMemory(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Set-HypervVM").Return(testutil.VMGen2FixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	dynamic := true
+	maxB := int64(8589934592)
+	in := SetVMInput{
+		Name:           "vm01",
+		Generation:     2,
+		DynamicMemory:  &dynamic,
+		MaxMemoryBytes: &maxB,
+	}
+	if _, err := c.SetVM(t.Context(), in); err != nil {
+		t.Fatalf("SetVM: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{
+		`"dynamic_memory":true`,
+		`"max_memory_bytes":8589934592`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+	if strings.Contains(stdin, "min_memory_bytes") {
+		t.Errorf("stdin should omit unset min_memory_bytes; got: %s", stdin)
+	}
+	if strings.Contains(stdin, `"memory_bytes"`) {
+		t.Errorf("stdin should omit unset memory_bytes; got: %s", stdin)
+	}
+}
+
+// TestClient_GetVM_DecodesDynamicMemoryFields: the new VM struct fields
+// round-trip through the JSON envelope.
+func TestClient_GetVM_DecodesDynamicMemoryFields(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{
+		"Name":"vm01","Id":"00000000-0000-0000-0000-000000000000","Generation":2,
+		"ProcessorCount":2,"MemoryStartupBytes":4294967296,"MemoryAssignedBytes":4294967296,
+		"MemoryDynamicEnabled":true,"MemoryMinimumBytes":2147483648,"MemoryMaximumBytes":8589934592,
+		"State":"Off","Notes":"","Path":"C:\\foo","SecureBootEnabled":true,
+		"HardDiskDrives":[],"NetworkAdapters":[],"DvdDrives":[],"BootOrder":[]
+	}`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVM").Return(envelope, "", 0)
+	c := NewClient(fr)
+
+	v, err := c.GetVM(t.Context(), "vm01")
+	if err != nil {
+		t.Fatalf("GetVM: %v", err)
+	}
+	if !v.MemoryDynamicEnabled {
+		t.Error("MemoryDynamicEnabled: got false, want true")
+	}
+	if v.MemoryMinimumBytes == nil || *v.MemoryMinimumBytes != 2147483648 {
+		t.Errorf("MemoryMinimumBytes: got %v, want 2147483648", v.MemoryMinimumBytes)
+	}
+	if v.MemoryMaximumBytes == nil || *v.MemoryMaximumBytes != 8589934592 {
+		t.Errorf("MemoryMaximumBytes: got %v, want 8589934592", v.MemoryMaximumBytes)
+	}
+}
+
+// TestClient_GetVM_DecodesStaticMemoryAsNullDynamicFields: the
+// static-memory case round-trips as MemoryDynamicEnabled=false with
+// nil pointers for Min/Max (matches the script's null emission).
+func TestClient_GetVM_DecodesStaticMemoryAsNullDynamicFields(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{
+		"Name":"vm01","Id":"00000000-0000-0000-0000-000000000000","Generation":2,
+		"ProcessorCount":2,"MemoryStartupBytes":4294967296,"MemoryAssignedBytes":4294967296,
+		"MemoryDynamicEnabled":false,"MemoryMinimumBytes":null,"MemoryMaximumBytes":null,
+		"State":"Off","Notes":"","Path":"C:\\foo","SecureBootEnabled":true,
+		"HardDiskDrives":[],"NetworkAdapters":[],"DvdDrives":[],"BootOrder":[]
+	}`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVM").Return(envelope, "", 0)
+	c := NewClient(fr)
+
+	v, err := c.GetVM(t.Context(), "vm01")
+	if err != nil {
+		t.Fatalf("GetVM: %v", err)
+	}
+	if v.MemoryDynamicEnabled {
+		t.Error("MemoryDynamicEnabled: got true, want false")
+	}
+	if v.MemoryMinimumBytes != nil {
+		t.Errorf("MemoryMinimumBytes: got %v, want nil", *v.MemoryMinimumBytes)
+	}
+	if v.MemoryMaximumBytes != nil {
+		t.Errorf("MemoryMaximumBytes: got %v, want nil", *v.MemoryMaximumBytes)
+	}
+}
