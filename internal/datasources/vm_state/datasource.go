@@ -79,10 +79,18 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 					"integration services have reported across all attached NICs. Empty when the " +
 					"VM is `Off`, when the guest is still booting, or when the guest doesn't ship " +
 					"integration services.\n\n" +
-					"**Order is host-driven** (per-NIC, then per-IP within a NIC) and not stable " +
-					"across reboots. Downstream resources should reference specific indices " +
-					"(`data.hyperv_vm_state.web.ip_addresses[0]`) only when the VM has a single " +
-					"known-stable IP.",
+					"**Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, " +
+					"per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, " +
+					"and a data source is evaluated on every plan -- so any downstream resource that " +
+					"references `data.hyperv_vm_state.web.ip_addresses[0]` will see the value flip " +
+					"when the host happens to surface a different IP first, planning a spurious " +
+					"update. **Index into this list only when the VM is single-NIC, single-IP and " +
+					"the user trusts that contract operationally.** Multi-homed VMs should pin to a " +
+					"specific NIC via the underlying `hyperv_vm.network_adapter[]` once that schema " +
+					"slice exposes per-NIC IPs (deferred -- see PLAN.md §13). The List-vs-Set " +
+					"trade-off is documented and intentional: indexing is the dominant single-IP " +
+					"use case, and the type may flip to `Set` in a future major release if " +
+					"multi-homed users surface real pain.",
 			},
 		},
 	}
