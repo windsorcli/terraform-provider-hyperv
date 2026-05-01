@@ -86,7 +86,16 @@ function Set-HypervVM {
             if ($null -ne $MinMemoryBytes) { $memoryArgs.MinimumBytes = [int64] $MinMemoryBytes }
             if ($null -ne $MaxMemoryBytes) { $memoryArgs.MaximumBytes = [int64] $MaxMemoryBytes }
         }
-        Set-VMMemory @memoryArgs -ErrorAction Stop
+        # Skip Set-VMMemory if no actual config field was added beyond
+        # VMName. This guards against a corner case the Go-side
+        # buildSetInput fallback prevents in practice but the script
+        # contract is independent of: a caller that sends ONLY
+        # -MinMemoryBytes / -MaxMemoryBytes (no -DynamicMemory and no
+        # -MemoryBytes) would otherwise produce a no-op Set-VMMemory
+        # call -- harmless on Hyper-V but a wasted SSH round-trip.
+        if ($memoryArgs.Count -gt 1) {
+            Set-VMMemory @memoryArgs -ErrorAction Stop
+        }
     }
     if ($null -ne $Vcpu) {
         Set-VMProcessor -VMName $Name -Count ([int] $Vcpu) -ErrorAction Stop

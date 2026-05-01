@@ -186,32 +186,23 @@ Describe 'Set-HypervVM' {
             }
         }
 
-        It 'never passes MinimumBytes alone -- requires DynamicMemoryEnabled in the same call' {
+        It 'skips Set-VMMemory entirely when only -MinMemoryBytes arrives without -DynamicMemory' {
             # Direct-invoker corner case: -MinMemoryBytes supplied but
             # -DynamicMemory omitted (and no -MemoryBytes either). The
             # Go-side buildSetInput's fallback prevents this in practice
             # by always co-sending dynamic_memory whenever min/max
-            # change, but the script's contract is still that
-            # MinimumBytes/MaximumBytes are gated on
-            # DynamicMemoryEnabled being in the splatting hashtable
-            # (otherwise Set-VMMemory rejects the combination).
-            #
-            # The assertion below pins that gate: when only -MinMemoryBytes
-            # arrives, neither MinimumBytes nor DynamicMemoryEnabled
-            # land in the cmdlet call. The script still fires one
-            # Set-VMMemory call (with just -VMName), which is a harmless
-            # no-op on the cmdlet side -- noted as a known corner case
-            # in set.ps1's wire-contract header.
+            # change. The script-side guard then short-circuits the
+            # Set-VMMemory call entirely -- no cmdlet invocation, no
+            # wasted SSH round-trip. Min/Max alone can't be passed to
+            # Set-VMMemory anyway (the cmdlet rejects them without
+            # DynamicMemoryEnabled in the same call).
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Set-VMMemory { }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
 
             Set-HypervVM -Name 'vm01' -Generation 2 -MinMemoryBytes 3221225472 | Out-Null
 
-            Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
-                -not $PSBoundParameters.ContainsKey('MinimumBytes') -and
-                -not $PSBoundParameters.ContainsKey('DynamicMemoryEnabled')
-            }
+            Should -Invoke Set-VMMemory -Times 0 -Exactly
         }
 
         It 'does NOT call Set-VMMemory when no memory field changed' {
