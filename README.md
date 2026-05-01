@@ -21,22 +21,32 @@ Manage the lifecycle of Microsoft Hyper-V virtual machines, switches, disks, and
 | Resource | Subcategory | Notes |
 |---|---|---|
 | `hyperv_virtual_switch` | Networking | External / Internal / Private switches; NIC team binding; management OS share toggle. |
-| `hyperv_vm_network_adapter` | Networking | Per-VM NICs with VLAN, MAC, and bandwidth limits. |
-| `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Modes: `url`, `host_path`, `local_path`, `content`, `cloud_init` (NoCloud seed-ISO synthesis), `unattend` (Windows answer-file ISO synthesis). |
-| `hyperv_vhd` | Storage | Fixed / dynamic / differencing VHD or VHDX. Resizable for dynamic. |
-| `hyperv_vm_hard_disk_drive` | Storage | Attaches an existing `hyperv_vhd` to a VM at a controller location. |
-| `hyperv_vm_dvd_drive` | Storage | ISO attachment with eject-on-destroy semantics for appliance-OS workflows. |
-| `hyperv_vm` | Compute | Generation 1/2, CPU, memory (static or dynamic), Secure Boot, integration services, boot order, automatic start/stop. |
-| `hyperv_vm_state` | Compute | Operational state (`running`/`off`/`saved`/`paused`); optionally waits for an IP and exposes `ip_addresses`. |
-| `hyperv_vm_checkpoint` | Compute | Production or standard checkpoints. |
+| `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Modes: `url` (provider downloads + verifies SHA-256), `host_path` (attests the file already exists). |
+| `hyperv_vhd` | Storage | Fixed / dynamic / differencing VHD or VHDX. Resize supported for dynamic. |
+| `hyperv_vm` | Compute | Generation 1/2; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources). |
 
-| Data source | Subcategory |
-|---|---|
-| `hyperv_host` | Host |
-| `hyperv_vm` | Compute |
-| `hyperv_virtual_switch` | Networking |
+| Data source | Subcategory | Notes |
+|---|---|---|
+| `hyperv_host` | Host | Host metadata: VirtualMachinePath, VirtualHardDiskPath, EnableEnhancedSessionMode. |
+| `hyperv_virtual_switch` | Networking | Lookup by name. |
+| `hyperv_vm_state` | Compute | Live power state and reported IP addresses for an existing VM. |
 
-Out of scope for v1: replication, live migration, SR-IOV, GPU partitioning, shielded VMs, image *creation* (build golden images with Packer or DISM and reference them via `hyperv_image_file`).
+### Inline attachments, not sub-resources
+
+`hyperv_vm` ships with **inline** blocks for NICs, hard disks, DVDs, and power state — not separate `hyperv_vm_*` resources. Reconciliation is keyed on slot tuples (HDDs / DVDs) or display name (NICs); see the [`hyperv_vm` documentation](docs/resources/vm.md) for the full shape.
+
+### Out of scope / not yet implemented
+
+The following are either deferred to post-1.0 or under active design — track an issue if you need one:
+
+- Image *creation* — use Packer or DISM to build golden images and reference them via `hyperv_image_file`.
+- Checkpoints (`hyperv_vm_checkpoint`).
+- Hyper-V integration services map (per-service enable/disable on `hyperv_vm`).
+- VM automatic start/stop actions (`AutomaticStartAction` / `AutomaticStopAction`).
+- Generation 1 BIOS startup order (`Set-VMBios -StartupOrder`).
+- VLAN tags and static MAC addresses on inline NICs.
+- Replication, live migration, SR-IOV, GPU partitioning, shielded VMs.
+- Additional `hyperv_image_file` modes (`local_path`, `content`, `cloud_init` NoCloud, `unattend` answer-file).
 
 ## Requirements
 
@@ -90,7 +100,7 @@ resource "hyperv_vhd" "vm01_root" {
 }
 ```
 
-A complete end-to-end example (URL fetch → differencing VHD → cloud-init seed ISO → VM → power on → wait for IP) lives under [`examples/`](examples/) and on the [Terraform Registry](https://registry.terraform.io/providers/windsorcli/hyperv/latest).
+More examples — including the complete `hyperv_vm` resource shape with inline NICs, disks, DVDs, boot order, and dynamic memory — live under [`examples/`](examples/) and on the [Terraform Registry](https://registry.terraform.io/providers/windsorcli/hyperv/latest).
 
 ## Configuration
 
@@ -161,12 +171,8 @@ A complete `.env.example` is committed at the repository root.
 ## Documentation
 
 - **Registry**: [registry.terraform.io/providers/windsorcli/hyperv/latest/docs](https://registry.terraform.io/providers/windsorcli/hyperv/latest/docs) (canonical, generated)
-- **Repo**: [`docs/`](docs/) — same content; useful when reading the source on a branch
-- **Guides**:
-  - [Getting started](docs/guides/getting-started.md) — Flow B walkthrough (cloud image → VM → cloud-init)
-  - [Configuring backends](docs/guides/backends.md) — local / SSH / WinRM in depth
-  - [Hyper-V host setup](docs/guides/host-setup.md) — enabling SSH or WinRM on Server 2019/2022
-  - [PowerShell version notes](docs/guides/powershell-versions.md) — 5.1 vs 7.4 behavior
+- **Repo**: [`docs/`](docs/) — same content; useful when reading the source on a branch.
+- **Examples**: [`examples/`](examples/) — copy-paste-ready HCL for each resource and data source.
 
 ## Building from source
 
@@ -205,13 +211,12 @@ task test:acc       # acceptance tests against a real Hyper-V host
 > [!CAUTION]
 > `task test:acc` creates real Hyper-V resources — virtual switches, VMs, disks. Run only against a host you own. Sweepers (`task sweep`) clean up orphaned resources prefixed with the test name. Tests are gated on `TF_ACC=1`.
 
-Acceptance test configuration lives in `.env.local` (gitignored); copy `.env.example` and fill in `HYPERV_*` values for the backend you want to exercise. The CI matrix runs acceptance against Server 2019 (PS 5.1 only) and Server 2022 (PS 7.4 alongside 5.1) on each of the three backends.
+Acceptance test configuration lives in `.env.local` (gitignored); copy `.env.example` and fill in `HYPERV_*` values for the backend you want to exercise.
 
 ## Debugging
 
 - `TF_LOG=DEBUG` — standard Terraform log level; surfaces provider-level messages.
 - `TF_LOG_PROVIDER=DEBUG` — provider-only logs; quieter than `TF_LOG`.
-- `TF_LOG_PROVIDER_HYPERV_CONNECTION=DEBUG` — connection-subsystem logs (transport, auth, pooling) without the resource-CRUD chatter.
 - `TF_LOG_PROVIDER=TRACE` — full PS stdin/stdout/stderr per call. **Sensitive values are masked**, but enable only when debugging.
 
 To attach a debugger, build with `task build` and run the provider with `-debug`; Terraform will print a `TF_REATTACH_PROVIDERS` env var to set in the shell that runs `terraform plan` or `terraform apply`.
@@ -219,12 +224,9 @@ To attach a debugger, build with `task build` and run the provider with `-debug`
 ## Known limitations
 
 - **No image creation.** Use Packer or DISM to build golden images and reference them via `hyperv_image_file`.
-- **PowerShell startup latency.** Each operation pays the cost of a `pwsh`/`powershell.exe` invocation: ~1.4s per call over SSH, ~2.0s over WinRM, ~0.5–0.8s locally. Terraform's default 10-way parallelism absorbs this for typical fleets; persistent-runspace mode is on the v1 stretch-goal list for >100-resource deployments.
-- **WinRM `local_path` transfers cap at 100 MB.** Use `url` (host-side BITS fetch) or `host_path` for larger files.
+- **PowerShell startup latency.** Each operation pays the cost of a `pwsh`/`powershell.exe` invocation, dominated by module load. Terraform's default 10-way parallelism absorbs this for typical fleets; persistent-runspace mode is a stretch-goal for >100-resource deployments.
 - **Cancel-mid-cmdlet may leave partial state.** A `New-VM` interrupted after disk creation but before VM registration will require either a re-apply or a manual cleanup.
-- **Differencing parent paths surface errors at apply time, not plan time.** `New-VHD` validates the parent path in ~400ms; the provider maps the cmdlet error to an attribute-level diagnostic.
-
-See [`docs/PLAN.md`](docs/PLAN.md) §11.5 for the full list and rationale.
+- **Differencing parent paths surface errors at apply time, not plan time.** `New-VHD` validates the parent path; the provider maps the cmdlet error to an attribute-level diagnostic.
 
 ## Contributing
 
