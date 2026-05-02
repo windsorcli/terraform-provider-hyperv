@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -31,14 +32,7 @@ func newConnection(_ context.Context, m HypervProviderModel) (connection.Connect
 	case "ssh":
 		return newSSHConnection(m, &diags), diags
 	case "winrm":
-		diags.AddAttributeError(
-			path.Root("backend"),
-			"WinRM backend not yet implemented",
-			"The winrm backend is planned for M3. Use backend = \"local\" "+
-				"(when running on the Hyper-V host itself) for now. "+
-				"Track progress in docs/PLAN.md §12.",
-		)
-		return nil, diags
+		return newWinRMConnection(m, &diags), diags
 	default:
 		diags.AddAttributeError(
 			path.Root("backend"),
@@ -154,6 +148,101 @@ func resolveDuration(attr types.String, envVar string) (time.Duration, error) {
 	return d, nil
 }
 
+// newWinRMConnection translates a HypervProviderModel into a configured WinRM
+// Connection. Resolves auth + transport config from provider attributes with
+// HYPERV_WINRM_* / HYPERV_HOST / etc. env-var fallbacks.
+//
+// Returns nil with attribute-anchored diagnostics on configuration errors so
+// the operator sees which knob to adjust. The HTTP client and the auth
+// round-trip happen in Open (called from provider.Configure right after this
+// function returns).
+func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
+	host := resolveString(m.Host, "HYPERV_HOST", "")
+	if host == "" {
+		diags.AddAttributeError(
+			path.Root("host"),
+			"WinRM backend requires host",
+			"Set the provider's `host` attribute or HYPERV_HOST.",
+		)
+		return nil
+	}
+	username := resolveString(m.Username, "HYPERV_USERNAME", "")
+	if username == "" {
+		diags.AddAttributeError(
+			path.Root("username"),
+			"WinRM backend requires username",
+			"Set the provider's `username` attribute or HYPERV_USERNAME.",
+		)
+		return nil
+	}
+	password := resolveString(m.Password, "HYPERV_PASSWORD", "")
+
+	var winrmAttrs WinRMConfig
+	if m.WinRM != nil {
+		winrmAttrs = *m.WinRM
+	}
+	useHTTPS := resolveBool(winrmAttrs.UseHTTPS, "HYPERV_WINRM_USE_HTTPS", true)
+	insecure := resolveBool(winrmAttrs.Insecure, "HYPERV_WINRM_INSECURE", false)
+	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
+	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
+
+	// Default port depends on transport. resolveInt's fallback is the
+	// HTTPS-default; we override below for HTTP so a non-HTTPS operator
+	// who didn't set a port lands on 5985 instead of trying 5986 in
+	// cleartext mode.
+	defaultPort := 5986
+	if !useHTTPS {
+		defaultPort = 5985
+	}
+	port, err := resolveInt(m.Port, "HYPERV_PORT", defaultPort)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("port"),
+			"Invalid WinRM port",
+			err.Error(),
+		)
+		return nil
+	}
+	if port < 1 || port > 65535 {
+		diags.AddAttributeError(
+			path.Root("port"),
+			"Invalid WinRM port",
+			fmt.Sprintf("port must be between 1 and 65535; got %d.", port),
+		)
+		return nil
+	}
+
+	commandTimeout, err := resolveDuration(m.Timeout, "HYPERV_TIMEOUT")
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("timeout"),
+			"Invalid timeout",
+			err.Error(),
+		)
+		return nil
+	}
+
+	conn, err := connection.NewWinRM(connection.WinRMOptions{
+		Host:           host,
+		Port:           port,
+		Username:       username,
+		Password:       password,
+		UseHTTPS:       useHTTPS,
+		Insecure:       insecure,
+		Auth:           auth,
+		CACert:         cacert,
+		CommandTimeout: commandTimeout,
+	})
+	if err != nil {
+		diags.AddError(
+			"WinRM backend initialization failed",
+			fmt.Sprintf("Could not configure the WinRM backend: %s", err),
+		)
+		return nil
+	}
+	return conn
+}
+
 func newLocalConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
 	var pwshAttr types.String
 	if m.Local != nil {
@@ -191,6 +280,31 @@ func resolveInt(attr types.Int64, envVar string, fallback int) (int, error) {
 		return n, nil
 	}
 	return fallback, nil
+}
+
+// resolveBool returns the first set value among:
+//  1. the provider attribute (if known and non-null)
+//  2. the named env var (parsed via strconv.ParseBool, accepting
+//     "true"/"false"/"1"/"0"/"t"/"f"/"yes"/"no" via case-insensitive match)
+//  3. fallback
+//
+// A malformed env value falls through to the fallback rather than erroring,
+// matching how operators expect "1=true, anything-not-1=false" environment
+// conventions to behave. resolveString's silent-empty-fall-through has the
+// same shape.
+func resolveBool(attr types.Bool, envVar string, fallback bool) bool {
+	if !attr.IsNull() && !attr.IsUnknown() {
+		return attr.ValueBool()
+	}
+	if v := os.Getenv(envVar); v != "" {
+		switch strings.ToLower(v) {
+		case "true", "1", "t", "yes":
+			return true
+		case "false", "0", "f", "no":
+			return false
+		}
+	}
+	return fallback
 }
 
 // resolveString returns the first non-empty value among:

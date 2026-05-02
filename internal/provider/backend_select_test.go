@@ -251,21 +251,54 @@ func TestNewConnection_SSHPortOutOfRange(t *testing.T) {
 	}
 }
 
-func TestNewConnection_WinRMReturnsClearDiagnostic(t *testing.T) {
+// TestNewConnection_WinRMRequiresHost mirrors the SSH and Local equivalents:
+// missing host produces an attribute-anchored diagnostic rather than a
+// confusing later "could not connect" failure mid-plan.
+func TestNewConnection_WinRMRequiresHost(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
 
 	m := HypervProviderModel{
 		Backend: types.StringValue("winrm"),
 	}
 	conn, diags := newConnection(t.Context(), m)
 	if conn != nil {
-		t.Error("expected nil connection for unimplemented backend")
+		t.Error("expected nil connection when host is missing")
 	}
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}
-	if !strings.Contains(diags[0].Detail(), "M3") {
-		t.Errorf("error detail = %q, want substring 'M3'", diags[0].Detail())
+	if !strings.Contains(diags[0].Detail(), "host") {
+		t.Errorf("error detail = %q, want substring 'host'", diags[0].Detail())
+	}
+}
+
+// TestNewConnection_WinRMBuildsBackend verifies the happy path: with host,
+// username, and password set, newConnection returns a non-nil winrm-backed
+// Connection without error. The actual network call is in Open, exercised
+// by acceptance tests against the bench.
+func TestNewConnection_WinRMBuildsBackend(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection")
+	}
+	if got := conn.Backend(); got != "winrm" {
+		t.Errorf("Backend() = %q, want %q", got, "winrm")
 	}
 }
 
