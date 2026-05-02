@@ -15,8 +15,9 @@ output "node01_state" {
 # Guest IPs are reported by Hyper-V integration services. Empty when the
 # VM is `Off`, when the guest is still booting, or when the guest doesn't
 # ship integration services. Reference specific indices only when the VM
-# has a single known-stable IP; multi-homed VMs should be addressed via
-# the underlying `network_adapter[]` once that schema slice ships.
+# has a single known-stable IP; multi-homed VMs have no clean per-NIC
+# pinning today (per-NIC IPs are not currently exposed on
+# `hyperv_vm.network_adapter[]`).
 output "node01_first_ip" {
   value = try(data.hyperv_vm_state.node01.ip_addresses[0], null)
 }

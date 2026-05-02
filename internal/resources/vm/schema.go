@@ -100,27 +100,25 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		Version: 3,
-		MarkdownDescription: "Manages a Hyper-V virtual machine. Ships with " +
-			"`name`, `generation`, nested `cpu` and `memory` blocks, `secure_boot` (gen 2), " +
-			"`notes`, inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and " +
-			"`boot_order` (gen 2 only). Dynamic CPU/memory, integration services, automatic " +
-			"start/stop actions, checkpoints, and power state land in follow-up PRs.\n\n" +
-			"**Generation 1 boot order** is intentionally absent from this slice -- gen 1 uses " +
-			"BIOS category strings (`Set-VMBios -StartupOrder`) which deserve their own design " +
-			"pass. Gen 1 VMs boot from whatever Hyper-V's default is.\n\n" +
-			"**Power transitions:** the operational lifecycle (start/stop/save/pause) ships in a " +
-			"follow-up as the inline `state` block on this resource. Mutations to `cpu.count`, " +
-			"`memory.startup_bytes`, and `secure_boot` generally require the VM to be `Off`; the " +
-			"script surfaces the cmdlet's clear error rather than auto-stopping.\n\n" +
+		MarkdownDescription: "Manages a Hyper-V virtual machine. Configures " +
+			"`name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), " +
+			"`secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle " +
+			"(`desired`, `current`, `shutdown_mode`), and inline `network_adapter[]`, " +
+			"`hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only) lists.\n\n" +
+			"Integration services, automatic start/stop actions, and checkpoints are not " +
+			"currently exposed. Generation 1 BIOS boot ordering (`Set-VMBios -StartupOrder`) " +
+			"is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.\n\n" +
+			"**Power transitions** are driven by the inline `state` block (`desired = \"Running\"`, " +
+			"`\"Off\"`, `\"Saved\"`, `\"Paused\"`). Mutations to `cpu.count`, `memory.startup_bytes`, " +
+			"and `secure_boot` generally require the VM to be `Off`; the script surfaces the " +
+			"cmdlet's clear error rather than auto-stopping.\n\n" +
 			"**`terraform destroy` performs a hard power-off** of any running VM (`Stop-VM -Force " +
 			"-TurnOff`, equivalent to pulling the plug) before calling `Remove-VM -Force`. This avoids " +
 			"the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration " +
 			"services are absent or unresponsive, and matches the destroy semantics other IaC providers " +
 			"(AWS, Azure, libvirt) use. **If a clean shutdown matters** -- e.g., decoupled VHDXs the " +
-			"user is keeping after destroy -- drive the graceful shutdown via `hyperv_vm_state` (when " +
-			"available) or out-of-band before running `terraform destroy`.\n\n" +
-			"**Static memory only.** This slice configures memory via `Set-VMMemory -DynamicMemoryEnabled $false`. " +
-			"Dynamic memory ships in a follow-up.",
+			"user is keeping after destroy -- drive the graceful shutdown via `state.shutdown_mode = " +
+			"\"graceful\"` plus `desired = \"Off\"` (or out-of-band) before running `terraform destroy`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -170,9 +168,9 @@ func resourceSchema() schema.Schema {
 					"`min_bytes` / `max_bytes` for setting bounds. Omit `dynamic` (or set " +
 					"`dynamic = false`) for the static-memory path that is always safe and matches " +
 					"the v2-and-prior behavior.\n\n" +
-					"**`buffer` and `priority`** are deferred to a follow-up -- they're advanced " +
-					"dynamic-memory tuning knobs (memory pressure buffer percentage and balancer " +
-					"priority) that most users don't need.",
+					"`buffer` and `priority` (the advanced dynamic-memory tuning knobs for " +
+					"memory pressure buffer percentage and balancer priority) are not currently " +
+					"exposed; most users don't need them.",
 				Attributes: map[string]schema.Attribute{
 					"startup_bytes": schema.Int64Attribute{
 						Required: true,
@@ -323,7 +321,7 @@ func resourceSchema() schema.Schema {
 					"both with a different `switch_name` get detached then re-attached " +
 					"(Hyper-V doesn't expose a path-swap-only cmdlet for NIC switch " +
 					"binding, so detach + attach is the natural operation).\n\n" +
-					"VLAN tagging and static MAC addresses ship in a follow-up commit.",
+					"VLAN tagging and static MAC addresses are not currently exposed.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
@@ -366,10 +364,10 @@ func resourceSchema() schema.Schema {
 					"`iso_path` get detached and re-attached (the brief gap between the two " +
 					"calls is acceptable since the VM is generally Off during scalar updates " +
 					"anyway).\n\n" +
-					"**Eject-on-destroy and Talos-style flows:** removing a DVD entry from the " +
-					"list detaches it without VM replace, which is what Talos / OpenBSD / " +
-					"appliance-OS install workflows need (\"boot from ISO once, remove media on " +
-					"the next apply\"). Pair with a `boot_order` change in a follow-up commit.",
+					"**Eject-on-destroy:** removing a DVD entry from the list detaches it " +
+					"without VM replace, which is what appliance-OS install workflows need " +
+					"(\"boot from ISO once, remove media on the next apply\"). Pair with a " +
+					"`boot_order` change in a follow-up apply.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
@@ -432,11 +430,10 @@ func resourceSchema() schema.Schema {
 					"partial reorder; an N-element list is set as one atomic call. The VM " +
 					"generally must be `Off` for the cmdlet to apply the change.\n\n" +
 					"**Generation 1 (BIOS) is rejected.** Gen 1 uses a different mechanism " +
-					"(category strings via `Set-VMBios -StartupOrder`) and is intentionally " +
-					"out of scope for this slice; a config validator emits a clear error if " +
-					"`boot_order` is set on a gen 1 VM. Gen 1 boot management ships in a " +
-					"follow-up if a real use case surfaces.\n\n" +
-					"**Talos / OpenBSD install flow:** apply once with `dvd_drive` first in " +
+					"(category strings via `Set-VMBios -StartupOrder`) and is not currently " +
+					"supported by this resource; a config validator emits a clear error if " +
+					"`boot_order` is set on a gen 1 VM.\n\n" +
+					"**Appliance-OS install flow:** apply once with `dvd_drive` first in " +
 					"`boot_order`, install the OS, then re-apply with `hard_disk_drive` first " +
 					"(and the DVD removed from `dvd_drive[]` to eject the install media).\n\n" +
 					"**Drift handling:** if someone re-orders the boot list out of band on the " +
@@ -628,12 +625,12 @@ func resourceSchema() schema.Schema {
 					"`hyperv_vm.web.ip_addresses[0]` may see the value flip when the host " +
 					"happens to surface a different IP first, planning a spurious update. " +
 					"**Index into this list only when the VM is single-NIC, single-IP and the " +
-					"user trusts that contract operationally.** Multi-homed VMs should pin to a " +
-					"specific NIC via the underlying `network_adapter[]` once that schema slice " +
-					"exposes per-NIC IPs (deferred). The List-vs-Set trade-off is documented " +
-					"and intentional: indexing is the dominant single-IP use case, and the type " +
-					"may flip to `Set` in a future major release if multi-homed users surface " +
-					"real pain.",
+					"user trusts that contract operationally.** Per-NIC IPs are not currently " +
+					"exposed on `network_adapter[]`, so multi-homed VMs that need a stable " +
+					"reference to a specific IP have no clean way to do it -- this is a known " +
+					"limitation. The List-vs-Set trade-off is intentional: indexing is the " +
+					"dominant single-IP use case, and the type may flip to `Set` in a future " +
+					"major release if multi-homed users surface real pain.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},

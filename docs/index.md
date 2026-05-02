@@ -34,7 +34,7 @@ provider "hyperv" {}
 
 ### Optional
 
-- `backend` (String) Execution backend. One of `local`, `ssh`, `winrm`. Defaults to `HYPERV_BACKEND` env var, or `local` if neither is set. `local` and `ssh` are implemented; `winrm` ships in M3.
+- `backend` (String) Execution backend. One of `local`, `ssh`, `winrm`. Defaults to `HYPERV_BACKEND` env var, or `local` if neither is set. Currently `local` and `ssh` are implemented; `winrm` is not.
 - `host` (String) Hostname or IP of the Hyper-V host. Required for `ssh` and `winrm` backends; ignored for `local`. Falls back to `HYPERV_HOST`.
 - `local` (Attributes) Local-backend-specific configuration. (see [below for nested schema](#nestedatt--local))
 - `password` (String, Sensitive) Password. **Sensitive.** Falls back to `HYPERV_PASSWORD`.
@@ -42,7 +42,7 @@ provider "hyperv" {}
 - `ssh` (Attributes) SSH-backend-specific configuration. (see [below for nested schema](#nestedatt--ssh))
 - `timeout` (String) Per-call PowerShell execution timeout as a Go duration (e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`. Set to `0s` to disable. Bump for legitimately slow cmdlets like `New-VHD` on a multi-GB fixed disk.
 - `username` (String) Username. Required for `ssh` and `winrm`. Falls back to `HYPERV_USERNAME`.
-- `winrm` (Attributes) WinRM-backend-specific configuration. Backend ships in M3. (see [below for nested schema](#nestedatt--winrm))
+- `winrm` (Attributes) WinRM-backend-specific configuration. (The WinRM backend is not currently implemented.) (see [below for nested schema](#nestedatt--winrm))
 
 <a id="nestedatt--local"></a>
 ### Nested Schema for `local`

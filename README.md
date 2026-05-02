@@ -232,7 +232,7 @@ To attach a debugger, build with `task build` and run the provider with `-debug`
 
 Contributions are welcome. For non-trivial changes — new resources, schema changes, new backends — please open an issue first to align on shape before writing code. Bug fixes and documentation improvements can go straight to a PR.
 
-The repository follows strict TDD: PowerShell scripts get Pester tests first to lock the JSON contract, then Go unit tests with a fake runner, then resource schema tests, then acceptance tests, then implementation. See [`docs/PLAN.md`](docs/PLAN.md) §9 for the full strategy.
+The repository follows strict TDD: PowerShell scripts get Pester tests first to lock the JSON contract, then Go unit tests with a fake runner, then resource schema tests, then acceptance tests, then implementation.
 
 PRs require:
 
