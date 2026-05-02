@@ -77,14 +77,23 @@ signs:
 
 release:
   # `keep-existing` preserves the release notes that release-drafter
-  # already authored on the published draft. Without this, goreleaser
-  # would overwrite the body with its own (empty, since changelog is
-  # disabled) one when it attaches artifacts -- the published release
-  # would lose the curated notes AND the changelog-on-release workflow
-  # would prepend an empty section to CHANGELOG.md. With keep-existing,
-  # goreleaser only adds artifacts (binaries + checksums + signature +
-  # manifest) to the release the maintainer just published.
+  # already authored on the draft. Without this, goreleaser would
+  # overwrite the body with its own (empty, since changelog is
+  # disabled) one when it attaches artifacts -- the release would
+  # lose the curated notes AND the changelog-on-release workflow
+  # would prepend an empty section to CHANGELOG.md.
+  #
+  # `draft: true` keeps the release in draft state through the asset
+  # upload phase. Required because the org has GitHub's "Immutable
+  # Releases" enabled: once a release is published, no further asset
+  # uploads are allowed. The release.yaml workflow flips draft to
+  # published in a final `gh release edit --draft=false` step, so
+  # immutability locks in only after every binary, checksum, and
+  # signature is in place. `replace_existing_draft` makes the goreleaser
+  # invocation rerun-safe (a re-tag overwrites the prior draft cleanly).
   mode: keep-existing
+  draft: true
+  replace_existing_draft: true
   extra_files:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
