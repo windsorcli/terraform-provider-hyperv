@@ -52,7 +52,7 @@ If any of those is missing, treat it as a release failure and recover before use
 
 The two-step flow makes most failures non-destructive:
 
-- **Workflow failed before the publish step.** The release exists as a draft with whatever assets uploaded successfully. Drafts are mutable, so you can either delete and re-tag, or fix forward by re-running the workflow (`replace_existing_draft: true` overwrites the existing draft cleanly):
+- **Workflow failed before the publish step.** The release exists as a draft with whatever assets uploaded successfully. Drafts are mutable, so you can either delete and re-tag, or fix forward by re-running the workflow — [`.goreleaser.yml`](../../.goreleaser.yml) sets `replace_existing_draft: true` in the `release` block, so a re-run overwrites the prior draft cleanly:
 
   ```sh
   gh release delete vX.Y.Z --yes --cleanup-tag
