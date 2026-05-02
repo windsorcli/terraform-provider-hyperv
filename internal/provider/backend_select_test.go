@@ -382,6 +382,41 @@ func TestNewConnection_WinRMBasicWithHTTPSDoesNotWarn(t *testing.T) {
 	}
 }
 
+// TestNewConnection_WinRMRequiresPassword pins the attribute-anchored
+// diagnostic for the missing-password case. Without this guard, an empty
+// password slides into connection.NewWinRM and surfaces as a generic
+// "WinRM backend initialization failed" error -- the operator has no
+// inline pointer to the offending field. Mirrors the host/username
+// guards above.
+func TestNewConnection_WinRMRequiresPassword(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		// Password deliberately omitted.
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection when password is missing for ntlm")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic")
+	}
+	// The attribute-anchored diagnostic ought to mention `password` in
+	// either the summary or the detail text -- the operator-facing
+	// signal that the password attribute is what to fix.
+	combined := diags[0].Summary() + " " + diags[0].Detail()
+	if !strings.Contains(strings.ToLower(combined), "password") {
+		t.Errorf("expected diagnostic to mention 'password'; got summary=%q detail=%q",
+			diags[0].Summary(), diags[0].Detail())
+	}
+}
+
 // TestNewConnection_WinRMRejectsMalformedBoolEnv pins the fail-loud
 // behavior on unrecognized boolean env values. Previously a typo like
 // HYPERV_WINRM_USE_HTTPS=disabled silently fell back to the default

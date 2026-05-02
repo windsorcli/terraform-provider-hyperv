@@ -202,6 +202,23 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
 	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
 
+	// Password gate: NTLM and Basic both require one. Kerberos in principle
+	// can use a pre-cached TGT (we reject it at NewWinRM time today, but
+	// the gate is shaped so future Kerberos support doesn't break this
+	// path). Anchored at path.Root("password") so the operator sees an
+	// inline pointer to the missing field rather than the generic
+	// "WinRM backend initialization failed" wrapping that NewWinRM's
+	// password error would otherwise produce.
+	if password == "" && auth != "kerberos" {
+		diags.AddAttributeError(
+			path.Root("password"),
+			"WinRM backend requires password",
+			fmt.Sprintf("Set the provider's `password` attribute or HYPERV_PASSWORD; "+
+				"%s auth needs one.", auth),
+		)
+		return nil
+	}
+
 	// Basic auth without HTTPS sends credentials as base64 in the
 	// Authorization header -- effectively cleartext on the wire.
 	// We don't hard-block the combination because it's documented as a
