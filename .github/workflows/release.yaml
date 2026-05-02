@@ -46,6 +46,28 @@ jobs:
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
 
+      # release-drafter maintains a tagless draft release with curated
+      # notes auto-curated from merged PR titles -- the draft's tag_name
+      # field is set to the resolved next version (e.g. "v0.1.4") even
+      # though no git tag exists yet. Capture that body to a file BEFORE
+      # GoReleaser runs: GoReleaser's `replace_existing_draft: true` will
+      # delete release-drafter's draft and create a fresh empty one in
+      # its place. Without this capture, the curated notes would be
+      # orphaned and the published release body would be empty.
+      #
+      # If no matching draft exists (e.g. user pushed a tag that doesn't
+      # match release-drafter's resolved version, or release-drafter
+      # hasn't run yet), the file ends up empty and the release ships
+      # with no notes -- same behavior as before this step existed.
+      - name: Capture release-drafter notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq "[.[] | select(.draft and .tag_name == \"${GITHUB_REF_NAME}\")][0].body // \"\"" \
+            > /tmp/release-notes.md
+          echo "Captured $(wc -c < /tmp/release-notes.md) bytes of release-drafter notes"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7.2.1
         with:
@@ -57,13 +79,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
-      # Flip the draft to published only after every binary, checksum,
-      # signature, and manifest is attached. The org's "Immutable
-      # Releases" setting locks the release at publish time, so this
-      # has to be the last step -- once it runs, no further asset
-      # changes are possible. Pairs with `release.draft: true` in
-      # .goreleaser.yml.
-      - name: Publish the draft release
+      # Apply the captured release-drafter notes and flip the draft to
+      # published in a single call. The org's "Immutable Releases"
+      # setting locks the release at publish time, so this must be the
+      # last step -- once it runs, no further changes are possible.
+      # Pairs with `release.draft: true` in .goreleaser.yml.
+      - name: Apply notes and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/release-notes.md \
+            --draft=false
