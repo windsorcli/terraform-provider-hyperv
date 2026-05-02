@@ -30,10 +30,12 @@ So the maintainer's flow at release time is:
    `release.yaml` to build + sign artifacts via GoReleaser.)
 3. The changelog auto-update commit appears on `main` shortly after.
 
-To edit a release after the fact, edit it on github.com and republish
--- the workflow re-runs and updates this file. Hand-editing this file
-directly is fine for one-off corrections but will be overwritten on
-the next release.
+To correct a release's notes after publish: edit the GitHub Release
+on github.com for visibility there, then hand-edit the matching
+section in this file. The auto-update workflow fires only on the
+initial publish (not on edits), so the file change won't propagate
+automatically. Hand-edits are durable -- future releases only prepend
+new versioned sections; they don't rewrite prior ones.
 
 ## [Unreleased]
 
