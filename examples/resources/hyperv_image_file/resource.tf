@@ -3,7 +3,7 @@
 # against the supplied checksum, and atomic-renames into place. The .part
 # file is cleaned up on every failure path.
 resource "hyperv_image_file" "ubuntu_cloud_image" {
-  destination_path = "C:\\hyperv\\images\\ubuntu-22.04-server-cloudimg-amd64.vhdx"
+  destination_path = "C:/hyperv/images/ubuntu-22.04-server-cloudimg-amd64.vhdx"
   url = {
     url      = "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.vhdx"
     checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -16,5 +16,5 @@ resource "hyperv_image_file" "ubuntu_cloud_image" {
 # never copies, fetches, or (on destroy) deletes the file. Distinguished
 # from url-mode by the absence of a `url` block.
 resource "hyperv_image_file" "preplaced_iso" {
-  destination_path = "C:\\hyperv\\isos\\windows-server-2022.iso"
+  destination_path = "C:/hyperv/isos/windows-server-2022.iso"
 }
