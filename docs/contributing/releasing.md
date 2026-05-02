@@ -61,6 +61,8 @@ The two-step flow makes most failures non-destructive:
   git push origin vX.Y.Z
   ```
 
+  Caveat on re-runs after GoReleaser succeeded: GoReleaser's `replace_existing_draft: true` deletes the release-drafter draft as part of its run. If the workflow fails after that point but before publish lands, a re-run will capture an empty body — the curated notes are gone. Two recovery options: edit the draft release's body manually in the GitHub UI before re-running (drafts stay mutable until the publish step), or accept an empty published body and patch downstream notes (`CHANGELOG.md`, registry description) by hand.
+
 - **Workflow failed at or after the publish step.** The release is now immutable. You can still delete it with `gh release delete --cleanup-tag` (deletion is allowed; modification isn't) and burn the version. The Terraform Registry never registers a release with missing assets, so the version number is reusable as long as you delete before fixing.
 
 - **Wrong assets shipped (e.g., manifest version mismatch).** Same as above — delete, fix the underlying config, re-tag. Don't try to "patch" a published immutable release; the answer is always to cut a fresh version.

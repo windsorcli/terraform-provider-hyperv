@@ -59,6 +59,13 @@ jobs:
       # match release-drafter's resolved version, or release-drafter
       # hasn't run yet), the file ends up empty and the release ships
       # with no notes -- same behavior as before this step existed.
+      #
+      # Re-run-after-failure caveat: if the workflow fails after GoReleaser
+      # succeeds (which deletes release-drafter's draft) but before the
+      # publish step lands, a re-run captures nothing -- the original
+      # release-drafter draft is gone. Recover by editing the resulting
+      # draft release's body manually (drafts stay mutable until publish)
+      # before re-running, or accept an empty published body.
       - name: Capture release-drafter notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
