@@ -111,6 +111,19 @@ tasks:
       - test -z "$(gofmt -s -l .)"
       - terraform fmt -check -recursive examples/
 
+  # ---------- Modules ----------
+
+  gomod:check:
+    desc: Verify go.mod and go.sum are tidy (CI gate)
+    summary: |
+      `go mod tidy -diff` prints what tidy WOULD change and exits
+      non-zero on drift. The release build no longer runs `go mod
+      tidy` (would mask drift by rewriting go.sum in the build
+      sandbox); this gate catches drift at PR time so a clean go.sum
+      is what reaches the tag.
+    cmds:
+      - go mod tidy -diff
+
   # ---------- Test ----------
 
   test:
@@ -250,6 +263,11 @@ tasks:
 
   # ---------- Release ----------
 
+  release:check:
+    desc: Validate .goreleaser.yml without building
+    cmds:
+      - goreleaser check
+
   release:snapshot:
     desc: Local GoReleaser dry-run (no publish, no sign)
     cmds:
@@ -263,7 +281,7 @@ tasks:
   tools:
     desc: Install Go-native dev tools (linters, doc generator)
     cmds:
-      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
       - go install github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.21.0
 
   # ---------- Cleanup ----------
