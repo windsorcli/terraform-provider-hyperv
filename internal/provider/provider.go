@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/datasources/host"
+	dsvmstate "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vm_state"
 	dsvswitch "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vswitch"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
@@ -224,6 +225,7 @@ func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource
 func (p *HypervProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		host.New,
+		dsvmstate.New,
 		dsvswitch.New,
 	}
 }
