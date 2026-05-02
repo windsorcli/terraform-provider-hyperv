@@ -340,7 +340,7 @@ func resolveBool(attr types.Bool, envVar string, fallback bool) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("env %s = %q is not a recognized boolean "+
-		"(expected true/false/1/0/yes/no)", envVar, v)
+		"(expected true/false/1/0/t/f/yes/no)", envVar, v)
 }
 
 // resolveString returns the first non-empty value among:
