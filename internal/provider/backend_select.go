@@ -186,6 +186,23 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
 	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
 
+	// Basic auth without HTTPS sends credentials as base64 in the
+	// Authorization header -- effectively cleartext on the wire.
+	// We don't hard-block the combination because it's documented as a
+	// diagnostic tool for TLS-only failures, but a plan-time warning
+	// keeps it from landing silently in production config.
+	if auth == "basic" && !useHTTPS {
+		diags.AddAttributeWarning(
+			path.Root("winrm").AtName("auth"),
+			"WinRM Basic auth over HTTP exposes credentials in cleartext",
+			"`auth = \"basic\"` combined with `use_https = false` sends the "+
+				"username and password as base64 in the Authorization header, "+
+				"which is wire-readable. This combination is intended only for "+
+				"diagnosing TLS-only failures. For production, set "+
+				"`use_https = true` (the default) or switch to `auth = \"ntlm\"`.",
+		)
+	}
+
 	// Default port depends on transport. resolveInt's fallback is the
 	// HTTPS-default; we override below for HTTP so a non-HTTPS operator
 	// who didn't set a port lands on 5985 instead of trying 5986 in

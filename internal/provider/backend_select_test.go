@@ -302,6 +302,86 @@ func TestNewConnection_WinRMBuildsBackend(t *testing.T) {
 	}
 }
 
+// TestNewConnection_WinRMBasicWithoutHTTPSWarns verifies the operator-
+// safety guard: the auth=basic + use_https=false combination sends creds
+// as plaintext-base64. We don't hard-block (the schema doc explicitly
+// keeps it as a TLS-only diagnostic option), but a plan-time warning
+// keeps the risky combo from landing in production config silently.
+func TestNewConnection_WinRMBasicWithoutHTTPSWarns(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_WINRM_USE_HTTPS", "")
+	t.Setenv("HYPERV_WINRM_AUTH", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+		WinRM: &WinRMConfig{
+			UseHTTPS: types.BoolValue(false),
+			Auth:     types.StringValue("basic"),
+		},
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if diags.HasError() {
+		t.Fatalf("unexpected error diagnostics: %v", diags.Errors())
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection (warning, not error)")
+	}
+	warnings := diags.Warnings()
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning diagnostic")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w.Summary(), "Basic auth over HTTP") ||
+			strings.Contains(w.Detail(), "cleartext") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about Basic-over-HTTP cleartext exposure; got %v", warnings)
+	}
+}
+
+// TestNewConnection_WinRMBasicWithHTTPSDoesNotWarn confirms the warning
+// is gated on the *combination* -- Basic auth over HTTPS is fine (the
+// Authorization header rides encrypted transport) and shouldn't trigger
+// the diagnostic.
+func TestNewConnection_WinRMBasicWithHTTPSDoesNotWarn(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_WINRM_USE_HTTPS", "")
+	t.Setenv("HYPERV_WINRM_AUTH", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+		WinRM: &WinRMConfig{
+			UseHTTPS: types.BoolValue(true),
+			Auth:     types.StringValue("basic"),
+		},
+	}
+	_, diags := newConnection(t.Context(), m)
+	if diags.HasError() {
+		t.Fatalf("unexpected error diagnostics: %v", diags.Errors())
+	}
+	for _, w := range diags.Warnings() {
+		if strings.Contains(w.Summary(), "Basic auth over HTTP") {
+			t.Errorf("did not expect cleartext warning when use_https=true; got %v", w)
+		}
+	}
+}
+
 func TestNewConnection_InvalidBackend(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
 
