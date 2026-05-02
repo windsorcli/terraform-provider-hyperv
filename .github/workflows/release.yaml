@@ -91,10 +91,20 @@ jobs:
       # setting locks the release at publish time, so this must be the
       # last step -- once it runs, no further changes are possible.
       # Pairs with `release.draft: true` in .goreleaser.yml.
+      #
+      # The `--notes-file` flag is guarded by a non-empty check so an
+      # empty capture (no matching draft, or a draft with empty body)
+      # doesn't clobber whatever body the draft already has -- defense-
+      # in-depth for any race or recovery path that puts content in the
+      # draft between the capture and publish steps.
       - name: Apply notes and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit "${GITHUB_REF_NAME}" \
-            --notes-file /tmp/release-notes.md \
-            --draft=false
+          if [ -s /tmp/release-notes.md ]; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --notes-file /tmp/release-notes.md \
+              --draft=false
+          else
+            gh release edit "${GITHUB_REF_NAME}" --draft=false
+          fi
