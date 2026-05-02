@@ -388,15 +388,24 @@ func (b *winrmBackend) stageWinRMScript(ctx context.Context, client *winrm.Clien
 	}
 
 	cleanup := func() {
-		// Fresh background context so cleanup still runs after a canceled
-		// apply. Short bounded timeout so a wedged remote doesn't leak the
-		// goroutine.
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		delScript := `Remove-Item -LiteralPath '` + remotePath + `' -Force -ErrorAction SilentlyContinue`
-		delCmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
-			b.opts.PwshPath, encodePSScript(delScript))
-		_, _ = client.RunWithContext(cleanupCtx, delCmd, io.Discard, io.Discard)
+		// Run the deletion attempt in a goroutine so a wedged remote
+		// doesn't block runScriptOnClient's return -- particularly
+		// important on the timeout path, where the apply ctx is already
+		// canceled and the operator is waiting for the error to surface.
+		// Fresh background context (the apply ctx may already be done)
+		// with a 10s ceiling: temp-file deletion is best-effort; if the
+		// remote can't drain the call in 10s, leak the file -- Windows
+		// auto-cleans %TEMP% periodically. Parallel applies with many
+		// concurrent timeouts therefore can't pile up cleanup goroutines
+		// for more than 10 seconds each.
+		go func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			delScript := `Remove-Item -LiteralPath '` + remotePath + `' -Force -ErrorAction SilentlyContinue`
+			delCmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
+				b.opts.PwshPath, encodePSScript(delScript))
+			_, _ = client.RunWithContext(cleanupCtx, delCmd, io.Discard, io.Discard)
+		}()
 	}
 	return remotePath, cleanup, nil
 }
