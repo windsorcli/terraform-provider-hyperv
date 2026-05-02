@@ -264,6 +264,18 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("name"),
 						knownvalue.StringExact("primary"),
 					),
+					// Per-NIC ip_addresses is Computed and populated by Read.
+					// The bench's test fixtures boot to a UEFI no-boot-device
+					// screen, so no integration services run and the list is
+					// empty -- the assertion pins the framework contract
+					// (known empty list, not null/unknown) regardless. A
+					// future bench with real-guest fixtures would need to
+					// relax this to ListSizeAtLeast(0) or similar.
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("ip_addresses"),
+						knownvalue.ListSizeExact(0),
+					),
 				},
 			},
 			{
@@ -280,6 +292,19 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 						"hyperv_vm.test",
 						tfjsonpath.New("network_adapter"),
 						knownvalue.ListSizeExact(2),
+					),
+					// ip_addresses populated as known empty list on each
+					// NIC -- pin both slots so a regression in the flatten
+					// loop doesn't slip through on the multi-NIC path.
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("ip_addresses"),
+						knownvalue.ListSizeExact(0),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(1).AtMapKey("ip_addresses"),
+						knownvalue.ListSizeExact(0),
 					),
 				},
 			},

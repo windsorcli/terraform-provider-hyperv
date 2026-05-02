@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -54,8 +55,15 @@ func priorSchemaV0() schema.Schema {
 }
 
 // UpgradeState bridges schema versions for hyperv_vm. Each entry maps
-// from a SOURCE version directly to the current (v2) shape; the
+// from a SOURCE version directly to the current (v4) shape; the
 // framework dispatches based on the on-disk version, NOT a chain.
+//
+// Each upgradeNToM helper returns the current Model, so a v0 state
+// file goes v0 -> Model in one hop (the helper handles every shape
+// change between v0 and v4 inline). When a new schema version
+// lands, add a new priorSchemaVX / priorModelVX / upgradeVXToV(X+1)
+// triple here and update the existing helpers to populate any new
+// fields with their defaulted-or-null v4 shape.
 func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgrader {
 	return map[int64]resource.StateUpgrader{
 		0: {
@@ -94,6 +102,18 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
+		3: {
+			PriorSchema: ptrSchema(priorSchemaV3()),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior priorModelV3
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				upgraded := upgradeV3ToV4(prior)
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
 	}
 }
 
@@ -112,26 +132,38 @@ type priorMemoryModelV1V2 struct {
 	StartupBytes types.Int64 `tfsdk:"startup_bytes"`
 }
 
+// priorNetworkAdapterModelV1V2V3 is the NIC shape on v1/v2/v3 -- before
+// ip_addresses was added to network_adapter[] in v4. Shared between
+// priorModelV1, priorModelV2, and priorModelV3 so each version's
+// stored state file decodes against a struct that exactly matches the
+// schema-of-record (extra struct fields against fewer schema attrs is
+// undocumented framework territory; the explicit per-version shape
+// keeps the contract honest).
+type priorNetworkAdapterModelV1V2V3 struct {
+	Name       types.String `tfsdk:"name"`
+	SwitchName types.String `tfsdk:"switch_name"`
+}
+
 // priorModelV1 mirrors the v1 Model. Identical to the current Model
 // except StateModel lacks shutdown_mode and MemoryModel lacks the
 // dynamic-memory fields. Carrying separate types keeps the framework's
 // tfsdk decoder happy when it materializes a v1 state file: the current
 // Model has fields the v1 file won't have on disk.
 type priorModelV1 struct {
-	ID              types.String          `tfsdk:"id"`
-	Name            types.String          `tfsdk:"name"`
-	Generation      types.Int64           `tfsdk:"generation"`
-	CPU             *CPUModel             `tfsdk:"cpu"`
-	Memory          *priorMemoryModelV1V2 `tfsdk:"memory"`
-	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
-	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
-	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
-	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
-	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
-	Notes           types.String          `tfsdk:"notes"`
-	State           *priorStateModelV1    `tfsdk:"state"`
-	IPAddresses     types.List            `tfsdk:"ip_addresses"`
-	Path            types.String          `tfsdk:"path"`
+	ID              types.String                     `tfsdk:"id"`
+	Name            types.String                     `tfsdk:"name"`
+	Generation      types.Int64                      `tfsdk:"generation"`
+	CPU             *CPUModel                        `tfsdk:"cpu"`
+	Memory          *priorMemoryModelV1V2            `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel             `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []priorNetworkAdapterModelV1V2V3 `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel                  `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel            `tfsdk:"boot_order"`
+	SecureBoot      types.Bool                       `tfsdk:"secure_boot"`
+	Notes           types.String                     `tfsdk:"notes"`
+	State           *priorStateModelV1               `tfsdk:"state"`
+	IPAddresses     types.List                       `tfsdk:"ip_addresses"`
+	Path            types.String                     `tfsdk:"path"`
 }
 
 // priorModelV2 mirrors the v2 Model. Identical to the current Model
@@ -139,20 +171,20 @@ type priorModelV1 struct {
 // v3 change). State carries shutdown_mode (added in v2) so the
 // current StateModel works.
 type priorModelV2 struct {
-	ID              types.String          `tfsdk:"id"`
-	Name            types.String          `tfsdk:"name"`
-	Generation      types.Int64           `tfsdk:"generation"`
-	CPU             *CPUModel             `tfsdk:"cpu"`
-	Memory          *priorMemoryModelV1V2 `tfsdk:"memory"`
-	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
-	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
-	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
-	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
-	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
-	Notes           types.String          `tfsdk:"notes"`
-	State           *StateModel           `tfsdk:"state"`
-	IPAddresses     types.List            `tfsdk:"ip_addresses"`
-	Path            types.String          `tfsdk:"path"`
+	ID              types.String                     `tfsdk:"id"`
+	Name            types.String                     `tfsdk:"name"`
+	Generation      types.Int64                      `tfsdk:"generation"`
+	CPU             *CPUModel                        `tfsdk:"cpu"`
+	Memory          *priorMemoryModelV1V2            `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel             `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []priorNetworkAdapterModelV1V2V3 `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel                  `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel            `tfsdk:"boot_order"`
+	SecureBoot      types.Bool                       `tfsdk:"secure_boot"`
+	Notes           types.String                     `tfsdk:"notes"`
+	State           *StateModel                      `tfsdk:"state"`
+	IPAddresses     types.List                       `tfsdk:"ip_addresses"`
+	Path            types.String                     `tfsdk:"path"`
 }
 
 // priorSchemaV1 mirrors the v1 schema's structural shape -- attribute
@@ -332,6 +364,143 @@ func priorSchemaV2() schema.Schema {
 	}
 }
 
+// priorModelV3 mirrors the v3 Model. Identical to the current Model
+// except network_adapter[] entries lack the v4-only ip_addresses
+// field. Memory has the v3 dynamic-memory fields and State has the
+// v2-introduced shutdown_mode -- both already match the current
+// model and are passed through directly.
+type priorModelV3 struct {
+	ID              types.String                     `tfsdk:"id"`
+	Name            types.String                     `tfsdk:"name"`
+	Generation      types.Int64                      `tfsdk:"generation"`
+	CPU             *CPUModel                        `tfsdk:"cpu"`
+	Memory          *MemoryModel                     `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel             `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []priorNetworkAdapterModelV1V2V3 `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel                  `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel            `tfsdk:"boot_order"`
+	SecureBoot      types.Bool                       `tfsdk:"secure_boot"`
+	Notes           types.String                     `tfsdk:"notes"`
+	State           *StateModel                      `tfsdk:"state"`
+	IPAddresses     types.List                       `tfsdk:"ip_addresses"`
+	Path            types.String                     `tfsdk:"path"`
+}
+
+// priorSchemaV3 mirrors the v3 schema's structural shape: the v2 shape
+// plus the v3 memory.{dynamic, min_bytes, max_bytes} additions.
+// network_adapter[] entries still have only {name, switch_name} --
+// the v4-only ip_addresses field is the lone v3 -> v4 change.
+//
+// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
+// the v4-only network_adapter[].ip_addresses addition.
+func priorSchemaV3() schema.Schema {
+	return schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id":         schema.StringAttribute{Computed: true},
+			"name":       schema.StringAttribute{Required: true},
+			"generation": schema.Int64Attribute{Required: true},
+			"cpu": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"count": schema.Int64Attribute{Required: true},
+				},
+			},
+			"memory": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"startup_bytes": schema.Int64Attribute{Required: true},
+					"dynamic":       schema.BoolAttribute{Optional: true, Computed: true},
+					"min_bytes":     schema.Int64Attribute{Optional: true, Computed: true},
+					"max_bytes":     schema.Int64Attribute{Optional: true, Computed: true},
+				},
+			},
+			"hard_disk_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"path":                schema.StringAttribute{CustomType: pathtype.Type, Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"network_adapter": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name":        schema.StringAttribute{Required: true},
+						"switch_name": schema.StringAttribute{Required: true},
+					},
+				},
+			},
+			"dvd_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"iso_path":            schema.StringAttribute{CustomType: pathtype.Type, Optional: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"boot_order": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type":                schema.StringAttribute{Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Optional: true, Computed: true},
+						"controller_location": schema.Int64Attribute{Optional: true, Computed: true},
+						"name":                schema.StringAttribute{Optional: true, Computed: true},
+					},
+				},
+			},
+			"secure_boot": schema.BoolAttribute{Optional: true, Computed: true},
+			"notes":       schema.StringAttribute{Optional: true, Computed: true},
+			"state": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"desired":       schema.StringAttribute{Optional: true},
+					"current":       schema.StringAttribute{Computed: true},
+					"shutdown_mode": schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+			"path":         schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+// upgradeV3ToV4 maps a v3 state struct into the v4 Model. The only
+// shape change is network_adapter[].ip_addresses being added. v3
+// state files don't carry per-NIC IPs, so each NIC migrates with
+// IPAddresses set to an empty (known) list -- the next refresh
+// populates from the host. Pure function for direct unit testing.
+func upgradeV3ToV4(prior priorModelV3) Model {
+	return Model{
+		ID:              prior.ID,
+		Name:            prior.Name,
+		Generation:      prior.Generation,
+		CPU:             prior.CPU,
+		Memory:          prior.Memory,
+		HardDiskDrives:  prior.HardDiskDrives,
+		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
+		DvdDrives:       prior.DvdDrives,
+		BootOrder:       prior.BootOrder,
+		SecureBoot:      prior.SecureBoot,
+		Notes:           prior.Notes,
+		State:           prior.State,
+		IPAddresses:     prior.IPAddresses,
+		Path:            prior.Path,
+	}
+}
+
 // upgradeV1ToV2 maps a v1 state struct into the v2 Model. The only
 // shape change is state.shutdown_mode being added; v1 state values
 // migrate with ShutdownMode left null because v1 users never had
@@ -357,7 +526,7 @@ func upgradeV1ToV2(prior priorModelV1) Model {
 		CPU:             prior.CPU,
 		Memory:          expandPriorMemoryV1V2(prior.Memory),
 		HardDiskDrives:  prior.HardDiskDrives,
-		NetworkAdapters: prior.NetworkAdapters,
+		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
 		DvdDrives:       prior.DvdDrives,
 		BootOrder:       prior.BootOrder,
 		SecureBoot:      prior.SecureBoot,
@@ -366,6 +535,22 @@ func upgradeV1ToV2(prior priorModelV1) Model {
 		IPAddresses:     prior.IPAddresses,
 		Path:            prior.Path,
 	}
+}
+
+// expandPriorNICs maps the v1/v2/v3 NIC shape into v4 NetworkAdapterModel
+// entries by adding an empty ip_addresses list. The next refresh
+// populates per-NIC IPs from the host; until then, an empty (known)
+// list keeps the post-upgrade state shape valid against the v4 schema.
+func expandPriorNICs(prior []priorNetworkAdapterModelV1V2V3) []NetworkAdapterModel {
+	out := make([]NetworkAdapterModel, len(prior))
+	for i, n := range prior {
+		out[i] = NetworkAdapterModel{
+			Name:        n.Name,
+			SwitchName:  n.SwitchName,
+			IPAddresses: types.ListValueMust(types.StringType, []attr.Value{}),
+		}
+	}
+	return out
 }
 
 // expandPriorMemoryV1V2 maps the v1/v2 memory shape into the v3 model.
@@ -398,7 +583,7 @@ func upgradeV2ToV3(prior priorModelV2) Model {
 		CPU:             prior.CPU,
 		Memory:          expandPriorMemoryV1V2(prior.Memory),
 		HardDiskDrives:  prior.HardDiskDrives,
-		NetworkAdapters: prior.NetworkAdapters,
+		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
 		DvdDrives:       prior.DvdDrives,
 		BootOrder:       prior.BootOrder,
 		SecureBoot:      prior.SecureBoot,

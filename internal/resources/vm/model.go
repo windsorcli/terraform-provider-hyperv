@@ -118,11 +118,18 @@ type HardDiskDriveModel struct {
 // list at plan time, so the slot key is well-defined).
 //
 // SwitchName binds the NIC to a hyperv_virtual_switch by name.
-// Required in this slice; future commits may add Optional defaulting
-// to "unbound" if a real use case surfaces.
+//
+// IPAddresses is the per-NIC slice of IPv4 / IPv6 addresses that
+// Hyper-V's integration services have reported for this specific
+// adapter. Computed -- populated on Read from the host. Unlike the
+// VM-level flat `ip_addresses` list, the per-NIC view gives multi-
+// homed VMs a stable reference to a specific NIC's IPs (order
+// within a single NIC is host-driven but the NIC selector itself
+// is keyed by the deterministic display Name).
 type NetworkAdapterModel struct {
-	Name       types.String `tfsdk:"name"`
-	SwitchName types.String `tfsdk:"switch_name"`
+	Name        types.String `tfsdk:"name"`
+	SwitchName  types.String `tfsdk:"switch_name"`
+	IPAddresses types.List   `tfsdk:"ip_addresses"`
 }
 
 // DvdDriveModel is one element of the `dvd_drive` list on hyperv_vm.

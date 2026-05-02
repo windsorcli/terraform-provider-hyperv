@@ -33,9 +33,9 @@ output "node01_state" {
 # Guest IPs are reported by Hyper-V integration services. Empty when the
 # VM is `Off`, when the guest is still booting, or when the guest doesn't
 # ship integration services. Reference specific indices only when the VM
-# has a single known-stable IP; multi-homed VMs have no clean per-NIC
-# pinning today (per-NIC IPs are not currently exposed on
-# `hyperv_vm.network_adapter[]`).
+# has a single known-stable IP; multi-homed VMs should pin to a specific
+# NIC via `hyperv_vm.network_adapter[*].ip_addresses` -- it keys off the
+# deterministic display `name` and avoids the cross-NIC ordering ambiguity.
 output "node01_first_ip" {
   value = try(data.hyperv_vm_state.node01.ip_addresses[0], null)
 }
@@ -54,4 +54,4 @@ output "node01_first_ip" {
 - `id` (String) Resource identifier. Mirrors `name` -- VM names are unique per host.
 - `ip_addresses` (List of String) Flat list of IPv4 / IPv6 addresses the guest's Hyper-V integration services have reported across all attached NICs. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services.
 
-**Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, and a data source is evaluated on every plan -- so any downstream resource that references `data.hyperv_vm_state.web.ip_addresses[0]` will see the value flip when the host happens to surface a different IP first, planning a spurious update. **Index into this list only when the VM is single-NIC, single-IP and the user trusts that contract operationally.** Per-NIC IPs are not currently exposed on `hyperv_vm.network_adapter[]`, so multi-homed VMs that need a stable reference to a specific IP have no clean way to do it -- this is a known limitation. The List-vs-Set trade-off is intentional: indexing is the dominant single-IP use case, and the type may flip to `Set` in a future major release if multi-homed users surface real pain.
+**Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, and a data source is evaluated on every plan -- so any downstream resource that references `data.hyperv_vm_state.web.ip_addresses[0]` will see the value flip when the host happens to surface a different IP first, planning a spurious update. **Index into this list only when the VM is single-NIC, single-IP and the user trusts that contract operationally.** Multi-homed VMs should pin to a specific NIC via `hyperv_vm.network_adapter[*].ip_addresses` -- the per-NIC view keys off the deterministic display `name` and eliminates the cross-NIC ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing is the dominant single-IP use case, and the type may flip to `Set` in a future major release if multi-homed users surface real pain.

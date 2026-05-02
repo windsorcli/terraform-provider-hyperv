@@ -284,3 +284,67 @@ func TestUpgradeStateRegistration_V2Entry(t *testing.T) {
 		t.Error("UpgradeState[2].StateUpgrader: got nil, want non-nil migration func")
 	}
 }
+
+// TestUpgradeV3ToV4_PopulatesEmptyIPAddresses pins the only v3 -> v4
+// shape change: each network_adapter[] entry grows an ip_addresses
+// list. v3 state files don't carry per-NIC IPs, so each NIC migrates
+// with an empty (known) list -- the next refresh fills it from the
+// host. Empty (not null) keeps the post-upgrade state shape valid
+// against the schema's Computed contract.
+func TestUpgradeV3ToV4_PopulatesEmptyIPAddresses(t *testing.T) {
+	prior := priorModelV3{
+		ID:         types.StringValue("vm01"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		NetworkAdapters: []priorNetworkAdapterModelV1V2V3{
+			{Name: types.StringValue("primary"), SwitchName: types.StringValue("lab")},
+			{Name: types.StringValue("backup"), SwitchName: types.StringValue("mgmt")},
+		},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringNull(),
+		Path:       types.StringValue("C:/foo"),
+	}
+
+	got := upgradeV3ToV4(prior)
+
+	if len(got.NetworkAdapters) != 2 {
+		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
+	}
+	for i, n := range got.NetworkAdapters {
+		if n.IPAddresses.IsNull() {
+			t.Errorf("NIC[%d].IPAddresses is null; want empty list (the schema marks it Computed)", i)
+		}
+		if n.IPAddresses.IsUnknown() {
+			t.Errorf("NIC[%d].IPAddresses is unknown; want empty (known) list", i)
+		}
+		if got, want := len(n.IPAddresses.Elements()), 0; got != want {
+			t.Errorf("NIC[%d].IPAddresses len = %d, want %d (next refresh populates from host)",
+				i, got, want)
+		}
+	}
+	// Pre-existing NIC fields carry through unchanged.
+	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
+		t.Errorf("NIC[0].Name: got %q, want primary", got.NetworkAdapters[0].Name.ValueString())
+	}
+	if got.NetworkAdapters[1].SwitchName.ValueString() != "mgmt" {
+		t.Errorf("NIC[1].SwitchName: got %q, want mgmt", got.NetworkAdapters[1].SwitchName.ValueString())
+	}
+}
+
+// TestUpgradeStateRegistration_V3Entry verifies the v3 upgrader is
+// registered alongside the v0/v1/v2 ones.
+func TestUpgradeStateRegistration_V3Entry(t *testing.T) {
+	r := &Resource{}
+	upgraders := r.UpgradeState(t.Context())
+	if _, ok := upgraders[3]; !ok {
+		t.Fatalf("UpgradeState: missing v3 upgrader; got versions %+v", keysOf(upgraders))
+	}
+	if upgraders[3].PriorSchema == nil {
+		t.Error("UpgradeState[3].PriorSchema: got nil, want priorSchemaV3()")
+	}
+	if upgraders[3].StateUpgrader == nil {
+		t.Error("UpgradeState[3].StateUpgrader: got nil, want non-nil migration func")
+	}
+}

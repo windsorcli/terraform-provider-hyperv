@@ -44,8 +44,9 @@ func hardDiskObjectAttrTypes() map[string]attr.Type {
 // mac_address attach as additional keys here in a follow-up.
 func networkAdapterObjectAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
-		"name":        types.StringType,
-		"switch_name": types.StringType,
+		"name":         types.StringType,
+		"switch_name":  types.StringType,
+		"ip_addresses": types.ListType{ElemType: types.StringType},
 	}
 }
 
@@ -99,7 +100,7 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 //	    dynamic_memory as static (same on-host behavior as v2).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		Version: 3,
+		Version: 4,
 		MarkdownDescription: "Manages a Hyper-V virtual machine. Configures " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), " +
 			"`secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle " +
@@ -347,6 +348,31 @@ func resourceSchema() schema.Schema {
 							MarkdownDescription: "Name of the `hyperv_virtual_switch` to bind " +
 								"this NIC to. Hyper-V validates the switch exists at apply " +
 								"time and surfaces its own clear error if it doesn't.",
+						},
+						"ip_addresses": schema.ListAttribute{
+							Computed:    true,
+							ElementType: types.StringType,
+							MarkdownDescription: "IPv4 / IPv6 addresses Hyper-V's integration " +
+								"services have reported for this specific NIC. Empty when the " +
+								"VM is `Off`, when the guest is still booting, or when the guest " +
+								"doesn't ship integration services.\n\n" +
+								"Unlike the VM-level flat `ip_addresses` list (which mixes IPs " +
+								"from every adapter and has order-unstable semantics across " +
+								"reboots), the per-NIC view gives multi-homed VMs a stable " +
+								"reference: index this NIC by its deterministic display `name`, " +
+								"then index its `ip_addresses[0]` for the first reported IP. " +
+								"Order within a single NIC remains host-driven (a DHCP renewal " +
+								"can shuffle IPv4 vs IPv6 priority), but pinning the NIC " +
+								"selector eliminates the cross-NIC ordering ambiguity.",
+							// No UseStateForUnknown plan modifier: this is a Computed-only
+							// attribute inside a list of nested objects. When a new NIC
+							// is added to the list, there's no prior state for that slot,
+							// and UseStateForUnknown becomes a no-op leaving the planned
+							// value as null -- which then mismatches the empty list our
+							// Read populates post-apply ("Provider produced inconsistent
+							// result"). Letting the framework default to unknown at plan
+							// time is the correct shape: Read may populate any value and
+							// the framework accepts it.
 						},
 					},
 				},
@@ -625,12 +651,12 @@ func resourceSchema() schema.Schema {
 					"`hyperv_vm.web.ip_addresses[0]` may see the value flip when the host " +
 					"happens to surface a different IP first, planning a spurious update. " +
 					"**Index into this list only when the VM is single-NIC, single-IP and the " +
-					"user trusts that contract operationally.** Per-NIC IPs are not currently " +
-					"exposed on `network_adapter[]`, so multi-homed VMs that need a stable " +
-					"reference to a specific IP have no clean way to do it -- this is a known " +
-					"limitation. The List-vs-Set trade-off is intentional: indexing is the " +
-					"dominant single-IP use case, and the type may flip to `Set` in a future " +
-					"major release if multi-homed users surface real pain.",
+					"user trusts that contract operationally.** Multi-homed VMs should use the " +
+					"per-NIC `network_adapter[*].ip_addresses` view instead -- it pins the NIC " +
+					"selector by deterministic display `name`, eliminating the cross-NIC " +
+					"ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing " +
+					"is the dominant single-IP use case, and the type may flip to `Set` in a " +
+					"future major release if multi-homed users surface real pain.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
