@@ -190,7 +190,7 @@ To change `notes`, write a different non-empty value. To remove notes from a VM,
 - `id` (String) Resource identifier. Mirrors `name` -- VM names are unique per host.
 - `ip_addresses` (List of String) Flat list of IPv4 / IPv6 addresses the guest's Hyper-V integration services have reported across all attached `network_adapter[]` entries. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services (rare for modern Windows and Linux).
 
-**Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, so downstream resources that reference `hyperv_vm.web.ip_addresses[0]` may see the value flip when the host happens to surface a different IP first, planning a spurious update. **Index into this list only when the VM is single-NIC, single-IP and the user trusts that contract operationally.** Per-NIC IPs are not currently exposed on `network_adapter[]`, so multi-homed VMs that need a stable reference to a specific IP have no clean way to do it -- this is a known limitation. The List-vs-Set trade-off is intentional: indexing is the dominant single-IP use case, and the type may flip to `Set` in a future major release if multi-homed users surface real pain.
+**Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, so downstream resources that reference `hyperv_vm.web.ip_addresses[0]` may see the value flip when the host happens to surface a different IP first, planning a spurious update. **Index into this list only when the VM is single-NIC, single-IP and the user trusts that contract operationally.** Multi-homed VMs should use the per-NIC `network_adapter[*].ip_addresses` view instead -- it pins the NIC selector by deterministic display `name`, eliminating the cross-NIC ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing is the dominant single-IP use case, and the type may flip to `Set` in a future major release if multi-homed users surface real pain.
 - `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
 
 <a id="nestedatt--cpu"></a>
@@ -271,6 +271,12 @@ Required:
 
 - `name` (String) Display name of the NIC. Used as the slot key for reconciliation and shown in Hyper-V Manager's NIC list. Must be unique within this VM's `network_adapter` list.
 - `switch_name` (String) Name of the `hyperv_virtual_switch` to bind this NIC to. Hyper-V validates the switch exists at apply time and surfaces its own clear error if it doesn't.
+
+Read-Only:
+
+- `ip_addresses` (List of String) IPv4 / IPv6 addresses Hyper-V's integration services have reported for this specific NIC. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services.
+
+Unlike the VM-level flat `ip_addresses` list (which mixes IPs from every adapter and has order-unstable semantics across reboots), the per-NIC view gives multi-homed VMs a stable reference: index this NIC by its deterministic display `name`, then index its `ip_addresses[0]` for the first reported IP. Order within a single NIC remains host-driven (a DHCP renewal can shuffle IPv4 vs IPv6 priority), but pinning the NIC selector eliminates the cross-NIC ordering ambiguity.
 
 
 <a id="nestedatt--state"></a>

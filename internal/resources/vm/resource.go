@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -937,9 +938,17 @@ func modelFromVM(v *hyperv.VM) Model {
 	})
 	nics := make([]NetworkAdapterModel, 0, len(sortedNICs))
 	for _, n := range sortedNICs {
+		ipElems := make([]attr.Value, 0, len(n.IPAddresses))
+		for _, ip := range n.IPAddresses {
+			ipElems = append(ipElems, types.StringValue(ip))
+		}
+		// types.ListValueMust panics only on element-type mismatch, and
+		// we just built every element as types.String. Same pattern the
+		// schema uses for its empty-list defaults.
 		nics = append(nics, NetworkAdapterModel{
-			Name:       types.StringValue(n.Name),
-			SwitchName: types.StringValue(n.SwitchName),
+			Name:        types.StringValue(n.Name),
+			SwitchName:  types.StringValue(n.SwitchName),
+			IPAddresses: types.ListValueMust(types.StringType, ipElems),
 		})
 	}
 

@@ -85,12 +85,12 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 					"references `data.hyperv_vm_state.web.ip_addresses[0]` will see the value flip " +
 					"when the host happens to surface a different IP first, planning a spurious " +
 					"update. **Index into this list only when the VM is single-NIC, single-IP and " +
-					"the user trusts that contract operationally.** Per-NIC IPs are not currently " +
-					"exposed on `hyperv_vm.network_adapter[]`, so multi-homed VMs that need a " +
-					"stable reference to a specific IP have no clean way to do it -- this is a " +
-					"known limitation. The List-vs-Set trade-off is intentional: indexing is the " +
-					"dominant single-IP use case, and the type may flip to `Set` in a future major " +
-					"release if multi-homed users surface real pain.",
+					"the user trusts that contract operationally.** Multi-homed VMs should pin to " +
+					"a specific NIC via `hyperv_vm.network_adapter[*].ip_addresses` -- the per-NIC " +
+					"view keys off the deterministic display `name` and eliminates the cross-NIC " +
+					"ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing " +
+					"is the dominant single-IP use case, and the type may flip to `Set` in a " +
+					"future major release if multi-homed users surface real pain.",
 			},
 		},
 	}
