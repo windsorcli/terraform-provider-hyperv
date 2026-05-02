@@ -382,6 +382,37 @@ func TestNewConnection_WinRMBasicWithHTTPSDoesNotWarn(t *testing.T) {
 	}
 }
 
+// TestNewConnection_WinRMRejectsMalformedBoolEnv pins the fail-loud
+// behavior on unrecognized boolean env values. Previously a typo like
+// HYPERV_WINRM_USE_HTTPS=disabled silently fell back to the default
+// (true), producing a confusing TLS handshake error instead of a
+// clear configuration diagnostic. Matches resolveInt's existing
+// pattern of erroring on unparseable env values.
+func TestNewConnection_WinRMRejectsMalformedBoolEnv(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_WINRM_USE_HTTPS", "disabled")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection on malformed env value")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic for HYPERV_WINRM_USE_HTTPS=disabled")
+	}
+	if !strings.Contains(diags[0].Detail(), "recognized boolean") {
+		t.Errorf("error detail = %q, want substring 'recognized boolean'", diags[0].Detail())
+	}
+}
+
 func TestNewConnection_InvalidBackend(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
 

@@ -181,8 +181,24 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 	if m.WinRM != nil {
 		winrmAttrs = *m.WinRM
 	}
-	useHTTPS := resolveBool(winrmAttrs.UseHTTPS, "HYPERV_WINRM_USE_HTTPS", true)
-	insecure := resolveBool(winrmAttrs.Insecure, "HYPERV_WINRM_INSECURE", false)
+	useHTTPS, err := resolveBool(winrmAttrs.UseHTTPS, "HYPERV_WINRM_USE_HTTPS", true)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("winrm").AtName("use_https"),
+			"Invalid WinRM use_https",
+			err.Error(),
+		)
+		return nil
+	}
+	insecure, err := resolveBool(winrmAttrs.Insecure, "HYPERV_WINRM_INSECURE", false)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("winrm").AtName("insecure"),
+			"Invalid WinRM insecure",
+			err.Error(),
+		)
+		return nil
+	}
 	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
 	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
 
@@ -301,27 +317,30 @@ func resolveInt(attr types.Int64, envVar string, fallback int) (int, error) {
 
 // resolveBool returns the first set value among:
 //  1. the provider attribute (if known and non-null)
-//  2. the named env var (parsed via strconv.ParseBool, accepting
-//     "true"/"false"/"1"/"0"/"t"/"f"/"yes"/"no" via case-insensitive match)
+//  2. the named env var (case-insensitive: true/false/1/0/t/f/yes/no)
 //  3. fallback
 //
-// A malformed env value falls through to the fallback rather than erroring,
-// matching how operators expect "1=true, anything-not-1=false" environment
-// conventions to behave. resolveString's silent-empty-fall-through has the
-// same shape.
-func resolveBool(attr types.Bool, envVar string, fallback bool) bool {
+// An unrecognized env value (e.g. HYPERV_WINRM_USE_HTTPS=disabled) returns
+// an error rather than silently falling back -- matches resolveInt's
+// "fail loud on operator typos" behavior, so a misspelled value surfaces
+// at Configure time instead of producing a confusing TLS handshake error
+// later. An empty env var still falls through to the fallback cleanly.
+func resolveBool(attr types.Bool, envVar string, fallback bool) (bool, error) {
 	if !attr.IsNull() && !attr.IsUnknown() {
-		return attr.ValueBool()
+		return attr.ValueBool(), nil
 	}
-	if v := os.Getenv(envVar); v != "" {
-		switch strings.ToLower(v) {
-		case "true", "1", "t", "yes":
-			return true
-		case "false", "0", "f", "no":
-			return false
-		}
+	v := os.Getenv(envVar)
+	if v == "" {
+		return fallback, nil
 	}
-	return fallback
+	switch strings.ToLower(v) {
+	case "true", "1", "t", "yes":
+		return true, nil
+	case "false", "0", "f", "no":
+		return false, nil
+	}
+	return false, fmt.Errorf("env %s = %q is not a recognized boolean "+
+		"(expected true/false/1/0/yes/no)", envVar, v)
 }
 
 // resolveString returns the first non-empty value among:
