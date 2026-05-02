@@ -1,0 +1,67 @@
+# Auto-update CHANGELOG.md when a GitHub Release is published.
+#
+# Trigger: any release publish (whether the maintainer published the
+# release-drafter draft directly, or the release.yaml workflow created
+# one via GoReleaser). The release body is treated as the source of
+# truth for the new versioned section -- so the maintainer's only
+# responsibility is curating the release-drafter draft (or letting it
+# accumulate from labeled PRs) and clicking "Publish release."
+#
+# What runs:
+#   1. Pull the just-published release's tag + body.
+#   2. Prepend a `## [<tag>] - <date>` section into CHANGELOG.md with
+#      the body, removing entries from the [Unreleased] section that
+#      now live in the new versioned section.
+#   3. Commit the file change back to main with `[skip ci]` so the
+#      commit doesn't re-fire CI for a docs-only change.
+#
+# Why direct-commit-to-main (not a PR): release-drafter already
+# maintains the running content; the file update is mechanical
+# transcription. Adding a PR-and-merge step would only move toil
+# around, not eliminate it.
+#
+# Permissions: contents: write to push the changelog commit. No PAT
+# needed -- GITHUB_TOKEN works because the commit doesn't need to
+# trigger downstream workflows (and won't, by GitHub's design).
+
+name: CHANGELOG on Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  update-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Always update the file on the default branch, not on the
+          # tag's commit (releases are off the tag, not main).
+          ref: main
+          # fetch-depth: 0 lets the auto-commit step compare against
+          # the prior history.
+          fetch-depth: 0
+
+      - name: Update CHANGELOG.md from the published release notes
+        uses: stefanzweifel/changelog-updater-action@a938690fad7edf25368f37e43a1ed1b34303eb36 # v1.12.0
+        with:
+          # The action reads the triggering release's tag + body via
+          # the GitHub event context; no extra inputs needed for the
+          # default flow.
+          latest-version: ${{ github.event.release.tag_name }}
+          release-notes: ${{ github.event.release.body }}
+
+      - name: Commit and push CHANGELOG.md
+        uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7.1.0
+        with:
+          commit_message: 'docs(changelog): update for ${{ github.event.release.tag_name }} [skip ci]'
+          file_pattern: CHANGELOG.md
+          # `[skip ci]` in the commit message is the conventional way
+          # to opt out of triggering CI on the auto-commit. github-
+          # auto-commit-action also configures the commit author as
+          # the github-actions[bot] by default, which is what we want.

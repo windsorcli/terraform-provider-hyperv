@@ -1,0 +1,97 @@
+# GoReleaser v2 config for the windsorcli/hyperv Terraform provider.
+#
+# Cross-compiles the provider binary for every Terraform-Registry-supported
+# (OS, arch) tuple, archives each as a per-target zip, generates a
+# SHA256SUMS file, and GPG-signs the checksums file. The Registry pulls
+# from the resulting GitHub Release on tag push -- see PLAN.md S16.3 for
+# the workflow layout.
+#
+# Adapted from HashiCorp's terraform-provider-scaffolding-framework.
+# Run `goreleaser check` after edits; `goreleaser release --snapshot
+# --clean --skip=publish --skip=sign` for a local dry run.
+
+version: 2
+
+before:
+  hooks:
+    # Tidy modules before building so a stale go.sum doesn't surface
+    # in a release build (where it can't be fixed without re-tagging).
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    flags:
+      - -trimpath
+    ldflags:
+      - '-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }}'
+    # Registry-supported targets per
+    # https://developer.hashicorp.com/terraform/registry/providers/os-arch
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - '386'
+      - arm
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: '386'
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: arm
+    binary: '{{ .ProjectName }}_v{{ .Version }}'
+
+archives:
+  - formats: ['zip']
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+
+checksum:
+  extra_files:
+    # Registry expects the manifest file alongside the binaries; the
+    # checksum file MUST include it so the Registry can verify integrity.
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
+  name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
+  algorithm: sha256
+
+signs:
+  - artifacts: checksum
+    args:
+      # GPG_FINGERPRINT is exported by the import-gpg action in the
+      # release workflow. signing the checksums file (not each binary)
+      # is the Registry-mandated pattern -- the checksums file itself
+      # already covers the binaries.
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
+release:
+  # `keep-existing` preserves the release notes that release-drafter
+  # already authored on the published draft. Without this, goreleaser
+  # would overwrite the body with its own (empty, since changelog is
+  # disabled) one when it attaches artifacts -- the published release
+  # would lose the curated notes AND the changelog-on-release workflow
+  # would prepend an empty section to CHANGELOG.md. With keep-existing,
+  # goreleaser only adds artifacts (binaries + checksums + signature +
+  # manifest) to the release the maintainer just published.
+  mode: keep-existing
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
+
+changelog:
+  # CHANGELOG.md is human-curated (release-drafter populates it from
+  # labeled PRs); GoReleaser shouldn't auto-overwrite the release
+  # body. Use the GitHub Release notes (drafted by release-drafter)
+  # as the source of truth.
+  disable: true

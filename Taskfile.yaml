@@ -250,6 +250,11 @@ tasks:
 
   # ---------- Release ----------
 
+  release:check:
+    desc: Validate .goreleaser.yml without building
+    cmds:
+      - goreleaser check
+
   release:snapshot:
     desc: Local GoReleaser dry-run (no publish, no sign)
     cmds:
