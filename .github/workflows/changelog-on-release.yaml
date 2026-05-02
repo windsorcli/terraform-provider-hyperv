@@ -23,6 +23,14 @@
 # Permissions: contents: write to push the changelog commit. No PAT
 # needed -- GITHUB_TOKEN works because the commit doesn't need to
 # trigger downstream workflows (and won't, by GitHub's design).
+#
+# Branch protection caveat: this workflow pushes directly to main
+# using GITHUB_TOKEN. If main is later protected with a rule that
+# requires pull requests for all changes (Settings -> Branches ->
+# "Require a pull request before merging"), the push will be rejected
+# and the CHANGELOG will silently never update. To keep this working
+# under such a rule, add `github-actions[bot]` to the bypass list
+# (Settings -> Branches -> ruleset -> "Bypass list").
 
 name: CHANGELOG on Release
 
