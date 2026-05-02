@@ -116,6 +116,13 @@ jobs:
     # config errors must surface here rather than at release time.
     name: Release snapshot (goreleaser)
     runs-on: ubuntu-latest
+    # Explicit per-job least-privilege scope. The snapshot only
+    # compiles and archives locally -- no GitHub API writes -- so
+    # contents: read is sufficient. Pinning this at the job level
+    # prevents a future workflow-level permissions widening from
+    # silently broadening this job's scope.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
