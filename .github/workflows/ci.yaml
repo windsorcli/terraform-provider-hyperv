@@ -105,6 +105,38 @@ jobs:
           version: 3.x
       - run: task build:all
 
+  release-snapshot:
+    # Full GoReleaser pipeline minus publish/sign. build-matrix above
+    # is a fast Go-compile smoke test against a 6-target subset; this
+    # job runs the actual release engine across the full 13-binary
+    # matrix and validates the archive name templates, SHA256SUMS
+    # generation, manifest inclusion, and signs-block syntax. Catches
+    # .goreleaser.yml drift at PR time -- with the org's immutable
+    # releases setting, a botched tag burns the version number, so
+    # config errors must surface here rather than at release time.
+    name: Release snapshot (goreleaser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # GoReleaser inspects git history during snapshot; --snapshot
+          # complains about a missing prior tag without full history.
+          fetch-depth: 0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7.2.1
+        with:
+          # install-only puts goreleaser on PATH so `task release:snapshot`
+          # can invoke it -- keeps the "every CI job runs `task <name>`"
+          # contract from the workflow header.
+          install-only: true
+      - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
+        with:
+          version: 3.x
+      - run: task release:snapshot
+
   fmt:
     name: Format Check
     runs-on: ubuntu-latest
