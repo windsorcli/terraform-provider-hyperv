@@ -264,7 +264,7 @@ func (v networkAdapterUniqueNamesValidator) validate(data Model) diag.Diagnostic
 type bootOrderRejectedForGen1Validator struct{}
 
 func (v bootOrderRejectedForGen1Validator) Description(_ context.Context) string {
-	return "boot_order is not valid for generation 1 VMs (BIOS startup order is gen-1-specific and deferred to a follow-up)"
+	return "boot_order is not valid for generation 1 VMs (BIOS startup order is gen-1-specific and not currently supported)"
 }
 
 func (v bootOrderRejectedForGen1Validator) MarkdownDescription(ctx context.Context) string {
@@ -299,9 +299,9 @@ func (v bootOrderRejectedForGen1Validator) validate(data Model) diag.Diagnostics
 		path.Root("boot_order"),
 		"boot_order is not valid for generation 1 VMs",
 		"Generation 1 VMs use BIOS startup order (CD / IDEHardDrive / "+
-			"LegacyNetworkAdapter / Floppy categories), which is a separate "+
-			"schema slice deferred to a follow-up. Remove boot_order from the "+
-			"config or change generation to 2.",
+			"LegacyNetworkAdapter / Floppy categories), which is not currently "+
+			"supported by this resource. Remove boot_order from the config "+
+			"or change generation to 2.",
 	)
 	return diags
 }

@@ -60,7 +60,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 				Optional: true,
 				MarkdownDescription: "Execution backend. One of `local`, `ssh`, `winrm`. " +
 					"Defaults to `HYPERV_BACKEND` env var, or `local` if neither is set. " +
-					"`local` and `ssh` are implemented; `winrm` ships in M3.",
+					"Currently `local` and `ssh` are implemented; `winrm` is not.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("local", "ssh", "winrm"),
 				},
@@ -129,7 +129,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			},
 			"winrm": schema.SingleNestedAttribute{
 				Optional:            true,
-				MarkdownDescription: "WinRM-backend-specific configuration. Backend ships in M3.",
+				MarkdownDescription: "WinRM-backend-specific configuration. (The WinRM backend is not currently implemented.)",
 				Attributes: map[string]schema.Attribute{
 					"use_https": schema.BoolAttribute{
 						Optional:            true,

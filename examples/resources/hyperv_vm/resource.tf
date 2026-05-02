@@ -1,7 +1,7 @@
 # Generation 2 VM (UEFI, Secure Boot capable). The default for anything
 # modern -- VHDX disks, SCSI controllers, larger maximum sizes. Secure
-# Boot is off here because cloud images and Linux distros (Talos, Ubuntu
-# cloud-images, etc.) don't always carry Microsoft-signed bootloaders.
+# Boot is off here because many cloud images and Linux distros don't
+# carry Microsoft-signed bootloaders.
 resource "hyperv_vm" "node01" {
   name       = "node01"
   generation = 2
@@ -26,10 +26,11 @@ resource "hyperv_vm" "node01" {
   ]
 
   # Boot ISO loaded into a DVD drive. Omit `iso_path` for an empty
-  # drive (medium tray with nothing inserted) -- common for Talos /
-  # OpenBSD "remove install media after install" flows.
+  # drive (medium tray with nothing inserted) -- common for
+  # appliance-OS install flows that need to remove install media
+  # after first boot.
   dvd_drive = [
-    { iso_path = "C:/iso/talos.iso", controller_number = 0, controller_location = 1 },
+    { iso_path = "C:/iso/appliance.iso", controller_number = 0, controller_location = 1 },
   ]
 
   # Boot from the install ISO first. After OS install, flip the order
@@ -48,7 +49,7 @@ resource "hyperv_vm" "node01" {
   # Add `shutdown_mode = "graceful"` to send an ACPI shutdown via
   # Hyper-V integration services -- only enable that on guests known
   # to ship and run them (modern Windows, most Linux distros with
-  # hyperv-daemons; Talos and other minimal cloud images may not).
+  # hyperv-daemons; minimal cloud images may not).
   state = {
     desired = "Running"
   }
@@ -78,7 +79,7 @@ resource "hyperv_vm" "legacy" {
 # the integration-services memory pressure signal. Requires the guest to
 # ship and run Hyper-V integration services -- modern Windows has them by
 # default; most Linux distros bundle them in a `hyperv-daemons` package.
-# Static-memory guests (Talos, OpenBSD, etc.) shouldn't use this.
+# Guests without integration services should stick to static memory.
 resource "hyperv_vm" "elastic" {
   name       = "web-elastic"
   generation = 2
@@ -92,6 +93,4 @@ resource "hyperv_vm" "elastic" {
   notes = "auto-scaling web tier"
 }
 
-# Note: this resource intentionally omits boot_order, dynamic memory,
-# integration services, and power state. Each ships in a follow-up PR.
-# Storage, NICs, and DVD drives attach inline above (ADR-0001).
+# Storage, NICs, and DVD drives attach inline on the resource itself.

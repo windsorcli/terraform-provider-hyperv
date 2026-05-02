@@ -3,13 +3,13 @@
 page_title: "hyperv_virtual_switch Resource - hyperv"
 subcategory: ""
 description: |-
-  Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract; see docs/PLAN.md S5 https://github.com/windsorcli/terraform-provider-hyperv/blob/main/docs/PLAN.md for the wire shape this resource locks in.
+  Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract.
   Recovery from partial-create failure: if New-VMSwitch succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent terraform apply will fail with switch already exists. Recover with terraform import hyperv_virtual_switch.<name> <switch-name> and re-plan.
 ---
 
 # hyperv_virtual_switch (Resource)
 
-Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract; see [docs/PLAN.md S5](https://github.com/windsorcli/terraform-provider-hyperv/blob/main/docs/PLAN.md) for the wire shape this resource locks in.
+Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the `New-VMSwitch` / `Set-VMSwitch` / `Remove-VMSwitch` cmdlets via a typed JSON contract.
 
 **Recovery from partial-create failure:** if `New-VMSwitch` succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent `terraform apply` will fail with `switch already exists`. Recover with `terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.
 
