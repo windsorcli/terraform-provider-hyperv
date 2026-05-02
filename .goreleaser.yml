@@ -12,11 +12,11 @@
 
 version: 2
 
-before:
-  hooks:
-    # Tidy modules before building so a stale go.sum doesn't surface
-    # in a release build (where it can't be fixed without re-tagging).
-    - go mod tidy
+# No `before.hooks` block: tidying go.sum at release time would
+# produce artifacts whose dependency graph doesn't match the tagged
+# commit. The `gomod:check` task (wired into CI) gates go.sum
+# cleanliness at PR time instead, so a broken go.sum is caught and
+# fixed on main rather than auto-rewritten in the release sandbox.
 
 builds:
   - env:

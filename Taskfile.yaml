@@ -111,6 +111,19 @@ tasks:
       - test -z "$(gofmt -s -l .)"
       - terraform fmt -check -recursive examples/
 
+  # ---------- Modules ----------
+
+  gomod:check:
+    desc: Verify go.mod and go.sum are tidy (CI gate)
+    summary: |
+      `go mod tidy -diff` prints what tidy WOULD change and exits
+      non-zero on drift. The release build no longer runs `go mod
+      tidy` (would mask drift by rewriting go.sum in the build
+      sandbox); this gate catches drift at PR time so a clean go.sum
+      is what reaches the tag.
+    cmds:
+      - go mod tidy -diff
+
   # ---------- Test ----------
 
   test:
