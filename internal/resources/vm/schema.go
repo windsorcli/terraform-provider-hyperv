@@ -364,15 +364,24 @@ func resourceSchema() schema.Schema {
 								"Order within a single NIC remains host-driven (a DHCP renewal " +
 								"can shuffle IPv4 vs IPv6 priority), but pinning the NIC " +
 								"selector eliminates the cross-NIC ordering ambiguity.",
-							// No UseStateForUnknown plan modifier: this is a Computed-only
-							// attribute inside a list of nested objects. When a new NIC
-							// is added to the list, there's no prior state for that slot,
-							// and UseStateForUnknown becomes a no-op leaving the planned
-							// value as null -- which then mismatches the empty list our
-							// Read populates post-apply ("Provider produced inconsistent
-							// result"). Letting the framework default to unknown at plan
-							// time is the correct shape: Read may populate any value and
-							// the framework accepts it.
+							// No UseStateForUnknown plan modifier here. Empirically
+							// verified against the bench (TestAcc_VM_withNetworkAdapter
+							// step 2, adding a second NIC): with the modifier in
+							// place, the framework leaves the new NIC slot's
+							// ip_addresses as `null` at plan time (not unknown,
+							// despite the modifier's nominal "leave unknown alone"
+							// docstring), and the empty list our Read populates
+							// post-apply trips the framework's "Provider produced
+							// inconsistent result" check (was null, now
+							// cty.ListValEmpty(cty.String)).
+							//
+							// Without the modifier, the framework defaults
+							// Computed-only attrs to unknown at plan time, which
+							// accepts any post-apply value -- and on subsequent
+							// plans where nothing has changed, the framework
+							// preserves the state value naturally (state -> plan
+							// for unchanged Computed fields is the default
+							// behavior). Plan-stability is not actually lost.
 						},
 					},
 				},
