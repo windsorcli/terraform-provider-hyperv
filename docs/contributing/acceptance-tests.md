@@ -10,7 +10,7 @@ You need:
 2. One reachable transport from your dev machine to the bench:
    - **`local`** — run `task test:acc` directly on the Hyper-V host.
    - **`ssh`** — OpenSSH Server enabled on the bench, with PowerShell as the default shell. Key-based auth recommended.
-   - **`winrm`** — HTTPS + NTLM (workgroup) or Kerberos (domain). Disabled in this acc-test pass; SSH is the supported transport for v0.1.0-alpha.
+   - **`winrm`** — HTTPS listener on 5986 with NTLM (workgroup) or Basic auth. Server 2022 ships with WinRM enabled by default; you only need to add the HTTPS listener and a cert if one isn't already configured. Kerberos auth is not currently implemented.
 3. A test-only directory on the bench where ephemeral VHDs and downloads can land. `C:\hyperv\tfacc` is the convention.
 4. (For the `image_file` host_path test) a small pre-placed text file at a known path — the test reads its SHA-256 and tracks drift, but never modifies it. Stage once and forget.
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -31,14 +32,7 @@ func newConnection(_ context.Context, m HypervProviderModel) (connection.Connect
 	case "ssh":
 		return newSSHConnection(m, &diags), diags
 	case "winrm":
-		diags.AddAttributeError(
-			path.Root("backend"),
-			"WinRM backend not yet implemented",
-			"The winrm backend is planned for M3. Use backend = \"local\" "+
-				"(when running on the Hyper-V host itself) for now. "+
-				"Track progress in docs/PLAN.md §12.",
-		)
-		return nil, diags
+		return newWinRMConnection(m, &diags), diags
 	default:
 		diags.AddAttributeError(
 			path.Root("backend"),
@@ -154,6 +148,151 @@ func resolveDuration(attr types.String, envVar string) (time.Duration, error) {
 	return d, nil
 }
 
+// newWinRMConnection translates a HypervProviderModel into a configured WinRM
+// Connection. Resolves auth + transport config from provider attributes with
+// HYPERV_WINRM_* / HYPERV_HOST / etc. env-var fallbacks.
+//
+// Returns nil with attribute-anchored diagnostics on configuration errors so
+// the operator sees which knob to adjust. The HTTP client and the auth
+// round-trip happen in Open (called from provider.Configure right after this
+// function returns).
+func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
+	host := resolveString(m.Host, "HYPERV_HOST", "")
+	if host == "" {
+		diags.AddAttributeError(
+			path.Root("host"),
+			"WinRM backend requires host",
+			"Set the provider's `host` attribute or HYPERV_HOST.",
+		)
+		return nil
+	}
+	username := resolveString(m.Username, "HYPERV_USERNAME", "")
+	if username == "" {
+		diags.AddAttributeError(
+			path.Root("username"),
+			"WinRM backend requires username",
+			"Set the provider's `username` attribute or HYPERV_USERNAME.",
+		)
+		return nil
+	}
+	password := resolveString(m.Password, "HYPERV_PASSWORD", "")
+
+	var winrmAttrs WinRMConfig
+	if m.WinRM != nil {
+		winrmAttrs = *m.WinRM
+	}
+	useHTTPS, err := resolveBool(winrmAttrs.UseHTTPS, "HYPERV_WINRM_USE_HTTPS", true)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("winrm").AtName("use_https"),
+			"Invalid WinRM use_https",
+			err.Error(),
+		)
+		return nil
+	}
+	insecure, err := resolveBool(winrmAttrs.Insecure, "HYPERV_WINRM_INSECURE", false)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("winrm").AtName("insecure"),
+			"Invalid WinRM insecure",
+			err.Error(),
+		)
+		return nil
+	}
+	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
+	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
+
+	// Password gate: NTLM and Basic both require one. Kerberos in principle
+	// can use a pre-cached TGT (we reject it at NewWinRM time today, but
+	// the gate is shaped so future Kerberos support doesn't break this
+	// path). Anchored at path.Root("password") so the operator sees an
+	// inline pointer to the missing field rather than the generic
+	// "WinRM backend initialization failed" wrapping that NewWinRM's
+	// password error would otherwise produce.
+	if password == "" && auth != "kerberos" {
+		diags.AddAttributeError(
+			path.Root("password"),
+			"WinRM backend requires password",
+			fmt.Sprintf("Set the provider's `password` attribute or HYPERV_PASSWORD; "+
+				"%s auth needs one.", auth),
+		)
+		return nil
+	}
+
+	// Basic auth without HTTPS sends credentials as base64 in the
+	// Authorization header -- effectively cleartext on the wire.
+	// We don't hard-block the combination because it's documented as a
+	// diagnostic tool for TLS-only failures, but a plan-time warning
+	// keeps it from landing silently in production config.
+	if auth == "basic" && !useHTTPS {
+		diags.AddAttributeWarning(
+			path.Root("winrm").AtName("auth"),
+			"WinRM Basic auth over HTTP exposes credentials in cleartext",
+			"`auth = \"basic\"` combined with `use_https = false` sends the "+
+				"username and password as base64 in the Authorization header, "+
+				"which is wire-readable. This combination is intended only for "+
+				"diagnosing TLS-only failures. For production, set "+
+				"`use_https = true` (the default) or switch to `auth = \"ntlm\"`.",
+		)
+	}
+
+	// Default port depends on transport. resolveInt's fallback is the
+	// HTTPS-default; we override below for HTTP so a non-HTTPS operator
+	// who didn't set a port lands on 5985 instead of trying 5986 in
+	// cleartext mode.
+	defaultPort := 5986
+	if !useHTTPS {
+		defaultPort = 5985
+	}
+	port, err := resolveInt(m.Port, "HYPERV_PORT", defaultPort)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("port"),
+			"Invalid WinRM port",
+			err.Error(),
+		)
+		return nil
+	}
+	if port < 1 || port > 65535 {
+		diags.AddAttributeError(
+			path.Root("port"),
+			"Invalid WinRM port",
+			fmt.Sprintf("port must be between 1 and 65535; got %d.", port),
+		)
+		return nil
+	}
+
+	commandTimeout, err := resolveDuration(m.Timeout, "HYPERV_TIMEOUT")
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("timeout"),
+			"Invalid timeout",
+			err.Error(),
+		)
+		return nil
+	}
+
+	conn, err := connection.NewWinRM(connection.WinRMOptions{
+		Host:           host,
+		Port:           port,
+		Username:       username,
+		Password:       password,
+		UseHTTPS:       useHTTPS,
+		Insecure:       insecure,
+		Auth:           auth,
+		CACert:         cacert,
+		CommandTimeout: commandTimeout,
+	})
+	if err != nil {
+		diags.AddError(
+			"WinRM backend initialization failed",
+			fmt.Sprintf("Could not configure the WinRM backend: %s", err),
+		)
+		return nil
+	}
+	return conn
+}
+
 func newLocalConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
 	var pwshAttr types.String
 	if m.Local != nil {
@@ -191,6 +330,34 @@ func resolveInt(attr types.Int64, envVar string, fallback int) (int, error) {
 		return n, nil
 	}
 	return fallback, nil
+}
+
+// resolveBool returns the first set value among:
+//  1. the provider attribute (if known and non-null)
+//  2. the named env var (case-insensitive: true/false/1/0/t/f/yes/no)
+//  3. fallback
+//
+// An unrecognized env value (e.g. HYPERV_WINRM_USE_HTTPS=disabled) returns
+// an error rather than silently falling back -- matches resolveInt's
+// "fail loud on operator typos" behavior, so a misspelled value surfaces
+// at Configure time instead of producing a confusing TLS handshake error
+// later. An empty env var still falls through to the fallback cleanly.
+func resolveBool(attr types.Bool, envVar string, fallback bool) (bool, error) {
+	if !attr.IsNull() && !attr.IsUnknown() {
+		return attr.ValueBool(), nil
+	}
+	v := os.Getenv(envVar)
+	if v == "" {
+		return fallback, nil
+	}
+	switch strings.ToLower(v) {
+	case "true", "1", "t", "yes":
+		return true, nil
+	case "false", "0", "f", "no":
+		return false, nil
+	}
+	return false, fmt.Errorf("env %s = %q is not a recognized boolean "+
+		"(expected true/false/1/0/t/f/yes/no)", envVar, v)
 }
 
 // resolveString returns the first non-empty value among:

@@ -251,21 +251,200 @@ func TestNewConnection_SSHPortOutOfRange(t *testing.T) {
 	}
 }
 
-func TestNewConnection_WinRMReturnsClearDiagnostic(t *testing.T) {
+// TestNewConnection_WinRMRequiresHost mirrors the SSH and Local equivalents:
+// missing host produces an attribute-anchored diagnostic rather than a
+// confusing later "could not connect" failure mid-plan.
+func TestNewConnection_WinRMRequiresHost(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
 
 	m := HypervProviderModel{
 		Backend: types.StringValue("winrm"),
 	}
 	conn, diags := newConnection(t.Context(), m)
 	if conn != nil {
-		t.Error("expected nil connection for unimplemented backend")
+		t.Error("expected nil connection when host is missing")
 	}
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}
-	if !strings.Contains(diags[0].Detail(), "M3") {
-		t.Errorf("error detail = %q, want substring 'M3'", diags[0].Detail())
+	if !strings.Contains(diags[0].Detail(), "host") {
+		t.Errorf("error detail = %q, want substring 'host'", diags[0].Detail())
+	}
+}
+
+// TestNewConnection_WinRMBuildsBackend verifies the happy path: with host,
+// username, and password set, newConnection returns a non-nil winrm-backed
+// Connection without error. The actual network call is in Open, exercised
+// by acceptance tests against the bench.
+func TestNewConnection_WinRMBuildsBackend(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection")
+	}
+	if got := conn.Backend(); got != "winrm" {
+		t.Errorf("Backend() = %q, want %q", got, "winrm")
+	}
+}
+
+// TestNewConnection_WinRMBasicWithoutHTTPSWarns verifies the operator-
+// safety guard: the auth=basic + use_https=false combination sends creds
+// as plaintext-base64. We don't hard-block (the schema doc explicitly
+// keeps it as a TLS-only diagnostic option), but a plan-time warning
+// keeps the risky combo from landing in production config silently.
+func TestNewConnection_WinRMBasicWithoutHTTPSWarns(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_WINRM_USE_HTTPS", "")
+	t.Setenv("HYPERV_WINRM_AUTH", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+		WinRM: &WinRMConfig{
+			UseHTTPS: types.BoolValue(false),
+			Auth:     types.StringValue("basic"),
+		},
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if diags.HasError() {
+		t.Fatalf("unexpected error diagnostics: %v", diags.Errors())
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection (warning, not error)")
+	}
+	warnings := diags.Warnings()
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning diagnostic")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w.Summary(), "Basic auth over HTTP") ||
+			strings.Contains(w.Detail(), "cleartext") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about Basic-over-HTTP cleartext exposure; got %v", warnings)
+	}
+}
+
+// TestNewConnection_WinRMBasicWithHTTPSDoesNotWarn confirms the warning
+// is gated on the *combination* -- Basic auth over HTTPS is fine (the
+// Authorization header rides encrypted transport) and shouldn't trigger
+// the diagnostic.
+func TestNewConnection_WinRMBasicWithHTTPSDoesNotWarn(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_WINRM_USE_HTTPS", "")
+	t.Setenv("HYPERV_WINRM_AUTH", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+		WinRM: &WinRMConfig{
+			UseHTTPS: types.BoolValue(true),
+			Auth:     types.StringValue("basic"),
+		},
+	}
+	_, diags := newConnection(t.Context(), m)
+	if diags.HasError() {
+		t.Fatalf("unexpected error diagnostics: %v", diags.Errors())
+	}
+	for _, w := range diags.Warnings() {
+		if strings.Contains(w.Summary(), "Basic auth over HTTP") {
+			t.Errorf("did not expect cleartext warning when use_https=true; got %v", w)
+		}
+	}
+}
+
+// TestNewConnection_WinRMRequiresPassword pins the attribute-anchored
+// diagnostic for the missing-password case. Without this guard, an empty
+// password slides into connection.NewWinRM and surfaces as a generic
+// "WinRM backend initialization failed" error -- the operator has no
+// inline pointer to the offending field. Mirrors the host/username
+// guards above.
+func TestNewConnection_WinRMRequiresPassword(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		// Password deliberately omitted.
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection when password is missing for ntlm")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic")
+	}
+	// The attribute-anchored diagnostic ought to mention `password` in
+	// either the summary or the detail text -- the operator-facing
+	// signal that the password attribute is what to fix.
+	combined := diags[0].Summary() + " " + diags[0].Detail()
+	if !strings.Contains(strings.ToLower(combined), "password") {
+		t.Errorf("expected diagnostic to mention 'password'; got summary=%q detail=%q",
+			diags[0].Summary(), diags[0].Detail())
+	}
+}
+
+// TestNewConnection_WinRMRejectsMalformedBoolEnv pins the fail-loud
+// behavior on unrecognized boolean env values. Previously a typo like
+// HYPERV_WINRM_USE_HTTPS=disabled silently fell back to the default
+// (true), producing a confusing TLS handshake error instead of a
+// clear configuration diagnostic. Matches resolveInt's existing
+// pattern of erroring on unparseable env values.
+func TestNewConnection_WinRMRejectsMalformedBoolEnv(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_WINRM_USE_HTTPS", "disabled")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv01.example.com"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("placeholder"),
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection on malformed env value")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic for HYPERV_WINRM_USE_HTTPS=disabled")
+	}
+	if !strings.Contains(diags[0].Detail(), "recognized boolean") {
+		t.Errorf("error detail = %q, want substring 'recognized boolean'", diags[0].Detail())
 	}
 }
 

@@ -252,9 +252,7 @@ func ServeFixture(t *testing.T, ip string, body []byte) *httptest.Server {
 //   - TF_ACC unset → t.Skip (not an acc run; nothing to build).
 //   - TF_ACC set, env misconfigured → t.Fatalf with the specific gap.
 //
-// Connection is opened on construction and Closed via t.Cleanup. WinRM
-// backend isn't wired here yet; flags as Fatal until M3 lands the
-// connection backend itself.
+// Connection is opened on construction and Closed via t.Cleanup.
 func NewClient(t *testing.T) *hyperv.Client {
 	t.Helper()
 	if os.Getenv("TF_ACC") == "" {
@@ -293,7 +291,24 @@ func NewClient(t *testing.T) *hyperv.Client {
 			KnownHostsPath: os.Getenv("HYPERV_SSH_KNOWN_HOSTS_PATH"),
 		})
 	case "winrm":
-		t.Fatal("acctest.NewClient: winrm backend not yet wired (PLAN.md M3)")
+		port := 0
+		if p := os.Getenv("HYPERV_PORT"); p != "" {
+			pp, perr := strconv.Atoi(p)
+			if perr != nil {
+				t.Fatalf("acctest.NewClient: HYPERV_PORT=%q is not an integer: %v", p, perr)
+			}
+			port = pp
+		}
+		conn, err = connection.NewWinRM(connection.WinRMOptions{
+			Host:     os.Getenv("HYPERV_HOST"),
+			Port:     port,
+			Username: os.Getenv("HYPERV_USERNAME"),
+			Password: os.Getenv("HYPERV_PASSWORD"),
+			UseHTTPS: parseBoolEnvOr("HYPERV_WINRM_USE_HTTPS", true),
+			Insecure: parseBoolEnvOr("HYPERV_WINRM_INSECURE", false),
+			Auth:     os.Getenv("HYPERV_WINRM_AUTH"),
+			CACert:   os.Getenv("HYPERV_WINRM_CACERT"),
+		})
 	default:
 		t.Fatalf("acctest.NewClient: unknown HYPERV_BACKEND=%q", backend)
 	}
@@ -355,4 +370,25 @@ func CheckResourceGone[T any](resourceType string, get func(context.Context, str
 		}
 		return nil
 	}
+}
+
+// parseBoolEnvOr reads a bool-shaped env var, returning fallback if unset
+// or unparseable. Accepts the same forms as the provider's resolveBool:
+// "true"/"false"/"1"/"0"/"yes"/"no" (case-insensitive). Used by the WinRM
+// branch of NewClient to lift HYPERV_WINRM_USE_HTTPS / HYPERV_WINRM_INSECURE
+// off the environment without dragging in the provider package's resolver
+// (which would re-introduce the import cycle this acctest package exists
+// to avoid).
+func parseBoolEnvOr(envVar string, fallback bool) bool {
+	v := os.Getenv(envVar)
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(v) {
+	case "true", "1", "t", "yes":
+		return true
+	case "false", "0", "f", "no":
+		return false
+	}
+	return fallback
 }
