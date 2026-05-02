@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -335,12 +336,15 @@ func runWithOptionalStdin(ctx context.Context, client *winrm.Client, cmd string,
 // encodePSScript produces the value for `powershell.exe -EncodedCommand`:
 // UTF-16LE bytes of the script, base64-encoded. PowerShell's -EncodedCommand
 // is the canonical way to pass multi-line / quote-sensitive bodies without
-// shell-escape hazards.
+// shell-escape hazards. binary.LittleEndian.PutUint16 is stdlib's
+// named helper for the 2-byte little-endian split -- expresses intent
+// more clearly than `byte(r) byte(r>>8)` and sidesteps gosec G115's
+// generic narrowing-conversion warning on the manual form.
 func encodePSScript(s string) string {
 	utf16Runes := utf16.Encode([]rune(s))
-	buf := make([]byte, 0, len(utf16Runes)*2)
-	for _, r := range utf16Runes {
-		buf = append(buf, byte(r), byte(r>>8))
+	buf := make([]byte, len(utf16Runes)*2)
+	for i, r := range utf16Runes {
+		binary.LittleEndian.PutUint16(buf[i*2:], r)
 	}
 	return base64.StdEncoding.EncodeToString(buf)
 }
