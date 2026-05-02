@@ -41,5 +41,3 @@ the next release.
 
 - Initial release plumbing: GoReleaser config, tag-triggered release
   workflow, GPG-signed checksums.
-
-[Unreleased]: https://github.com/windsorcli/terraform-provider-hyperv/compare/HEAD...HEAD
