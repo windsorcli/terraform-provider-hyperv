@@ -87,7 +87,7 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 					"update. **Index into this list only when the VM is single-NIC, single-IP and " +
 					"the user trusts that contract operationally.** Multi-homed VMs should pin to a " +
 					"specific NIC via the underlying `hyperv_vm.network_adapter[]` once that schema " +
-					"slice exposes per-NIC IPs (deferred -- see PLAN.md §13). The List-vs-Set " +
+					"slice exposes per-NIC IPs (deferred). The List-vs-Set " +
 					"trade-off is documented and intentional: indexing is the dominant single-IP " +
 					"use case, and the type may flip to `Set` in a future major release if " +
 					"multi-homed users surface real pain.",
