@@ -139,10 +139,18 @@
                language="neutral"
                versionScope="nonSxS">
       <FirewallGroups>
+        <!--
+          Scope to Domain,Private only. The DC sits on a private
+          Hyper-V vSwitch so Public never applies in normal use, but
+          (a) during the windowsPE-to-oobeSystem window the network
+          is classified as Public until specialize finishes, and
+          (b) any future second NIC inherits this rule -- "all"
+          would expose RDP externally if either case ever lands.
+        -->
         <FirewallGroup wcm:action="add" wcm:keyValue="rdp">
           <Active>true</Active>
           <Group>Remote Desktop</Group>
-          <Profile>all</Profile>
+          <Profile>domain,private</Profile>
         </FirewallGroup>
       </FirewallGroups>
     </component>
