@@ -335,22 +335,24 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 	})
 }
 
-// TestAcc_VM_withNetworkAdapter_VlanAndMac pins the v5-only NIC fields:
-// a NIC created with a static mac_address and access-mode vlan_id
-// must round-trip those values into state, and a follow-up apply that
-// drops both attributes back to null must surface the post-detach +
-// reattach NIC with state values null again.
-//
-// Two steps:
+// TestAcc_VM_withNetworkAdapter_VlanAndMac pins the v5-only NIC fields
+// across the three user-facing transitions:
 //
 //  1. Create the NIC with mac_address = "AA:BB:CC:DD:EE:01" and
 //     vlan_id = 100. State asserts both fields populated as the
 //     cmdlet's canonical hyphenated-uppercase MAC and the integer
 //     VLAN ID.
-//  2. Drop both attributes (back to dynamic MAC + untagged). The
-//     diffNetworkAdapters comparator sees mac_address / vlan_id
-//     change and triggers detach + reattach; state asserts both
-//     fields back to null.
+//  2. Change both attributes to new values (different MAC, different
+//     VLAN). diffNetworkAdapters sees both fields change and triggers
+//     detach + reattach; the plancheck asserts the action is
+//     classified as in-place Update, not destroy-and-recreate.
+//  3. Revert both attributes to dynamic / untagged via the explicit
+//     `attr = null` form. Because the schema marks both fields as
+//     Optional+Computed, simply removing the lines from config would
+//     leave the prior state values in place (framework "stickiness");
+//     `= null` is the only way to surface the revert as a planned
+//     change. State after this step asserts both fields are null
+//     again, matching what a never-set NIC looks like.
 func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 	name := acctest.RandomName("vm-nic-vlan")
 	switchName := acctest.RandomName("nic-sw-vlan")
@@ -396,10 +398,6 @@ func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 				// Step 2: change both attributes to new values.
 				// Detach + reattach happens because
 				// diffNetworkAdapters sees both fields change.
-				// (Dropping the attributes back to null hits
-				// Optional+Computed "sticky" semantics where the
-				// framework copies state into plan -- a separate
-				// concern from this PR's change-detection contract.)
 				//
 				// The plancheck pin asserts the change is classified
 				// as an in-place Update, not a destroy-and-recreate.
@@ -435,19 +433,61 @@ func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 					),
 				},
 			},
+			{
+				// Step 3: revert both attributes to their unset
+				// (dynamic MAC / untagged) state via `= null`.
+				// Removing the lines from config alone wouldn't
+				// surface a change because Optional+Computed copies
+				// state into plan; only an explicit null tells the
+				// framework "I want this cleared". Both fields land
+				// at null in state again, matching a never-set NIC.
+				// The plancheck pins this as an in-place Update.
+				Config: vmWithNICVlanMacConfig(name, switchName,
+					nicWithVlanMacBlock{
+						Name:           "primary",
+						SwitchRef:      "hyperv_virtual_switch.primary",
+						MacAddressNull: true,
+						VlanIDNull:     true,
+					}),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_vm.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("mac_address"),
+						knownvalue.Null(),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("vlan_id"),
+						knownvalue.Null(),
+					),
+				},
+			},
 		},
 	})
 }
 
 // nicWithVlanMacBlock is the shape vmWithNICVlanMacConfig consumes.
-// MacAddress empty / VlanID zero means "omit the attribute" (the
-// shape distinct-value-or-empty test that exercises the detach +
-// reattach path on Update).
+// MacAddress empty / VlanID zero means "omit the attribute" entirely;
+// MacAddressNull / VlanIDNull true renders the attribute as the
+// literal `null` (which is how a user explicitly reverts an
+// Optional+Computed attribute to its dynamic state -- merely removing
+// the line keeps the prior state value). Setting both Address and
+// Null on the same field is meaningless; the renderer prefers Null.
 type nicWithVlanMacBlock struct {
-	Name       string
-	SwitchRef  string
-	MacAddress string
-	VlanID     int
+	Name           string
+	SwitchRef      string
+	MacAddress     string
+	MacAddressNull bool
+	VlanID         int
+	VlanIDNull     bool
 }
 
 // vmWithNICVlanMacConfig renders a single-NIC + single-switch config
@@ -472,10 +512,14 @@ resource "hyperv_vm" "test" {
       name        = %q
       switch_name = %s.name
 `, switchName, vmName, vmMinimumMemoryBytes, n.Name, n.SwitchRef)
-	if n.MacAddress != "" {
+	if n.MacAddressNull {
+		b.WriteString("      mac_address = null\n")
+	} else if n.MacAddress != "" {
 		fmt.Fprintf(&b, "      mac_address = %q\n", n.MacAddress)
 	}
-	if n.VlanID > 0 {
+	if n.VlanIDNull {
+		b.WriteString("      vlan_id     = null\n")
+	} else if n.VlanID > 0 {
 		fmt.Fprintf(&b, "      vlan_id     = %d\n", n.VlanID)
 	}
 	b.WriteString("    },\n  ]\n}\n")

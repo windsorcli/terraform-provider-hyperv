@@ -422,7 +422,15 @@ func resourceSchema() schema.Schema {
 								"case so unset config matches unset state).\n\n" +
 								"Changes to this field cause the NIC to be detached and " +
 								"re-attached (same shape as `switch_name` updates), which " +
-								"requires the VM to be `Off` for the cmdlet to apply.",
+								"requires the VM to be `Off` for the cmdlet to apply.\n\n" +
+								"**Reverting to dynamic MAC:** because this attribute is " +
+								"`Optional+Computed`, simply removing the line from your " +
+								"config keeps the previously-assigned static MAC in state " +
+								"(the framework treats an absent attribute as \"keep what " +
+								"you have\"). To revert a NIC to Hyper-V's dynamic-MAC pool " +
+								"you must explicitly assign `mac_address = null`, which " +
+								"surfaces as a planned change and triggers the detach + " +
+								"reattach.",
 							Validators: []validator.String{
 								stringvalidator.RegexMatches(macAddressRegex, "must be a valid "+
 									"MAC address (e.g. `AA:BB:CC:DD:EE:FF`, `AA-BB-CC-DD-EE-FF`, "+
@@ -439,7 +447,13 @@ func resourceSchema() schema.Schema {
 								"unset state.\n\n" +
 								"Trunk and isolation VLAN modes are not currently supported " +
 								"-- only Access mode. Changes to this field cause the NIC to " +
-								"be detached and re-attached, requiring the VM to be `Off`.",
+								"be detached and re-attached, requiring the VM to be `Off`.\n\n" +
+								"**Reverting to untagged:** because this attribute is " +
+								"`Optional+Computed`, simply removing the line from your " +
+								"config keeps the previously-assigned VLAN in state. To " +
+								"revert a NIC to untagged you must explicitly assign " +
+								"`vlan_id = null`, which surfaces as a planned change and " +
+								"triggers the detach + reattach.",
 							Validators: []validator.Int64{
 								int64validator.Between(1, 4094),
 							},
