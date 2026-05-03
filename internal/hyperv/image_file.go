@@ -89,7 +89,7 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 // but the file was deleted between then and the script's Test-Path);
 // in normal flow this can't happen.
 func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileFromLocalPathInput) (*ImageFile, error) {
-	expectedSha, err := computeFileSHA256(in.LocalPath)
+	expectedSha, err := ComputeFileSHA256(in.LocalPath)
 	if err != nil {
 		return nil, fmt.Errorf("compute sha256 of %s: %w", in.LocalPath, err)
 	}
@@ -134,10 +134,16 @@ func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileF
 	return &f, nil
 }
 
-// computeFileSHA256 returns the lowercase-hex SHA-256 of the file at
+// ComputeFileSHA256 returns the lowercase-hex SHA-256 of the file at
 // path. Streams via io.Copy so files of any size hash without buffering
 // the whole payload in memory.
-func computeFileSHA256(path string) (string, error) {
+//
+// Exported because the resource layer's local_path-mode plan-time
+// hashing reuses this -- both the typed-client method and the
+// resource's ModifyPlan need the same function so the SHA the runner
+// commits to at plan time is byte-identical to the one it sends on the
+// wire at apply time.
+func ComputeFileSHA256(path string) (string, error) {
 	f, err := os.Open(path) // #nosec G304 -- path is operator-supplied via resource config
 	if err != nil {
 		return "", err
