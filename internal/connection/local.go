@@ -125,7 +125,7 @@ func (b *localBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	}
 	defer func() { _ = src.Close() }()
 
-	if err := os.MkdirAll(filepath.Dir(remotePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(remotePath), 0o750); err != nil {
 		return fmt.Errorf("local: mkdir %s: %w", filepath.Dir(remotePath), err)
 	}
 	dst, err := os.Create(remotePath) // #nosec G304 -- remotePath is the operator's destination from resource config
