@@ -223,6 +223,49 @@ Describe 'Get-HypervVM' {
             $parsed.BootOrder[2].ControllerType     | Should -Be ''
         }
 
+        It 'emits per-NIC MacAddress and VlanID with the documented null/zero conventions' {
+            # Two NICs to pin both branches of the read script's
+            # per-NIC enrichment:
+            #
+            #   1. Dynamic MAC + untagged: MacAddress = '' (resource
+            #      layer surfaces null), VlanID = 0 (surfaces null).
+            #   2. Static MAC + access VLAN 100: MacAddress is the
+            #      cmdlet's hyphenated form, VlanID = 100.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive { @() }
+            Mock Get-VMNetworkAdapter {
+                @(
+                    New-HypervVMNetworkAdapterSample `
+                        -Name 'primary' -SwitchName 'lab' `
+                        -DynamicMacAddressEnabled $true -MacAddress '00155DAABBCC'
+                    New-HypervVMNetworkAdapterSample `
+                        -Name 'pinned' -SwitchName 'mgmt' `
+                        -DynamicMacAddressEnabled $false -MacAddress '00-15-5D-AA-BB-CC'
+                )
+            }
+            Mock Get-VMNetworkAdapterVlan -ParameterFilter { $VMNetworkAdapter.Name -eq 'primary' } `
+                -MockWith { New-HypervVMNetworkAdapterVlanSample -OperationMode 'Untagged' -AccessVlanId 0 }
+            Mock Get-VMNetworkAdapterVlan -ParameterFilter { $VMNetworkAdapter.Name -eq 'pinned' } `
+                -MockWith { New-HypervVMNetworkAdapterVlanSample -OperationMode 'Access'   -AccessVlanId 100 }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.NetworkAdapters.Count | Should -Be 2
+
+            # Dynamic MAC pool: emit empty string -- resource layer
+            # translates to null state value to keep config/state in
+            # round-trip lockstep.
+            $parsed.NetworkAdapters[0].Name       | Should -Be 'primary'
+            $parsed.NetworkAdapters[0].MacAddress | Should -Be ''
+            $parsed.NetworkAdapters[0].VlanID     | Should -Be 0
+
+            # Static MAC + access VLAN: emit the cmdlet's value verbatim.
+            $parsed.NetworkAdapters[1].Name       | Should -Be 'pinned'
+            $parsed.NetworkAdapters[1].MacAddress | Should -Be '00-15-5D-AA-BB-CC'
+            $parsed.NetworkAdapters[1].VlanID     | Should -Be 100
+        }
+
         It 'compresses output to a single line (Write-HypervResult contract)' {
             Mock Get-VM { New-HypervVMSample }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }

@@ -334,6 +334,45 @@ func TestSecureBootValidator(t *testing.T) {
 	}
 }
 
+// TestMacAddressRegex pins the schema-level format validator. Hyper-V's
+// Set-VMNetworkAdapter -StaticMacAddress accepts colon-, hyphen-, and
+// no-separator forms but rejects mixed separators within one address.
+// Catching the mixed-separator typo at plan time avoids a mid-apply
+// failure where the NIC has been detached but the new attach errors
+// out.
+func TestMacAddressRegex(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"colon-uppercase", "AA:BB:CC:DD:EE:FF", true},
+		{"colon-lowercase", "aa:bb:cc:dd:ee:ff", true},
+		{"hyphen-uppercase", "AA-BB-CC-DD-EE-FF", true},
+		{"hyphen-lowercase", "aa-bb-cc-dd-ee-ff", true},
+		{"no-separator", "AABBCCDDEEFF", true},
+		{"no-separator-lowercase", "aabbccddeeff", true},
+		{"mixed-separators-colon-hyphen", "AA:BB-CC:DD-EE:FF", false},
+		{"mixed-separators-hyphen-colon", "AA-BB:CC-DD:EE-FF", false},
+		{"too-short", "AA:BB:CC:DD:EE", false},
+		{"too-long", "AA:BB:CC:DD:EE:FF:00", false},
+		{"non-hex", "GG:BB:CC:DD:EE:FF", false},
+		{"empty", "", false},
+		{"trailing-separator", "AA:BB:CC:DD:EE:FF:", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := macAddressRegex.MatchString(tc.in)
+			if got != tc.want {
+				t.Errorf("macAddressRegex.MatchString(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // assertValidatorDiags is the shared assertion shape for validator-table
 // tests. Verifies presence/absence of an error and, when expected, that
 // the error is anchored to the right attribute path via the

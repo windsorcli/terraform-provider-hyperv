@@ -27,6 +27,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
@@ -332,6 +333,201 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAcc_VM_withNetworkAdapter_VlanAndMac pins the v5-only NIC fields
+// across the three user-facing transitions:
+//
+//  1. Create the NIC with mac_address = "AA:BB:CC:DD:EE:01" and
+//     vlan_id = 100. State asserts that the user's written MAC form
+//     (colon-separated) round-trips through the mac.Type custom
+//     string semantic-equality unchanged -- Hyper-V echoes back
+//     unsigned-12-hex ("AABBCCDDEE01"), but the framework recognizes
+//     it as semantically equal to the planned colon form and keeps
+//     the user's value in state. State also asserts the integer
+//     VLAN ID surfaces as-written.
+//  2. Change both attributes to new values (different MAC, different
+//     VLAN). diffNetworkAdapters sees both fields change and triggers
+//     detach + reattach; the plancheck asserts the action is
+//     classified as in-place Update, not destroy-and-recreate.
+//  3. Revert both attributes to dynamic / untagged via the explicit
+//     `attr = null` form. Because the schema marks both fields as
+//     Optional+Computed, simply removing the lines from config would
+//     leave the prior state values in place (framework "stickiness");
+//     `= null` is the only way to surface the revert as a planned
+//     change. State after this step asserts both fields are null
+//     again, matching what a never-set NIC looks like.
+func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
+	name := acctest.RandomName("vm-nic-vlan")
+	switchName := acctest.RandomName("nic-sw-vlan")
+	client := acctest.NewClient(t)
+
+	staticMAC := "AA:BB:CC:DD:EE:01"
+	// The mac.Type custom string type preserves the USER'S written
+	// form in state -- only equality comparisons normalize. So even
+	// though Hyper-V's Get-VMNetworkAdapter echoes back unsigned-12-hex
+	// ("AABBCCDDEE01"), the framework keeps the planned (user-written)
+	// value when it semantic-equals the post-apply value. Asserting
+	// the user's form pins this contract.
+	staticMACStored := staticMAC
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: NIC with static MAC + access VLAN 100.
+				Config: vmWithNICVlanMacConfig(name, switchName,
+					nicWithVlanMacBlock{
+						Name:       "primary",
+						SwitchRef:  "hyperv_virtual_switch.primary",
+						MacAddress: staticMAC,
+						VlanID:     100,
+					}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("mac_address"),
+						knownvalue.StringExact(staticMACStored),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("vlan_id"),
+						knownvalue.Int64Exact(100),
+					),
+				},
+			},
+			{
+				// Step 2: change both attributes to new values.
+				// Detach + reattach happens because
+				// diffNetworkAdapters sees both fields change.
+				//
+				// The plancheck pin asserts the change is classified
+				// as an in-place Update, not a destroy-and-recreate.
+				// A regression flipping mac_address or vlan_id to
+				// RequiresReplace would silently roll the whole VM,
+				// and the post-apply state checks would still pass
+				// against the fresh resource.
+				Config: vmWithNICVlanMacConfig(name, switchName,
+					nicWithVlanMacBlock{
+						Name:       "primary",
+						SwitchRef:  "hyperv_virtual_switch.primary",
+						MacAddress: "AA:BB:CC:DD:EE:02",
+						VlanID:     200,
+					}),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_vm.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("mac_address"),
+						knownvalue.StringExact("AA:BB:CC:DD:EE:02"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("vlan_id"),
+						knownvalue.Int64Exact(200),
+					),
+				},
+			},
+			{
+				// Step 3: revert both attributes to their unset
+				// (dynamic MAC / untagged) state via `= null`.
+				// Removing the lines from config alone wouldn't
+				// surface a change because Optional+Computed copies
+				// state into plan; only an explicit null tells the
+				// framework "I want this cleared". Both fields land
+				// at null in state again, matching a never-set NIC.
+				// The plancheck pins this as an in-place Update.
+				Config: vmWithNICVlanMacConfig(name, switchName,
+					nicWithVlanMacBlock{
+						Name:           "primary",
+						SwitchRef:      "hyperv_virtual_switch.primary",
+						MacAddressNull: true,
+						VlanIDNull:     true,
+					}),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_vm.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("mac_address"),
+						knownvalue.Null(),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("vlan_id"),
+						knownvalue.Null(),
+					),
+				},
+			},
+		},
+	})
+}
+
+// nicWithVlanMacBlock is the shape vmWithNICVlanMacConfig consumes.
+// MacAddress empty / VlanID zero means "omit the attribute" entirely;
+// MacAddressNull / VlanIDNull true renders the attribute as the
+// literal `null` (which is how a user explicitly reverts an
+// Optional+Computed attribute to its dynamic state -- merely removing
+// the line keeps the prior state value). Setting both Address and
+// Null on the same field is meaningless; the renderer prefers Null.
+type nicWithVlanMacBlock struct {
+	Name           string
+	SwitchRef      string
+	MacAddress     string
+	MacAddressNull bool
+	VlanID         int
+	VlanIDNull     bool
+}
+
+// vmWithNICVlanMacConfig renders a single-NIC + single-switch config
+// with optional mac_address and vlan_id. Distinct from
+// vmWithNICConfig because that helper is shared with the basic NIC
+// test and has a different shape (multiple NICs, no per-NIC extras).
+func vmWithNICVlanMacConfig(vmName, switchName string, n nicWithVlanMacBlock) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `
+resource "hyperv_virtual_switch" "primary" {
+  name        = %q
+  switch_type = "Private"
+}
+
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  network_adapter = [
+    {
+      name        = %q
+      switch_name = %s.name
+`, switchName, vmName, vmMinimumMemoryBytes, n.Name, n.SwitchRef)
+	if n.MacAddressNull {
+		b.WriteString("      mac_address = null\n")
+	} else if n.MacAddress != "" {
+		fmt.Fprintf(&b, "      mac_address = %q\n", n.MacAddress)
+	}
+	if n.VlanIDNull {
+		b.WriteString("      vlan_id     = null\n")
+	} else if n.VlanID > 0 {
+		fmt.Fprintf(&b, "      vlan_id     = %d\n", n.VlanID)
+	}
+	b.WriteString("    },\n  ]\n}\n")
+	return b.String()
 }
 
 // nicBlock and switchBlock are inputs to vmWithNICConfig.

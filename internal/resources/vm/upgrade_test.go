@@ -3,6 +3,7 @@ package vm
 import (
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -285,13 +286,15 @@ func TestUpgradeStateRegistration_V2Entry(t *testing.T) {
 	}
 }
 
-// TestUpgradeV3ToV4_PopulatesEmptyIPAddresses pins the only v3 -> v4
-// shape change: each network_adapter[] entry grows an ip_addresses
-// list. v3 state files don't carry per-NIC IPs, so each NIC migrates
-// with an empty (known) list -- the next refresh fills it from the
-// host. Empty (not null) keeps the post-upgrade state shape valid
-// against the schema's Computed contract.
-func TestUpgradeV3ToV4_PopulatesEmptyIPAddresses(t *testing.T) {
+// TestUpgradeV3ToV5_PopulatesEmptyIPAddresses pins the v3 -> v5
+// shape changes: each network_adapter[] entry grows an ip_addresses
+// list (v4) plus null mac_address / vlan_id (v5). v3 state files
+// don't carry any of those, so each NIC migrates with an empty
+// (known) ip_addresses list and null mac/vlan -- the next refresh
+// fills them from the host. Empty (not null) for ip_addresses keeps
+// the post-upgrade state shape valid against the schema's Computed
+// contract.
+func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 	prior := priorModelV3{
 		ID:         types.StringValue("vm01"),
 		Name:       types.StringValue("vm01"),
@@ -307,7 +310,7 @@ func TestUpgradeV3ToV4_PopulatesEmptyIPAddresses(t *testing.T) {
 		Path:       types.StringValue("C:/foo"),
 	}
 
-	got := upgradeV3ToV4(prior)
+	got := upgradeV3ToV5(prior)
 
 	if len(got.NetworkAdapters) != 2 {
 		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
@@ -322,6 +325,20 @@ func TestUpgradeV3ToV4_PopulatesEmptyIPAddresses(t *testing.T) {
 		if got, want := len(n.IPAddresses.Elements()), 0; got != want {
 			t.Errorf("NIC[%d].IPAddresses len = %d, want %d (next refresh populates from host)",
 				i, got, want)
+		}
+		// MacAddress and VlanID didn't exist in the v3 shape; the
+		// upgrader must surface them as null so the v5 schema's
+		// Optional+Computed contract holds. A regression in
+		// expandPriorNICs that left them as zero-value would slip
+		// past the IPAddresses-only loop above and surface as a
+		// state-shape mismatch on the first post-upgrade refresh.
+		if !n.MacAddress.IsNull() {
+			t.Errorf("NIC[%d].MacAddress = %q; want null (v3 had no MAC)",
+				i, n.MacAddress.ValueString())
+		}
+		if !n.VlanID.IsNull() {
+			t.Errorf("NIC[%d].VlanID = %d; want null (v3 had no VLAN)",
+				i, n.VlanID.ValueInt64())
 		}
 	}
 	// Pre-existing NIC fields carry through unchanged.
@@ -346,5 +363,78 @@ func TestUpgradeStateRegistration_V3Entry(t *testing.T) {
 	}
 	if upgraders[3].StateUpgrader == nil {
 		t.Error("UpgradeState[3].StateUpgrader: got nil, want non-nil migration func")
+	}
+}
+
+// TestUpgradeV4ToV5_PopulatesNullMacAndVlan pins the only v4 -> v5
+// shape change: each network_adapter[] entry grows mac_address and
+// vlan_id. v4 state files don't carry either, so each NIC migrates
+// with both fields null -- the next refresh fills them from the
+// host (mac_address only when DynamicMacAddressEnabled is false;
+// vlan_id only when AccessVlanId > 0). IPAddresses (added in v4)
+// carries through unchanged.
+func TestUpgradeV4ToV5_PopulatesNullMacAndVlan(t *testing.T) {
+	ipsPrimary := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("10.0.0.5"),
+		types.StringValue("fe80::1"),
+	})
+	ipsBackup := types.ListValueMust(types.StringType, []attr.Value{})
+	prior := priorModelV4{
+		ID:         types.StringValue("vm01"),
+		Name:       types.StringValue("vm01"),
+		Generation: types.Int64Value(2),
+		CPU:        &CPUModel{Count: types.Int64Value(2)},
+		Memory:     &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		NetworkAdapters: []priorNetworkAdapterModelV4{
+			{Name: types.StringValue("primary"), SwitchName: types.StringValue("lab"), IPAddresses: ipsPrimary},
+			{Name: types.StringValue("backup"), SwitchName: types.StringValue("mgmt"), IPAddresses: ipsBackup},
+		},
+		SecureBoot: types.BoolValue(true),
+		Notes:      types.StringNull(),
+		Path:       types.StringValue("C:/foo"),
+	}
+
+	got := upgradeV4ToV5(prior)
+
+	if len(got.NetworkAdapters) != 2 {
+		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
+	}
+	for i, n := range got.NetworkAdapters {
+		if !n.MacAddress.IsNull() {
+			t.Errorf("NIC[%d].MacAddress = %+v, want null (next refresh fills from host)",
+				i, n.MacAddress)
+		}
+		if !n.VlanID.IsNull() {
+			t.Errorf("NIC[%d].VlanID = %+v, want null (next refresh fills from host)",
+				i, n.VlanID)
+		}
+	}
+	// IPAddresses carries through unchanged: v4 state already had
+	// the field, so v5 just preserves the values.
+	if got, want := len(got.NetworkAdapters[0].IPAddresses.Elements()), 2; got != want {
+		t.Errorf("NIC[0].IPAddresses len = %d, want %d (carries through from v4)", got, want)
+	}
+	if got, want := len(got.NetworkAdapters[1].IPAddresses.Elements()), 0; got != want {
+		t.Errorf("NIC[1].IPAddresses len = %d, want %d (empty list carries through)", got, want)
+	}
+	// Pre-existing NIC fields carry through unchanged.
+	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
+		t.Errorf("NIC[0].Name: got %q, want primary", got.NetworkAdapters[0].Name.ValueString())
+	}
+}
+
+// TestUpgradeStateRegistration_V4Entry verifies the v4 upgrader is
+// registered alongside the v0/v1/v2/v3 ones.
+func TestUpgradeStateRegistration_V4Entry(t *testing.T) {
+	r := &Resource{}
+	upgraders := r.UpgradeState(t.Context())
+	if _, ok := upgraders[4]; !ok {
+		t.Fatalf("UpgradeState: missing v4 upgrader; got versions %+v", keysOf(upgraders))
+	}
+	if upgraders[4].PriorSchema == nil {
+		t.Error("UpgradeState[4].PriorSchema: got nil, want priorSchemaV4()")
+	}
+	if upgraders[4].StateUpgrader == nil {
+		t.Error("UpgradeState[4].StateUpgrader: got nil, want non-nil migration func")
 	}
 }

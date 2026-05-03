@@ -152,7 +152,8 @@ function Add-VMNetworkAdapter {
     param(
         [string] $VMName,
         [string] $Name,
-        [string] $SwitchName
+        [string] $SwitchName,
+        [string] $StaticMacAddress
     )
 }
 
@@ -161,6 +162,27 @@ function Remove-VMNetworkAdapter {
     param(
         [string] $VMName,
         [string] $Name
+    )
+}
+
+function Set-VMNetworkAdapterVlan {
+    [CmdletBinding()]
+    param(
+        [string]   $VMName,
+        [string]   $VMNetworkAdapterName,
+        $VMNetworkAdapter,
+        [switch]   $Access,
+        [switch]   $Untagged,
+        [int]      $VlanId
+    )
+}
+
+function Get-VMNetworkAdapterVlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VMNetworkAdapter,
+        [string] $VMName,
+        [string] $VMNetworkAdapterName
     )
 }
 
@@ -346,21 +368,43 @@ function New-HypervVMHardDiskDriveSample {
 }
 
 # New-HypervVMNetworkAdapterSample builds a Get-VMNetworkAdapter-shaped
-# object for use in Mock blocks. Three-field shape mirrors what the
-# read script consumes: Name + SwitchName for slot identification +
-# binding, IPAddresses for the top-level ip_addresses flatten on the
-# Go side. IPAddresses defaults to empty (an Off VM or one without
-# integration services running has no reported IPs).
+# object for use in Mock blocks. Mirrors what the read script consumes:
+# Name + SwitchName for slot identification + binding, IPAddresses for
+# the top-level / per-NIC ip_addresses flatten, MacAddress +
+# DynamicMacAddressEnabled for the per-NIC mac_address surface.
+# Defaults match a typical "fresh NIC, no static MAC, no IPs reported
+# yet" -- DynamicMacAddressEnabled = true so the read script emits an
+# empty mac_address (which the resource layer translates to null).
 function New-HypervVMNetworkAdapterSample {
     [CmdletBinding()]
     param(
-        [string]   $Name        = 'primary',
-        [string]   $SwitchName  = 'lab-internal',
-        [string[]] $IPAddresses = @()
+        [string]   $Name                       = 'primary',
+        [string]   $SwitchName                 = 'lab-internal',
+        [string[]] $IPAddresses                = @(),
+        [string]   $MacAddress                 = '00155D000000',
+        [bool]     $DynamicMacAddressEnabled   = $true
     )
     [pscustomobject]@{
-        Name        = $Name
-        SwitchName  = $SwitchName
-        IPAddresses = $IPAddresses
+        Name                     = $Name
+        SwitchName               = $SwitchName
+        IPAddresses              = $IPAddresses
+        MacAddress               = $MacAddress
+        DynamicMacAddressEnabled = $DynamicMacAddressEnabled
+    }
+}
+
+# New-HypervVMNetworkAdapterVlanSample builds a
+# Get-VMNetworkAdapterVlan-shaped object. OperationMode 'Untagged' /
+# AccessVlanId 0 is the "no VLAN" default the read script translates to
+# state value null on the resource side.
+function New-HypervVMNetworkAdapterVlanSample {
+    [CmdletBinding()]
+    param(
+        [string] $OperationMode = 'Untagged',
+        [int]    $AccessVlanId  = 0
+    )
+    [pscustomobject]@{
+        OperationMode = $OperationMode
+        AccessVlanId  = $AccessVlanId
     }
 }
