@@ -35,6 +35,10 @@ PY
 }
 
 mkdir -p "$STAGE" "$(dirname "$OUT")"
+# Stage dir contains rendered passwords. Wipe on every exit path
+# (success, xorriso failure, substitute failure, ^C) so a botched
+# build never leaves cleartext on disk.
+trap 'rm -rf "$STAGE"' EXIT
 
 substitute "$SRC_DIR/autounattend.xml.tpl" "$STAGE/autounattend.xml" \
            ADMIN_PASSWORD HVLAB_ADMIN_PASSWORD
@@ -48,6 +52,4 @@ substitute "$SRC_DIR/FirstLogon.ps1.tpl"   "$STAGE/FirstLogon.ps1"   \
 #        case preserved.
 xorriso -as mkisofs -quiet -V HVLABUNATT -J -r -o "$OUT" "$STAGE"
 
-# Stage dir contains rendered passwords -- wipe after build.
-rm -rf "$STAGE"
 echo "built $OUT"
