@@ -459,7 +459,7 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 	var scpStderr bytes.Buffer
 	session.Stderr = &scpStderr
 
-	if err := session.Start(`scp -t ` + remoteDir); err != nil {
+	if err := session.Start(scpStartCmd(remoteDir)); err != nil {
 		return fmt.Errorf("ssh: scp start: %w", err)
 	}
 
@@ -531,6 +531,16 @@ func (b *sshBackend) StreamFile(ctx context.Context, localPath, remotePath strin
 		return err
 	}
 	return nil
+}
+
+// scpStartCmd formats the `scp -t <dir>` command line with `<dir>`
+// double-quoted so the remote shell (cmd.exe on Windows OpenSSH,
+// /bin/sh on Linux) treats it as a single argument even when the
+// path contains spaces. Embedded `"` is not handled because Windows
+// filename rules forbid it and POSIX paths almost never carry it; if
+// either changes the tests in ssh_test.go will surface the gap.
+func scpStartCmd(remoteDir string) string {
+	return `scp -t "` + remoteDir + `"`
 }
 
 // splitRemotePath separates an absolute Windows path (forward or back
