@@ -339,9 +339,13 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 // across the three user-facing transitions:
 //
 //  1. Create the NIC with mac_address = "AA:BB:CC:DD:EE:01" and
-//     vlan_id = 100. State asserts both fields populated as the
-//     cmdlet's canonical hyphenated-uppercase MAC and the integer
-//     VLAN ID.
+//     vlan_id = 100. State asserts that the user's written MAC form
+//     (colon-separated) round-trips through the mac.Type custom
+//     string semantic-equality unchanged -- Hyper-V echoes back
+//     unsigned-12-hex ("AABBCCDDEE01"), but the framework recognizes
+//     it as semantically equal to the planned colon form and keeps
+//     the user's value in state. State also asserts the integer
+//     VLAN ID surfaces as-written.
 //  2. Change both attributes to new values (different MAC, different
 //     VLAN). diffNetworkAdapters sees both fields change and triggers
 //     detach + reattach; the plancheck asserts the action is
