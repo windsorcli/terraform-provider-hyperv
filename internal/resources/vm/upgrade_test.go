@@ -326,6 +326,20 @@ func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 			t.Errorf("NIC[%d].IPAddresses len = %d, want %d (next refresh populates from host)",
 				i, got, want)
 		}
+		// MacAddress and VlanID didn't exist in the v3 shape; the
+		// upgrader must surface them as null so the v5 schema's
+		// Optional+Computed contract holds. A regression in
+		// expandPriorNICs that left them as zero-value would slip
+		// past the IPAddresses-only loop above and surface as a
+		// state-shape mismatch on the first post-upgrade refresh.
+		if !n.MacAddress.IsNull() {
+			t.Errorf("NIC[%d].MacAddress = %q; want null (v3 had no MAC)",
+				i, n.MacAddress.ValueString())
+		}
+		if !n.VlanID.IsNull() {
+			t.Errorf("NIC[%d].VlanID = %d; want null (v3 had no VLAN)",
+				i, n.VlanID.ValueInt64())
+		}
 	}
 	// Pre-existing NIC fields carry through unchanged.
 	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
