@@ -132,9 +132,11 @@ func (b *localBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	if err != nil {
 		return fmt.Errorf("local: create %s: %w", remotePath, err)
 	}
-	defer func() { _ = dst.Close() }()
-
+	// dst is closed explicitly on both paths -- not via defer -- because
+	// Windows refuses os.Remove against an open handle, and the cleanup
+	// branch below relies on the partial file being unlinkable.
 	if _, err := io.Copy(dst, &ctxReader{ctx: ctx, r: src}); err != nil {
+		_ = dst.Close()
 		// Best-effort cleanup of the partial destination so a re-apply
 		// starts from a clean slate. Mirrors what the typed client does
 		// for a `.part` staging file at the higher layer.
@@ -143,6 +145,9 @@ func (b *localBackend) StreamFile(ctx context.Context, localPath, remotePath str
 			return fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
 		}
 		return fmt.Errorf("local: copy %s to %s: %w", localPath, remotePath, err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("local: close %s: %w", remotePath, err)
 	}
 	return nil
 }
