@@ -5,7 +5,12 @@ package connection
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -83,4 +88,86 @@ func TestWinRMBenchSmoke(t *testing.T) {
 	}
 	t.Logf("large-script (%d bytes source) exit=%d duration=%s",
 		len(largeScript), res.ExitCode, res.Duration)
+}
+
+// TestWinRMBenchSmoke_StreamFile verifies the streaming base64 file-upload
+// path against a real bench. Generates a randomized blob (so a test rerun
+// can't accidentally pass against a leftover file from the previous run),
+// streams it to %TEMP%\hyperv-streamfile-smoke-<unique>.bin on the bench,
+// then reads back the SHA-256 via Get-FileHash and compares.
+//
+// Same gating as the parent smoke test: requires BENCH_HOST / BENCH_USER /
+// BENCH_PW and the `winrm_bench` build tag.
+func TestWinRMBenchSmoke_StreamFile(t *testing.T) {
+	host := os.Getenv("BENCH_HOST")
+	user := os.Getenv("BENCH_USER")
+	pw := os.Getenv("BENCH_PW")
+	if host == "" || user == "" || pw == "" {
+		t.Skip("BENCH_HOST / BENCH_USER / BENCH_PW required")
+	}
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     host,
+		Username: user,
+		Password: pw,
+		UseHTTPS: true,
+		Insecure: true,
+		Auth:     "ntlm",
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+	defer cancel()
+
+	if err := conn.Open(ctx); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// 256 KiB of random bytes. Big enough that the stream crosses many
+	// pipe / WS-Management chunk boundaries, small enough that an
+	// underperforming bench still completes in seconds.
+	payload := make([]byte, 256*1024)
+	if _, err := rand.New(rand.NewSource(time.Now().UnixNano())).Read(payload); err != nil {
+		t.Fatalf("generate payload: %v", err)
+	}
+	wantHash := sha256.Sum256(payload)
+	wantHex := hex.EncodeToString(wantHash[:])
+
+	srcPath := filepath.Join(t.TempDir(), "smoke.bin")
+	if err := os.WriteFile(srcPath, payload, 0o644); err != nil {
+		t.Fatalf("write local payload: %v", err)
+	}
+
+	// %TEMP% is always writable and auto-cleaned eventually. Unique
+	// suffix prevents collision across reruns or parallel sessions.
+	remotePath := fmt.Sprintf(`C:/Windows/Temp/hyperv-streamfile-smoke-%d.bin`, time.Now().UnixNano())
+	defer func() {
+		// Best-effort cleanup. If this fails the file lingers in %TEMP%
+		// and Windows handles it on the next disk-cleanup pass.
+		_, _ = conn.RunScript(t.Context(),
+			`Remove-Item -LiteralPath '`+remotePath+`' -Force -ErrorAction SilentlyContinue`, nil)
+	}()
+
+	start := time.Now()
+	if err := conn.StreamFile(ctx, srcPath, remotePath); err != nil {
+		t.Fatalf("StreamFile: %v", err)
+	}
+	streamDur := time.Since(start)
+
+	verifyScript := `(Get-FileHash -LiteralPath '` + remotePath +
+		`' -Algorithm SHA256).Hash.ToLowerInvariant() | ConvertTo-Json -Compress`
+	res, err := conn.RunScript(ctx, verifyScript, nil)
+	if err != nil {
+		t.Fatalf("verify Get-FileHash: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("Get-FileHash non-zero exit %d, stderr=%s", res.ExitCode, string(res.Stderr))
+	}
+	if !bytes.Contains(res.Stdout, []byte(wantHex)) {
+		t.Fatalf("remote SHA mismatch:\n got: %s\nwant: %s\n(payload=%d bytes)",
+			strings.TrimSpace(string(res.Stdout)), wantHex, len(payload))
+	}
+	t.Logf("StreamFile %d bytes in %s (%.2f MB/s); SHA matched",
+		len(payload), streamDur, float64(len(payload))/streamDur.Seconds()/(1024*1024))
 }
