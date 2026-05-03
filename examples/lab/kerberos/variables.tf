@@ -1,11 +1,9 @@
 variable "bench_iso_dir" {
   description = <<-EOT
-    Absolute path on the bench Hyper-V host where ISOs are staged.
-    The Server 2022 install ISO must already exist under this
-    directory at `terraform apply` time (host_path-mode -- the
-    provider verifies presence rather than fetching). The
-    autounattend ISO is streamed here by the provider on apply
-    (local_path-mode -- the provider creates the file).
+    Absolute path on the bench Hyper-V host where ISOs land. The
+    provider streams both the Server 2022 install ISO and the
+    autounattend ISO to this directory on apply (local_path-mode).
+    The directory is created if missing.
   EOT
   type        = string
   default     = "C:/hyperv/iso"
@@ -22,11 +20,11 @@ variable "bench_vm_dir" {
 
 variable "windows_iso_filename" {
   description = <<-EOT
-    Filename of the Windows Server 2022 Eval ISO under `bench_iso_dir`.
-    Pre-stage this once via SMB drop, scp, or `Invoke-WebRequest` on the
-    host. Microsoft's Eval download URL changes per refresh and the ISO
-    is ~5 GiB, so url-mode's checksum upkeep is more friction than it's
-    worth for a one-shot lab.
+    Filename of the Windows Server 2022 Eval ISO. The provider expects
+    the file at `dist/<this>` on the runner and streams it to the bench
+    at `bench_iso_dir/<this>` on apply (local_path-mode). Microsoft's
+    Eval Center URL requires registration and expires per refresh, so
+    url-mode isn't viable here -- download once, re-stream on demand.
   EOT
   type        = string
   default     = "server2022-eval.iso"

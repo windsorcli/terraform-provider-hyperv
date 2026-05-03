@@ -7,11 +7,16 @@
 # dev-workstation Kerberos client config) happen out-of-band -- they
 # touch machines this provider doesn't manage.
 
-# Windows Server 2022 install media. host_path-mode: the user
-# pre-stages the file on the bench. The provider verifies presence
-# and tracks the SHA-256 for drift but never copies or deletes.
+# Windows Server 2022 install media. local_path-mode: the user
+# pre-stages the Eval ISO on the runner under `dist/`, the provider
+# streams it to the bench on apply. url-mode would be the usual
+# choice for a vendor artifact, but Microsoft's Eval Center URLs
+# require a registration form and expire per refresh -- so local_path
+# is the right pattern here. The ~5 GiB stream is one-shot for the
+# lab's lifetime; subsequent applies are no-ops once the SHA matches.
 resource "hyperv_image_file" "windows_iso" {
   destination_path = "${var.bench_iso_dir}/${var.windows_iso_filename}"
+  local_path       = "${path.module}/../../../dist/${var.windows_iso_filename}"
 }
 
 # Autounattend ISO produced locally by `task lab:build-iso`. The

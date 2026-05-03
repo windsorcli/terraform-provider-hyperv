@@ -17,11 +17,13 @@ of the config-management business.
 - A Hyper-V bench host already reachable by the provider (set
   `HYPERV_*` env vars in `.env.local`; see `../../../.env.example`).
 - `xorriso` on PATH for the local ISO build (`brew install xorriso`).
-- A Server 2022 Eval ISO pre-staged on the bench at
-  `D:/iso/server2022-eval.iso` (override path via
-  `bench_iso_dir` / `windows_iso_filename`). Download from
-  microsoft.com -- the Eval URL changes per refresh, so this stays a
-  one-time manual step.
+- A Server 2022 Eval ISO at `dist/server2022-eval.iso` on the runner.
+  Download once from
+  [Microsoft Eval Center](https://www.microsoft.com/en-us/evalcenter/download-windows-server-2022)
+  (registration form, ~5 GiB). The provider streams it to the bench on
+  apply via local_path-mode, so no manual upload step is needed. Re-use
+  the same file across rebuilds; refresh when the Eval license expires
+  (180 days) or when Microsoft publishes a newer build.
 - `HVLAB_ADMIN_PASSWORD` and `HVLAB_DSRM_PASSWORD` set in
   `.env.local`. Avoid XML metacharacters (`<`, `>`, `&`) in those
   values.
@@ -129,11 +131,10 @@ terraform destroy
 ```
 
 `destroy` hard-powers-off the DC (`Stop-VM -TurnOff -Force`) before
-removing it. The Server 2022 install ISO is host_path-mode, so the
-file on the bench stays put. The autounattend ISO is local_path-mode
-and the provider deletes it from the bench on destroy (parallel to
-url-mode). The `hyperv_vhd` resource removes the VHDX file. The
-vSwitch is removed.
+removing it. Both `hyperv_image_file` resources are local_path-mode,
+so the provider deletes both ISOs from the bench (the runner-local
+copies under `dist/` are never touched). The `hyperv_vhd` resource
+removes the VHDX file. The vSwitch is removed.
 
 If you've already domain-joined the bench host, leave the domain
 manually before tearing down the DC -- otherwise the host loses its
