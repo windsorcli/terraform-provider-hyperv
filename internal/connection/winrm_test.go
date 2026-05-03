@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 	"strings"
@@ -297,5 +298,172 @@ func TestWinRM_RunScriptBeforeOpen(t *testing.T) {
 	_, err = conn.RunScript(context.Background(), `Write-Output ok`, nil)
 	if err == nil || !strings.Contains(err.Error(), "not open") {
 		t.Errorf("err = %v, want substring 'not open'", err)
+	}
+}
+
+func TestWinRM_StreamFileBeforeOpen(t *testing.T) {
+	t.Parallel()
+
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     "host",
+		Username: "Administrator",
+		Password: "x",
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	err = conn.StreamFile(context.Background(), "/tmp/anywhere", "C:/anywhere")
+	if err == nil || !strings.Contains(err.Error(), "not open") {
+		t.Errorf("err = %v, want substring 'not open'", err)
+	}
+}
+
+// TestBuildWinRMStreamFileScript pins the receiver script's shape. We
+// don't compare the whole string verbatim -- comments would lock readers
+// out of refactors -- but we do verify every load-bearing piece is in
+// place: stdin encoding override, OpenWrite + SetLength(0), the ReadLine
+// loop, FromBase64String, the finally Dispose, and that path escaping
+// doubles single quotes per PS single-string conventions.
+func TestBuildWinRMStreamFileScript(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+		want []string // substrings that must all appear
+	}{
+		{
+			name: "plain windows path",
+			path: `C:\hyperv\iso\foo.iso`,
+			want: []string{
+				`[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)`,
+				`[IO.File]::OpenWrite('C:\hyperv\iso\foo.iso')`,
+				`$stream.SetLength(0)`,
+				`while ($null -ne ($line = $reader.ReadLine()))`,
+				`[Convert]::FromBase64String($line)`,
+				`finally { $stream.Dispose() }`,
+			},
+		},
+		{
+			name: "forward slashes pass through",
+			path: `C:/hyperv/iso/foo.iso`,
+			want: []string{`[IO.File]::OpenWrite('C:/hyperv/iso/foo.iso')`},
+		},
+		{
+			name: "single quote in path is doubled",
+			path: `C:\weird's\path.iso`,
+			want: []string{`[IO.File]::OpenWrite('C:\weird''s\path.iso')`},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildWinRMStreamFileScript(tc.path)
+			for _, sub := range tc.want {
+				if !strings.Contains(got, sub) {
+					t.Errorf("script missing %q\nfull script: %s", sub, got)
+				}
+			}
+		})
+	}
+}
+
+// TestLineWrappedWriter_Behavior covers the wrap-and-flush logic with
+// known inputs. The base64 over WinRM stream relies on these edge cases
+// so the receiver's ReadLine loop sees correctly-bounded lines.
+func TestLineWrappedWriter_Behavior(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		lineLen int
+		writes  []string
+		want    string
+	}{
+		{
+			name:    "empty input writes nothing",
+			lineLen: 4,
+			writes:  []string{},
+			want:    "",
+		},
+		{
+			name:    "shorter than line emits no newline pre-Close",
+			lineLen: 4,
+			writes:  []string{"abc"},
+			want:    "abc\n", // Close emits the trailing \n
+		},
+		{
+			name:    "exact line emits trailing newline on Close",
+			lineLen: 4,
+			writes:  []string{"abcd"},
+			want:    "abcd\n",
+		},
+		{
+			name:    "two full lines split with newline",
+			lineLen: 4,
+			writes:  []string{"abcdefgh"},
+			want:    "abcd\nefgh\n",
+		},
+		{
+			name:    "writes spanning a boundary",
+			lineLen: 4,
+			writes:  []string{"abc", "defgh"},
+			want:    "abcd\nefgh\n",
+		},
+		{
+			name:    "many small writes still wrap correctly",
+			lineLen: 3,
+			writes:  []string{"a", "b", "c", "d", "e", "f", "g"},
+			want:    "abc\ndef\ng\n",
+		},
+		{
+			name:    "exact-multiple input ends with newline",
+			lineLen: 2,
+			writes:  []string{"abcdef"},
+			want:    "ab\ncd\nef\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			lw := newLineWrappedWriter(&buf, tc.lineLen)
+			for _, s := range tc.writes {
+				if _, err := lw.Write([]byte(s)); err != nil {
+					t.Fatalf("Write(%q): %v", s, err)
+				}
+			}
+			if err := lw.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if got := buf.String(); got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLineWrappedWriter_CloseIdempotent ensures a second Close is a
+// no-op rather than emitting a stray newline. The streaming pipeline
+// only calls Close once today, but a future caller that double-closes
+// (defer + explicit) shouldn't corrupt the wire format.
+func TestLineWrappedWriter_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	lw := newLineWrappedWriter(&buf, 4)
+	if _, err := lw.Write([]byte("ab")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := lw.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := lw.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if got, want := buf.String(), "ab\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

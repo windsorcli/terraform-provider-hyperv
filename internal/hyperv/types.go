@@ -82,6 +82,20 @@ type NewImageFileFromURLInput struct {
 	ExpectedSha256  string `json:"expected_sha256"`
 }
 
+// NewImageFileFromLocalPathInput is the public input shape for the
+// local_path source mode of image_file/new.ps1. The runner-local source
+// (LocalPath) is JSON-skipped because it never crosses the wire -- the
+// typed-client method opens it on the runner side, computes the SHA-256,
+// streams the bytes to a sibling .part of DestinationPath via
+// Connection.StreamFile, and asks new.ps1 to verify-and-rename. The
+// discriminator (source_mode) and the computed staging_path /
+// expected_sha256 fields are added internally by the method, so callers
+// can't pass the wrong values for the mode they invoke.
+type NewImageFileFromLocalPathInput struct {
+	DestinationPath string `json:"destination_path"`
+	LocalPath       string `json:"-"`
+}
+
 // VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.
 // SizeBytes is the declared logical size; FileSizeBytes is the actual
 // on-disk size (smaller than SizeBytes for dynamic and differencing).

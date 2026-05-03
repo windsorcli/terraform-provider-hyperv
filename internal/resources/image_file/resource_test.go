@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
@@ -40,6 +41,7 @@ func TestResource_Schema(t *testing.T) {
 		"id",
 		"destination_path",
 		"url",
+		"local_path",
 		"sha256",
 		"size_bytes",
 	}
@@ -276,7 +278,7 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 		Checksum: types.StringValue("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"),
 	}
 
-	got := modelFromImageFile(f, url)
+	got := modelFromImageFile(f, url, pathtype.NewPathNull())
 
 	if got.ID.ValueString() != f.Path {
 		t.Errorf("ID = %q, want %q", got.ID.ValueString(), f.Path)
@@ -307,9 +309,160 @@ func TestModelFromImageFile_HostPathModePreservesNilURL(t *testing.T) {
 		Sha256:    "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
-	got := modelFromImageFile(f, nil)
+	got := modelFromImageFile(f, nil, pathtype.NewPathNull())
 
 	if got.URL != nil {
 		t.Errorf("URL = %+v, want nil (host_path mode)", got.URL)
+	}
+	if !got.LocalPath.IsNull() {
+		t.Errorf("LocalPath = %v, want null (host_path mode)", got.LocalPath)
+	}
+}
+
+// TestModelFromImageFile_PreservesLocalPath round-trips the user-supplied
+// local_path through Read, parallel to TestModelFromImageFile_PreservesURLBlock
+// for url-mode. The file's Path on disk matches DestinationPath (canonical
+// form), but local_path comes from caller config and isn't reconstructible
+// from disk -- it has to be threaded through.
+func TestModelFromImageFile_PreservesLocalPath(t *testing.T) {
+	t.Parallel()
+
+	f := &hyperv.ImageFile{
+		Path:      "C:\\images\\foo.iso",
+		SizeBytes: 387072,
+		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+	}
+	localPath := pathtype.NewPathValue("/Users/me/dist/foo.iso")
+
+	got := modelFromImageFile(f, nil, localPath)
+
+	if got.URL != nil {
+		t.Errorf("URL = %+v, want nil (local_path mode)", got.URL)
+	}
+	if got.LocalPath.ValueString() != "/Users/me/dist/foo.iso" {
+		t.Errorf("LocalPath = %q, want %q", got.LocalPath.ValueString(), "/Users/me/dist/foo.iso")
+	}
+}
+
+// Schema test: local_path is present and carries RequiresReplace. The
+// path-string change forcing replace is load-bearing -- without it,
+// switching to a different source file would silently re-stream into
+// the same destination, conflating identity and content.
+func TestResource_Schema_LocalPathRequiresReplace(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	lp, ok := resp.Schema.Attributes["local_path"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("local_path is not a StringAttribute (got %T)", resp.Schema.Attributes["local_path"])
+	}
+	if !lp.Optional {
+		t.Error(`"local_path" must be Optional`)
+	}
+	if !hasPlanModifier(lp.PlanModifiers, "RequiresReplace") {
+		t.Error(`"local_path" must carry RequiresReplace (path-string change forces replace)`)
+	}
+}
+
+// ConfigValidators registers exactly the validators the resource relies on.
+// Drift here means a validator was silently dropped (or one was added
+// without the corresponding plan-time guard test).
+func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
+	t.Parallel()
+
+	r, ok := New().(*Resource)
+	if !ok {
+		t.Fatal("New() did not return *Resource")
+	}
+	got := r.ConfigValidators(t.Context())
+	if len(got) != 1 {
+		t.Fatalf("ConfigValidators = %d, want 1 (url + local_path conflict)", len(got))
+	}
+	if _, ok := got[0].(urlAndLocalPathConflictValidator); !ok {
+		t.Errorf("ConfigValidators[0] = %T, want urlAndLocalPathConflictValidator", got[0])
+	}
+}
+
+// TestUrlAndLocalPathConflictValidator covers the four config shapes the
+// validator must distinguish: both set (rejected), only url (allowed),
+// only local_path (allowed), neither (allowed -- host_path mode).
+func TestUrlAndLocalPathConflictValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		model     Model
+		wantError bool
+	}{
+		{
+			name: "both url and local_path set rejects",
+			model: Model{
+				URL: &URLConfig{
+					URL:      types.StringValue("https://example.com/foo.iso"),
+					Checksum: types.StringValue("sha256:abc"),
+				},
+				LocalPath: pathtype.NewPathValue("/tmp/foo.iso"),
+			},
+			wantError: true,
+		},
+		{
+			name: "only url set allows",
+			model: Model{
+				URL: &URLConfig{
+					URL:      types.StringValue("https://example.com/foo.iso"),
+					Checksum: types.StringValue("sha256:abc"),
+				},
+				LocalPath: pathtype.NewPathNull(),
+			},
+			wantError: false,
+		},
+		{
+			name: "only local_path set allows",
+			model: Model{
+				URL:       nil,
+				LocalPath: pathtype.NewPathValue("/tmp/foo.iso"),
+			},
+			wantError: false,
+		},
+		{
+			name: "neither set allows (host_path mode)",
+			model: Model{
+				URL:       nil,
+				LocalPath: pathtype.NewPathNull(),
+			},
+			wantError: false,
+		},
+		{
+			name: "unknown local_path treated as unset (deferred dependency)",
+			model: Model{
+				URL: &URLConfig{
+					URL:      types.StringValue("https://example.com/foo.iso"),
+					Checksum: types.StringValue("sha256:abc"),
+				},
+				LocalPath: pathtype.NewPathUnknown(),
+			},
+			wantError: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := urlAndLocalPathConflictValidator{}.validate(tc.model)
+			if got.HasError() != tc.wantError {
+				t.Errorf("validate(...).HasError() = %v, want %v\nfull diags: %v",
+					got.HasError(), tc.wantError, got)
+			}
+			if tc.wantError && len(got) > 0 {
+				// Diagnostic should anchor to local_path so the user lands on
+				// the more recently introduced surface and reads "remove
+				// local_path or remove url" rather than the inverse.
+				if got[0].Summary() == "" || !strings.Contains(got[0].Summary(), "mutually exclusive") {
+					t.Errorf("diag summary = %q, want substring 'mutually exclusive'", got[0].Summary())
+				}
+			}
+		})
 	}
 }

@@ -3,22 +3,30 @@
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : {
-#                   "destination_path": "<absolute-path>",   # required
-#                   "source_mode":      "url"|"host_path",   # required
-#                   "url":              "<string>",          # url mode
-#                   "expected_sha256":  "<hex>"              # url mode
+#                   "destination_path": "<absolute-path>",          # required
+#                   "source_mode":      "url"|"host_path"|"local_path", # required
+#                   "url":              "<string>",                 # url mode
+#                   "expected_sha256":  "<hex>",                    # url + local_path
+#                   "staging_path":     "<absolute-path>"           # local_path
 #                 }
 #   stdout JSON : same shape as get.ps1 (Path, SizeBytes, Sha256).
 #
 # Mode semantics:
-#   url       - download via HttpClient to a sibling .part file in the
-#               destination directory, verify SHA-256 against
-#               expected_sha256, then atomic-rename (Move-Item) to
-#               destination_path. NTFS rename within a volume is atomic; the
-#               .part-in-destination-dir layout keeps it that way.
-#   host_path - verify-only: the user attests the file already exists at
-#               destination_path. No copy. Missing-file surfaces as
-#               ObjectNotFound -> ErrNotFound, same as Read.
+#   url        - download via HttpClient to a sibling .part file in the
+#                destination directory, verify SHA-256 against
+#                expected_sha256, then atomic-rename (Move-Item) to
+#                destination_path. NTFS rename within a volume is atomic;
+#                the .part-in-destination-dir layout keeps it that way.
+#   host_path  - verify-only: the user attests the file already exists at
+#                destination_path. No copy. Missing-file surfaces as
+#                ObjectNotFound -> ErrNotFound, same as Read.
+#   local_path - the Go side has streamed bytes from the runner to
+#                staging_path on the host (via Connection.StreamFile).
+#                This script verifies the staged file's SHA-256 against
+#                the runner-computed expected_sha256 (transport-corruption
+#                check) and atomic-renames the staging file to
+#                destination_path. Same .part-in-destination-dir,
+#                same Move-Item-is-atomic guarantee as url mode.
 #
 # Why HttpClient (not BITS or Invoke-WebRequest):
 #   - Start-BitsTransfer requires an interactive user session (HRESULT
@@ -130,6 +138,53 @@ function New-HypervImageFileFromUrl {
     Read-HypervImageFileResult -Path $DestinationPath
 }
 
+# New-HypervImageFileFromLocalPath verifies a file the Go-side StreamFile
+# primitive has just deposited at staging_path, then atomic-renames it to
+# destination_path on hash match. Mirrors the url-mode shape: the only
+# difference is where the staged bytes came from (Go-side stream vs
+# HttpClient download). Same .part-in-destination-dir layout keeps the
+# Move-Item atomic on NTFS, same finally-block cleanup keeps a half-baked
+# staging file from lingering across a failed apply.
+function New-HypervImageFileFromLocalPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $DestinationPath,
+        [Parameter(Mandatory)] [string] $StagingPath,
+        [Parameter(Mandatory)] [string] $ExpectedSha256
+    )
+    try {
+        if (-not (Test-Path -LiteralPath $StagingPath -PathType Leaf)) {
+            $exception = [System.Management.Automation.ItemNotFoundException]::new(
+                "Image file staging path not found at '$StagingPath'.")
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                $exception, 'ImageFileStagingNotFound',
+                [System.Management.Automation.ErrorCategory]::ObjectNotFound, $StagingPath)
+            throw $errorRecord
+        }
+        $actualHash   = (Get-FileHash -LiteralPath $StagingPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash = $ExpectedSha256.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            $exception = [System.IO.InvalidDataException]::new(
+                "Checksum mismatch for staged file '$StagingPath': expected sha256=$expectedHash, got sha256=$actualHash.")
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                $exception, 'ImageFileChecksumMismatch',
+                [System.Management.Automation.ErrorCategory]::InvalidData, $StagingPath)
+            throw $errorRecord
+        }
+        Move-Item -LiteralPath $StagingPath -Destination $DestinationPath -Force -ErrorAction Stop
+    }
+    finally {
+        # Cleanup is best-effort: a successful Move-Item already consumed
+        # the staging file, so the Test-Path skips the Remove. On any
+        # failure path (missing file, hash mismatch, Move-Item error) the
+        # Remove keeps a stale .part from accumulating across applies.
+        if (Test-Path -LiteralPath $StagingPath) {
+            Remove-Item -LiteralPath $StagingPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Read-HypervImageFileResult -Path $DestinationPath
+}
+
 # New-HypervImageFileFromHostPath verifies the user-asserted file exists
 # at destination_path and returns its metadata. No copy, no fetch -- the
 # user told us the bytes are already where they belong.
@@ -165,8 +220,14 @@ if ($MyInvocation.InvocationName -ne '.') {
                 New-HypervImageFileFromHostPath `
                     -DestinationPath $params.destination_path
             }
+            'local_path' {
+                New-HypervImageFileFromLocalPath `
+                    -DestinationPath $params.destination_path `
+                    -StagingPath     $params.staging_path `
+                    -ExpectedSha256  $params.expected_sha256
+            }
             default {
-                throw "Unknown source_mode '$($params.source_mode)'; expected 'url' or 'host_path'."
+                throw "Unknown source_mode '$($params.source_mode)'; expected 'url', 'host_path', or 'local_path'."
             }
         }
     }

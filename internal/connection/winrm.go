@@ -222,6 +222,164 @@ func (b *winrmBackend) Close() error {
 	return nil
 }
 
+// StreamFile copies localPath to remotePath via streaming base64 over the
+// remote PowerShell process's stdin. The file is encoded chunk-by-chunk
+// on the runner side (no in-memory buffering of the whole payload) and
+// decoded line-by-line by a small receiver script on the host (constant
+// memory pressure regardless of file size).
+//
+// Performance note: WinRM's WS-Management transport adds 33% encoding
+// overhead and is empirically ~10x slower than the SSH backend's SCP
+// path for the same payload. Files larger than a few hundred MiB are
+// supported but slow; for multi-GiB artifacts prefer the SSH backend or
+// stage the file out-of-band and use host_path-mode.
+//
+// The remote parent directory must already exist; the receiver does not
+// mkdir. Resources that need parent-dir creation should issue a one-line
+// `New-Item -ItemType Directory -Force` via RunScript before calling.
+func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath string) error {
+	b.mu.Lock()
+	client := b.client
+	opened := b.opened
+	b.mu.Unlock()
+	if !opened || client == nil {
+		return errors.New("winrm: backend not open -- call Open first")
+	}
+
+	if b.opts.CommandTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.opts.CommandTimeout)
+		defer cancel()
+	}
+
+	src, err := os.Open(localPath) // #nosec G304 -- localPath is operator-supplied via resource config
+	if err != nil {
+		return fmt.Errorf("winrm: open local %s: %w", localPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> WinRM
+	// stdin. The line wrap is what lets the PS receiver process input
+	// via ReadLine, keeping its working set proportional to one base64
+	// line (~57 decoded bytes) instead of the entire payload. The
+	// goroutine drives the encoder and closes the pipe when done so
+	// RunWithContextWithInput sees clean EOF.
+	pr, pw := io.Pipe()
+	lw := newLineWrappedWriter(pw, base64LineLen)
+	enc := base64.NewEncoder(base64.StdEncoding, lw)
+
+	go func() {
+		err := func() error {
+			if _, err := io.Copy(enc, &ctxReader{ctx: ctx, r: src}); err != nil {
+				return err
+			}
+			if err := enc.Close(); err != nil {
+				return err
+			}
+			return lw.Close()
+		}()
+		if err != nil {
+			_ = pw.CloseWithError(err)
+		} else {
+			_ = pw.Close()
+		}
+	}()
+
+	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
+		b.opts.PwshPath, encodePSScript(buildWinRMStreamFileScript(remotePath)))
+
+	var stdout, stderr bytes.Buffer
+	code, runErr := client.RunWithContextWithInput(ctx, cmd, &stdout, &stderr, pr)
+	if runErr != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
+		}
+		return fmt.Errorf("winrm: stream file: %w", runErr)
+	}
+	if code != 0 {
+		return fmt.Errorf("winrm: stream file exit %d: %s", code, stderr.String())
+	}
+	return nil
+}
+
+// base64LineLen is the line length the line-wrapping writer inserts
+// newlines at. 76 is the MIME-canonical width and a multiple of 4, so
+// each line is a self-contained base64 string the receiver can
+// FromBase64String without joining lines.
+const base64LineLen = 76
+
+// buildWinRMStreamFileScript emits a single-statement PS body that reads
+// newline-delimited base64 from stdin and writes the decoded bytes to
+// remotePath. Single-line so it stays well under MaxCommandLine even
+// before -EncodedCommand wrapping. Any single quote in remotePath is
+// doubled to escape the single-quoted PS string -- standard PS escaping.
+func buildWinRMStreamFileScript(remotePath string) string {
+	escaped := strings.ReplaceAll(remotePath, "'", "''")
+	return `[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); ` +
+		`$stream = [IO.File]::OpenWrite('` + escaped + `'); ` +
+		`try { $stream.SetLength(0); $reader = [Console]::In; ` +
+		`while ($null -ne ($line = $reader.ReadLine())) { ` +
+		`if ($line.Length -gt 0) { $bytes = [Convert]::FromBase64String($line); ` +
+		`$stream.Write($bytes, 0, $bytes.Length) } } } ` +
+		`finally { $stream.Dispose() }`
+}
+
+// lineWrappedWriter inserts a newline after every lineLen bytes written
+// to the underlying writer. Used to break a continuous base64 stream
+// into per-line chunks so the WinRM receive script can decode each line
+// independently via ReadLine + FromBase64String, keeping host memory
+// proportional to one line rather than the whole payload.
+//
+// Close emits a trailing newline if the last line is partial. The PS
+// receiver's loop terminates on ReadLine returning $null (EOF), so a
+// missing trailing newline doesn't corrupt the stream -- but emitting
+// it keeps the wire format consistent and tested.
+type lineWrappedWriter struct {
+	w       io.Writer
+	lineLen int
+	written int // bytes written to the current line
+}
+
+func newLineWrappedWriter(w io.Writer, lineLen int) *lineWrappedWriter {
+	return &lineWrappedWriter{w: w, lineLen: lineLen}
+}
+
+func (l *lineWrappedWriter) Write(p []byte) (int, error) {
+	var written int
+	for len(p) > 0 {
+		remain := l.lineLen - l.written
+		if remain == 0 {
+			if _, err := l.w.Write([]byte{'\n'}); err != nil {
+				return written, err
+			}
+			l.written = 0
+			remain = l.lineLen
+		}
+		n := remain
+		if n > len(p) {
+			n = len(p)
+		}
+		m, err := l.w.Write(p[:n])
+		written += m
+		l.written += m
+		p = p[n:]
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
+}
+
+func (l *lineWrappedWriter) Close() error {
+	if l.written > 0 {
+		if _, err := l.w.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+		l.written = 0
+	}
+	return nil
+}
+
 // buildWinRMParams constructs the per-backend WSMan parameters from the
 // resolved options. Critically, it copies winrm.DefaultParameters by value
 // rather than aliasing the package-level pointer -- the upstream library

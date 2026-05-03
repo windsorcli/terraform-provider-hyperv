@@ -441,3 +441,31 @@ func TestSSHBackend_BackendIdentifier(t *testing.T) {
 		t.Errorf("Backend() = %q, want %q", got, "ssh")
 	}
 }
+
+// TestSCPStartCmd_QuotesRemoteDir locks the wire shape of the `scp -t`
+// command. Without the quotes a destination_path containing spaces
+// (e.g. C:/Program Files/hyperv) splits into two arguments on the
+// remote shell -- cmd.exe on Windows OpenSSH does this verbatim, and
+// SCP exits with a confusing error. Quoting fixes both the cmd.exe
+// and pwsh cases without needing per-shell branching.
+func TestSCPStartCmd_QuotesRemoteDir(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"hardcoded staging dir", "C:/Windows/Temp", `scp -t "C:/Windows/Temp"`},
+		{"path with spaces", "C:/Program Files/hyperv", `scp -t "C:/Program Files/hyperv"`},
+		{"posix path", "/var/lib/hyperv", `scp -t "/var/lib/hyperv"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := scpStartCmd(tc.in); got != tc.want {
+				t.Errorf("scpStartCmd(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

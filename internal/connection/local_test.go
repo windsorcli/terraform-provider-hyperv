@@ -1,9 +1,12 @@
 package connection
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +210,98 @@ func TestLocalBackend_RunScript_ContextCanceled_Integration(t *testing.T) {
 	_, err = conn.RunScript(ctx, `Start-Sleep -Seconds 5`, nil)
 	if !errors.Is(err, ErrTimeout) {
 		t.Errorf("got %v, want ErrTimeout", err)
+	}
+}
+
+// StreamFile tests use the local backend's plain-file-copy behavior. No
+// pwsh needed -- pure os.Open / os.Create / io.Copy.
+
+func TestLocalBackend_StreamFile_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "dst.bin")
+	want := []byte("the quick brown fox jumps over the lazy dog\x00\xff\x01")
+	if err := os.WriteFile(src, want, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	b := &localBackend{}
+	if err := b.StreamFile(t.Context(), src, dst); err != nil {
+		t.Fatalf("StreamFile: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("round-trip mismatch:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestLocalBackend_StreamFile_CreatesParentDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "deep", "nested", "tree", "out.bin")
+	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	b := &localBackend{}
+	if err := b.StreamFile(t.Context(), src, dst); err != nil {
+		t.Fatalf("StreamFile: %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("destination not created: %v", err)
+	}
+}
+
+func TestLocalBackend_StreamFile_MissingSource(t *testing.T) {
+	t.Parallel()
+
+	b := &localBackend{}
+	err := b.StreamFile(t.Context(), filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "out"))
+	if err == nil {
+		t.Fatal("expected error opening missing source file")
+	}
+	if !strings.Contains(err.Error(), "open") {
+		t.Errorf("err = %q, want to mention 'open'", err.Error())
+	}
+}
+
+func TestLocalBackend_StreamFile_ContextCanceledRemovesPartial(t *testing.T) {
+	t.Parallel()
+
+	// Build a source large enough that io.Copy makes more than one read --
+	// otherwise ctxReader's cancel-check never fires before EOF. 4 MiB is
+	// well past io.Copy's 32 KiB default buffer.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "big.bin")
+	dst := filepath.Join(dir, "out.bin")
+	payload := make([]byte, 4*1024*1024)
+	for i := range payload {
+		payload[i] = byte(i % 256)
+	}
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // pre-canceled: ctxReader.Read returns ctx.Err on the first call.
+
+	b := &localBackend{}
+	err := b.StreamFile(ctx, src, dst)
+	if err == nil {
+		t.Fatal("expected error from canceled stream")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, want ErrTimeout wrapper", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Errorf("partial destination still present (stat err = %v); StreamFile must clean up on cancel", statErr)
 	}
 }

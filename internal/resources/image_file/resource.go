@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -16,9 +18,11 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*Resource)(nil)
-	_ resource.ResourceWithConfigure   = (*Resource)(nil)
-	_ resource.ResourceWithImportState = (*Resource)(nil)
+	_ resource.Resource                     = (*Resource)(nil)
+	_ resource.ResourceWithConfigure        = (*Resource)(nil)
+	_ resource.ResourceWithConfigValidators = (*Resource)(nil)
+	_ resource.ResourceWithImportState      = (*Resource)(nil)
+	_ resource.ResourceWithModifyPlan       = (*Resource)(nil)
 )
 
 // Resource implements hyperv_image_file.
@@ -39,6 +43,127 @@ func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 	resp.Schema = resourceSchema()
 }
 
+// ConfigValidators rejects mode-attribute combinations that the wire
+// contract can't honor, surfacing a clear attribute-anchored diagnostic
+// at plan time instead of an opaque cmdlet error at apply time.
+func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		urlAndLocalPathConflictValidator{},
+	}
+}
+
+// urlAndLocalPathConflictValidator rejects configs that set both `url`
+// and `local_path` -- the two source-mode discriminators are mutually
+// exclusive (url fetches over HTTP, local_path streams from the runner;
+// picking both is ambiguous).
+type urlAndLocalPathConflictValidator struct{}
+
+// Description / MarkdownDescription surface in `terraform validate -json`
+// and schema-introspection paths.
+func (v urlAndLocalPathConflictValidator) Description(_ context.Context) string {
+	return "url and local_path are mutually exclusive source-mode discriminators"
+}
+
+// MarkdownDescription mirrors Description -- no markdown-only formatting.
+func (v urlAndLocalPathConflictValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateResource pulls the typed Model from the Config and dispatches
+// to validate, which holds the actual rule logic. Split for direct unit
+// testing without tfsdk.Config plumbing.
+func (v urlAndLocalPathConflictValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate is the pure-Go core. Returns a single attribute-anchored
+// diagnostic on `local_path` (chosen over `url` so the user lands on
+// the more recently-introduced surface) when both source attributes
+// are set.
+func (v urlAndLocalPathConflictValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	urlSet := data.URL != nil
+	localPathSet := !data.LocalPath.IsNull() && !data.LocalPath.IsUnknown()
+	if urlSet && localPathSet {
+		diags.AddAttributeError(
+			path.Root("local_path"),
+			"url and local_path are mutually exclusive",
+			"The `url` block and `local_path` attribute are mutually exclusive source-mode "+
+				"discriminators -- url-mode fetches over HTTP, local_path-mode streams from "+
+				"the Terraform runner. Pick one. To switch modes on an existing resource, the "+
+				"resource must be destroyed and recreated (both attributes carry RequiresReplace).",
+		)
+	}
+	return diags
+}
+
+// ModifyPlan computes the runner-side SHA-256 and size of `local_path`
+// at plan time and writes them into the planned `sha256` / `size_bytes`
+// attributes. This is what makes content changes to the local file
+// (same path, different bytes) surface as a plan diff -- without it,
+// `UseStateForUnknown` would carry the prior values forward and the
+// framework would either skip the Update entirely or reject the apply
+// with a "Provider produced inconsistent result" check on the
+// Computed attribute that didn't match its planned value.
+//
+// Both attributes must be updated together: a content change generally
+// changes both, and the framework's post-apply consistency check
+// triggers on either one drifting from plan to apply.
+//
+// Skipped for url-mode and host_path-mode (LocalPath null/unknown), and
+// during destroy (no plan).
+func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.LocalPath.IsNull() || plan.LocalPath.IsUnknown() {
+		return
+	}
+
+	localPath := plan.LocalPath.ValueString()
+
+	info, err := os.Stat(localPath)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("local_path"),
+			"Cannot stat local file at plan time",
+			fmt.Sprintf("os.Stat(%s) failed: %v\n\n"+
+				"The provider reads local_path during plan so changes to the file's "+
+				"contents between applies trigger a re-stream. The file must exist "+
+				"and be readable when running plan/apply.",
+				localPath, err),
+		)
+		return
+	}
+
+	sha, err := hyperv.ComputeFileSHA256(localPath)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("local_path"),
+			"Cannot read local file at plan time",
+			fmt.Sprintf("Computing SHA-256 of %s failed: %v",
+				localPath, err),
+		)
+		return
+	}
+
+	plan.Sha256 = types.StringValue(sha)
+	plan.SizeBytes = types.Int64Value(info.Size())
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
 // Configure stashes the typed Hyper-V client built by the provider's
 // Configure pass. Skips when ProviderData is nil (validate-time invocation
 // before the provider has resolved its config).
@@ -57,12 +182,18 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 	r.client = client
 }
 
-// Create dispatches on source mode (url vs host_path) and writes the
-// post-create read shape back to state.
+// Create dispatches on source mode (url, local_path, or host_path) and
+// writes the post-create read shape back to state.
 //
 // url-mode: the provider fetches via HttpClient and verifies the checksum.
 // ErrChecksumMismatch is surfaced on path.Root("url").AtName("checksum")
 // so the diagnostic anchors to the offending attribute, not the resource.
+//
+// local_path-mode: the provider streams the runner-side file through the
+// active connection backend, then asks new.ps1 to verify the streamed
+// bytes' SHA against the runner-computed value and atomic-rename. A
+// host-side hash mismatch surfaces ErrChecksumMismatch on local_path
+// (transport corruption rather than user-supplied checksum drift).
 //
 // host_path-mode: the provider verifies the file already exists at
 // destination_path. ErrNotFound is anchored to destination_path.
@@ -85,7 +216,8 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		f   *hyperv.ImageFile
 		err error
 	)
-	if plan.URL != nil {
+	switch {
+	case plan.URL != nil:
 		tflog.Debug(ctx, "creating hyperv_image_file (url mode)", map[string]any{
 			"destination_path": dest,
 			"url":              sanitizeURLForLog(plan.URL.URL.ValueString()),
@@ -109,7 +241,35 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			resp.Diagnostics.AddError("Create hyperv_image_file failed (url mode)", err.Error())
 			return
 		}
-	} else {
+	case !plan.LocalPath.IsNull() && !plan.LocalPath.IsUnknown():
+		tflog.Debug(ctx, "creating hyperv_image_file (local_path mode)", map[string]any{
+			"destination_path": dest,
+			"local_path":       plan.LocalPath.ValueString(),
+		})
+		f, err = r.client.NewImageFileFromLocalPath(ctx, hyperv.NewImageFileFromLocalPathInput{
+			DestinationPath: dest,
+			LocalPath:       plan.LocalPath.ValueString(),
+		})
+		if err != nil {
+			if errors.Is(err, hyperv.ErrChecksumMismatch) {
+				// Mismatch in local_path mode means the bytes that landed on
+				// the host don't hash to what the runner computed -- transport
+				// corruption, not user error. The retry advice is in the
+				// detail so the operator knows it's typically transient.
+				resp.Diagnostics.AddAttributeError(
+					path.Root("local_path"),
+					"Streamed file checksum mismatch",
+					"The bytes that landed on the host don't match the runner-side hash. "+
+						"This signals transport corruption between runner and host. Re-running "+
+						"`terraform apply` typically clears it; if it persists, the SSH/WinRM "+
+						"transport may be unhealthy.\n\n"+err.Error(),
+				)
+				return
+			}
+			resp.Diagnostics.AddError("Create hyperv_image_file failed (local_path mode)", err.Error())
+			return
+		}
+	default:
 		tflog.Debug(ctx, "creating hyperv_image_file (host_path mode)", map[string]any{
 			"destination_path": dest,
 		})
@@ -120,8 +280,9 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 					path.Root("destination_path"),
 					"Image file not found",
 					"host_path-mode requires the file to already exist at destination_path. "+
-						"Either create the file out-of-band, or supply a `url` block to have "+
-						"the provider download it.",
+						"Either create the file out-of-band, supply a `url` block to have the "+
+						"provider download it, or supply `local_path` to have the provider "+
+						"stream it from the runner.",
 				)
 				return
 			}
@@ -130,7 +291,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	state := modelFromImageFile(f, plan.URL)
+	state := modelFromImageFile(f, plan.URL, plan.LocalPath)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -165,27 +326,74 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	// Preserve the user's url block from prior state -- it's user intent and
-	// isn't reconstructible from the file contents on disk.
-	newState := modelFromImageFile(f, state.URL)
+	// Preserve the user's url block and local_path from prior state --
+	// both are user intent and aren't reconstructible from the file
+	// contents on disk.
+	newState := modelFromImageFile(f, state.URL, state.LocalPath)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Update is effectively unreachable -- every user-settable schema field is
-// RequiresReplace -- but the framework requires the method. Pass the plan
-// through to state so any framework-internal Computed propagation lands.
+// Update is reached only in local_path-mode when the runner-side file's
+// contents change between applies. ModifyPlan recomputes the SHA from
+// disk; if it differs from state, the framework dispatches Update here
+// (every other user-settable field is RequiresReplace). Re-stream the
+// new bytes and verify host-side hash matches.
+//
+// For url-mode and host_path-mode, every user-settable field is
+// RequiresReplace, so Update is effectively unreachable in those modes
+// -- pass the plan through to state for the framework's Computed
+// propagation machinery.
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if r.client == nil {
+		resp.Diagnostics.AddError("provider not configured",
+			"hyperv_image_file Update called before Configure stashed a client.")
+		return
+	}
+
 	var plan Model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	if !plan.LocalPath.IsNull() && !plan.LocalPath.IsUnknown() {
+		tflog.Debug(ctx, "updating hyperv_image_file (local_path mode -- re-streaming)", map[string]any{
+			"destination_path": plan.DestinationPath.ValueString(),
+			"local_path":       plan.LocalPath.ValueString(),
+		})
+		f, err := r.client.NewImageFileFromLocalPath(ctx, hyperv.NewImageFileFromLocalPathInput{
+			DestinationPath: plan.DestinationPath.ValueString(),
+			LocalPath:       plan.LocalPath.ValueString(),
+		})
+		if err != nil {
+			if errors.Is(err, hyperv.ErrChecksumMismatch) {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("local_path"),
+					"Streamed file checksum mismatch",
+					"The bytes that landed on the host during re-stream don't match the "+
+						"runner-side hash. This signals transport corruption between runner "+
+						"and host. Re-running `terraform apply` typically clears it.\n\n"+
+						err.Error(),
+				)
+				return
+			}
+			resp.Diagnostics.AddError("Update hyperv_image_file failed (local_path mode)", err.Error())
+			return
+		}
+		newState := modelFromImageFile(f, nil, plan.LocalPath)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+		return
+	}
+
+	// url-mode and host_path-mode no-op pass-through.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// Delete runs remove.ps1 ONLY for url-mode resources. For host_path-mode
-// (state.URL == nil), the file was already on the host before the resource
-// was created -- removing it on destroy would surprise the operator.
+// Delete runs remove.ps1 for url-mode and local_path-mode resources --
+// both modes mean the provider put the file on the host, so removing
+// it on destroy is the symmetric operation. host_path-mode (URL nil
+// AND LocalPath null) leaves the file alone: the user attested it
+// already existed, so removing on destroy would surprise them.
 //
 // ErrNotFound from RemoveImageFile is treated as success (the file is
 // already gone, no need to error).
@@ -202,7 +410,8 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
-	if state.URL == nil {
+	hostPathMode := state.URL == nil && (state.LocalPath.IsNull() || state.LocalPath.IsUnknown())
+	if hostPathMode {
 		tflog.Info(ctx, "host_path-mode hyperv_image_file; skipping host-side delete", map[string]any{
 			"destination_path": state.DestinationPath.ValueString(),
 		})
@@ -228,20 +437,21 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	resource.ImportStatePassthroughID(ctx, path.Root("destination_path"), req, resp)
 }
 
-// modelFromImageFile hydrates a Model from a typed ImageFile DTO. URL is
-// caller-supplied because it's user intent (config/plan) and isn't
-// reconstructible from the file on disk.
+// modelFromImageFile hydrates a Model from a typed ImageFile DTO. URL
+// and localPath are caller-supplied because both are user intent
+// (config/plan) and neither is reconstructible from the file on disk.
 //
 // Path-typed attributes (id, destination_path) wrap the cmdlet's
 // canonical-form return value verbatim. Slash-style and case
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals; we don't need to preserve
 // the user's prior representation here.
-func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig) Model {
+func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig, localPath pathtype.Path) Model {
 	return Model{
 		ID:              pathtype.NewPathValue(f.Path),
 		DestinationPath: pathtype.NewPathValue(f.Path),
 		URL:             url,
+		LocalPath:       localPath,
 		Sha256:          types.StringValue(f.Sha256),
 		SizeBytes:       types.Int64Value(f.SizeBytes),
 	}
