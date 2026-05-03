@@ -111,7 +111,7 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				if resp.Diagnostics.HasError() {
 					return
 				}
-				upgraded := upgradeV3ToV4(prior)
+				upgraded := upgradeV3ToV5(prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -637,13 +637,13 @@ func upgradeV4ToV5(prior priorModelV4) Model {
 	}
 }
 
-// upgradeV3ToV4 maps a v3 state struct into the current Model. The
+// upgradeV3ToV5 maps a v3 state struct into the current Model. The
 // shape changes layered in are network_adapter[].ip_addresses (v4)
 // plus network_adapter[].mac_address and .vlan_id (v5). v3 state
 // files don't carry any of those, so each NIC migrates with an empty
 // ip_addresses list and null mac_address / vlan_id; the next refresh
 // populates from the host. Pure function for direct unit testing.
-func upgradeV3ToV4(prior priorModelV3) Model {
+func upgradeV3ToV5(prior priorModelV3) Model {
 	return Model{
 		ID:              prior.ID,
 		Name:            prior.Name,

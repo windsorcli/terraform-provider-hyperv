@@ -286,13 +286,15 @@ func TestUpgradeStateRegistration_V2Entry(t *testing.T) {
 	}
 }
 
-// TestUpgradeV3ToV4_PopulatesEmptyIPAddresses pins the only v3 -> v4
-// shape change: each network_adapter[] entry grows an ip_addresses
-// list. v3 state files don't carry per-NIC IPs, so each NIC migrates
-// with an empty (known) list -- the next refresh fills it from the
-// host. Empty (not null) keeps the post-upgrade state shape valid
-// against the schema's Computed contract.
-func TestUpgradeV3ToV4_PopulatesEmptyIPAddresses(t *testing.T) {
+// TestUpgradeV3ToV5_PopulatesEmptyIPAddresses pins the v3 -> v5
+// shape changes: each network_adapter[] entry grows an ip_addresses
+// list (v4) plus null mac_address / vlan_id (v5). v3 state files
+// don't carry any of those, so each NIC migrates with an empty
+// (known) ip_addresses list and null mac/vlan -- the next refresh
+// fills them from the host. Empty (not null) for ip_addresses keeps
+// the post-upgrade state shape valid against the schema's Computed
+// contract.
+func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 	prior := priorModelV3{
 		ID:         types.StringValue("vm01"),
 		Name:       types.StringValue("vm01"),
@@ -308,7 +310,7 @@ func TestUpgradeV3ToV4_PopulatesEmptyIPAddresses(t *testing.T) {
 		Path:       types.StringValue("C:/foo"),
 	}
 
-	got := upgradeV3ToV4(prior)
+	got := upgradeV3ToV5(prior)
 
 	if len(got.NetworkAdapters) != 2 {
 		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
