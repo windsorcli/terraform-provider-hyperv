@@ -184,6 +184,25 @@ tasks:
     cmds:
       - go test ./... -sweep=local
 
+  # ---------- Lab ----------
+  # Build artifacts for the Kerberos test lab -- a dogfood of this
+  # provider against a privately-hosted bench DC. See
+  # examples/lab/kerberos/README.md for the end-to-end run order.
+
+  lab:build-iso:
+    desc: Build dist/autounattend.iso for the Kerberos lab DC
+    summary: |
+      Substitutes secrets into hack/lab/kerberos/*.tpl from env vars
+      (HVLAB_ADMIN_PASSWORD, HVLAB_DSRM_PASSWORD; load via .env.local),
+      packages the staged files into dist/autounattend.iso. The output
+      is consumed by examples/lab/kerberos/main.tf as a host_path-mode
+      hyperv_image_file after a manual upload to the bench host.
+
+      Prereq: xorriso on PATH (`brew install xorriso` or
+      `apt install xorriso`). Python 3 (already on macOS by default).
+    cmds:
+      - bash hack/lab/kerberos/build-iso.sh
+
   # ---------- Docs ----------
 
   generate:
