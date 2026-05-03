@@ -7,7 +7,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -104,6 +107,59 @@ func (b *localBackend) RunScript(ctx context.Context, script string, stdinJSON [
 		ExitCode: exitCode,
 		Duration: duration,
 	}, nil
+}
+
+// StreamFile copies localPath to remotePath via os.Open + io.Copy. The
+// "remote" host is the same machine in the local-backend case, so this is
+// a plain file copy with the destination directory pre-created. Truncates
+// remotePath if it already exists; preserves source mode bits is not a
+// goal (Windows filesystem permissions don't carry the same semantics).
+//
+// ctx cancellation interrupts io.Copy via a small adapter — exec.Cmd-style
+// pre-emption isn't available, but the loop checks ctx between buffered
+// writes so a canceled apply unblocks within one chunk.
+func (b *localBackend) StreamFile(ctx context.Context, localPath, remotePath string) error {
+	src, err := os.Open(localPath) // #nosec G304 -- localPath is the operator's own file path from resource config
+	if err != nil {
+		return fmt.Errorf("local: open %s: %w", localPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if err := os.MkdirAll(filepath.Dir(remotePath), 0o755); err != nil {
+		return fmt.Errorf("local: mkdir %s: %w", filepath.Dir(remotePath), err)
+	}
+	dst, err := os.Create(remotePath) // #nosec G304 -- remotePath is the operator's destination from resource config
+	if err != nil {
+		return fmt.Errorf("local: create %s: %w", remotePath, err)
+	}
+	defer func() { _ = dst.Close() }()
+
+	if _, err := io.Copy(dst, &ctxReader{ctx: ctx, r: src}); err != nil {
+		// Best-effort cleanup of the partial destination so a re-apply
+		// starts from a clean slate. Mirrors what the typed client does
+		// for a `.part` staging file at the higher layer.
+		_ = os.Remove(remotePath)
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
+		}
+		return fmt.Errorf("local: copy %s to %s: %w", localPath, remotePath, err)
+	}
+	return nil
+}
+
+// ctxReader wraps an io.Reader and surfaces ctx cancellation as an error
+// on the next Read. Lets io.Copy abort promptly on apply-time cancel
+// without spawning a separate goroutine.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (cr *ctxReader) Read(p []byte) (int, error) {
+	if err := cr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cr.r.Read(p)
 }
 
 // buildCmd is split out for testability — unit tests assert on the resulting

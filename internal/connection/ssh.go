@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -410,55 +411,10 @@ func stageScript(ctx context.Context, client *ssh.Client, script string) (string
 	name := "hyperv-" + hex.EncodeToString(suffix[:]) + ".ps1"
 	remotePath := `C:/Windows/Temp/` + name
 
-	session, err := client.NewSession()
-	if err != nil {
-		return "", nil, fmt.Errorf("open scp session: %w", err)
-	}
-	stdinPipe, err := session.StdinPipe()
-	if err != nil {
-		_ = session.Close()
-		return "", nil, fmt.Errorf("scp stdin pipe: %w", err)
-	}
-	var scpStderr bytes.Buffer
-	session.Stderr = &scpStderr
-
-	if err := session.Start(`scp -t C:/Windows/Temp`); err != nil {
-		_ = session.Close()
-		return "", nil, fmt.Errorf("scp start: %w", err)
-	}
-
-	// SCP sink protocol: `Cmmmm <size> <name>\n` then bytes then `\0`.
 	body := append([]byte{0xEF, 0xBB, 0xBF}, script...)
-	if _, err := fmt.Fprintf(stdinPipe, "C0644 %d %s\n", len(body), name); err != nil {
-		_ = session.Close()
-		return "", nil, fmt.Errorf("scp header: %w", err)
+	if err := scpSink(ctx, client, "C:/Windows/Temp", name, int64(len(body)), bytes.NewReader(body)); err != nil {
+		return "", nil, err
 	}
-	if _, err := stdinPipe.Write(body); err != nil {
-		_ = session.Close()
-		return "", nil, fmt.Errorf("scp body: %w", err)
-	}
-	if _, err := stdinPipe.Write([]byte{0}); err != nil {
-		_ = session.Close()
-		return "", nil, fmt.Errorf("scp eof: %w", err)
-	}
-	_ = stdinPipe.Close()
-
-	// Race session.Wait against ctx so an apply-time cancel doesn't hang
-	// on a slow remote write. Same pattern as Open's handshake guard.
-	waitErr := make(chan error, 1)
-	go func() { waitErr <- session.Wait() }()
-	select {
-	case err := <-waitErr:
-		if err != nil {
-			_ = session.Close()
-			return "", nil, fmt.Errorf("scp wait: %w (stderr=%s)", err, scpStderr.String())
-		}
-	case <-ctx.Done():
-		_ = session.Close()
-		<-waitErr
-		return "", nil, fmt.Errorf("scp canceled: %w", ctx.Err())
-	}
-	_ = session.Close()
 
 	cleanup := func() {
 		s, err := client.NewSession()
@@ -469,6 +425,126 @@ func stageScript(ctx context.Context, client *ssh.Client, script string) (string
 		_ = s.Run(`cmd /c del "` + strings.ReplaceAll(remotePath, "/", `\`) + `"`)
 	}
 	return remotePath, cleanup, nil
+}
+
+// scpSink writes `size` bytes from `body` to `remoteDir/remoteName` via the
+// SCP-sink protocol (`scp -t <dir>` on the server, sink-mode framing on
+// stdin). The size is required up front because SCP's protocol carries a
+// length prefix; callers that don't know the size in advance must buffer
+// or stat the source first.
+//
+// Two callers today: stageScript (script body, in-memory bytes) and
+// StreamFile (arbitrary local file, streamed via os.Open). Both pay the
+// same scp-protocol round trip; the body io.Reader keeps memory pressure
+// proportional to one pipe-buffer's worth of bytes regardless of payload
+// size.
+//
+// ctx is honored on the session.Wait phase: a canceled apply unblocks
+// promptly even if the remote disk is slow. Mid-Copy cancellation is
+// indirect — the goroutine writing to stdinPipe returns when ctx fires
+// only at the next scheduled Read, but for the workloads this primitive
+// serves (multi-MB to multi-GB files), an io.Copy chunk completes well
+// inside any user-perceptible delay.
+func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName string, size int64, body io.Reader) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh: open scp session: %w", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	stdinPipe, err := session.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("ssh: scp stdin pipe: %w", err)
+	}
+	var scpStderr bytes.Buffer
+	session.Stderr = &scpStderr
+
+	if err := session.Start(`scp -t ` + remoteDir); err != nil {
+		return fmt.Errorf("ssh: scp start: %w", err)
+	}
+
+	// SCP sink protocol: `Cmmmm <size> <name>\n` then bytes then `\0`.
+	if _, err := fmt.Fprintf(stdinPipe, "C0644 %d %s\n", size, remoteName); err != nil {
+		return fmt.Errorf("ssh: scp header: %w", err)
+	}
+	if _, err := io.Copy(stdinPipe, body); err != nil {
+		return fmt.Errorf("ssh: scp body: %w", err)
+	}
+	if _, err := stdinPipe.Write([]byte{0}); err != nil {
+		return fmt.Errorf("ssh: scp eof: %w", err)
+	}
+	_ = stdinPipe.Close()
+
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- session.Wait() }()
+	select {
+	case err := <-waitErr:
+		if err != nil {
+			return fmt.Errorf("ssh: scp wait: %w (stderr=%s)", err, scpStderr.String())
+		}
+	case <-ctx.Done():
+		_ = session.Close()
+		<-waitErr
+		return fmt.Errorf("ssh: scp canceled: %w", ctx.Err())
+	}
+	return nil
+}
+
+// StreamFile copies localPath to remotePath via the SCP-sink primitive.
+// The remote parent directory must already exist; SCP errors if the
+// destination directory is missing. Resources that need parent-dir
+// creation should issue a one-line `New-Item -ItemType Directory -Force`
+// via RunScript before calling this.
+func (b *sshBackend) StreamFile(ctx context.Context, localPath, remotePath string) error {
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+	if client == nil {
+		return errors.New("ssh: backend not open -- call Open first")
+	}
+
+	// Lazy reconnect on dead client, mirroring RunScript's policy. Stream
+	// is one-shot from the user's perspective; reconnecting between
+	// applies is fine, mid-stream is not.
+	if !b.alive.Load() {
+		if err := b.reconnect(ctx); err != nil {
+			return fmt.Errorf("ssh: reconnect after keepalive failure: %w", err)
+		}
+		b.mu.Lock()
+		client = b.client
+		b.mu.Unlock()
+	}
+
+	src, err := os.Open(localPath) // #nosec G304 -- localPath is operator-supplied via resource config
+	if err != nil {
+		return fmt.Errorf("ssh: open local %s: %w", localPath, err)
+	}
+	defer func() { _ = src.Close() }()
+
+	info, err := src.Stat()
+	if err != nil {
+		return fmt.Errorf("ssh: stat local %s: %w", localPath, err)
+	}
+
+	remoteDir, remoteName := splitRemotePath(remotePath)
+	if err := scpSink(ctx, client, remoteDir, remoteName, info.Size(), src); err != nil {
+		return err
+	}
+	return nil
+}
+
+// splitRemotePath separates an absolute Windows path (forward or back
+// slashes) into a directory and a leaf filename for SCP-sink mode. SCP
+// addresses the directory in `scp -t <dir>` and names the file in the
+// `Cmmmm <size> <name>` header, so the two pieces ride separately on
+// the wire.
+func splitRemotePath(p string) (dir, name string) {
+	norm := strings.ReplaceAll(p, "\\", "/")
+	idx := strings.LastIndex(norm, "/")
+	if idx < 0 {
+		return ".", norm
+	}
+	return norm[:idx], norm[idx+1:]
 }
 
 // runSessionWithCtx wraps session.Run with ctx-cancel propagation. Cancel

@@ -27,10 +27,18 @@ import (
 // Substring matching keeps tests resilient to script-content changes while
 // pinning to script identity. The `script` argument the typed client will
 // pass embeds the script's path as a header comment; see hyperv/script.go.
+//
+// StreamFile calls are recorded separately (see StreamCalls) and return
+// whatever error has been registered via SetStreamFileErr (default nil).
+// The fake never touches the local or remote filesystem -- tests asserting
+// "the resource asked to stream foo.iso to C:/iso/foo.iso" should inspect
+// the recorded StreamCall, not look on disk.
 type FakeRunner struct {
-	mu        sync.Mutex
-	responses map[string]Response
-	calls     []Call
+	mu            sync.Mutex
+	responses     map[string]Response
+	calls         []Call
+	streamCalls   []StreamCall
+	streamFileErr error
 }
 
 // Response is a single canned answer.
@@ -47,6 +55,14 @@ type Response struct {
 type Call struct {
 	Script    string
 	StdinJSON []byte
+}
+
+// StreamCall captures one StreamFile invocation for after-the-fact
+// assertions. The fake doesn't touch the filesystem; tests that need to
+// confirm the resource asked for the right paths inspect this record.
+type StreamCall struct {
+	LocalPath  string
+	RemotePath string
 }
 
 // NewFakeRunner returns an empty fake. Register responses with On(...).
@@ -125,6 +141,35 @@ func (f *FakeRunner) Calls() []Call {
 	out := make([]Call, len(f.calls))
 	copy(out, f.calls)
 	return out
+}
+
+// StreamFile implements connection.Runner. Records the call and returns
+// the error set via SetStreamFileErr (nil by default). Doesn't touch the
+// filesystem -- localPath need not exist for the fake to accept the call.
+func (f *FakeRunner) StreamFile(_ context.Context, localPath, remotePath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.streamCalls = append(f.streamCalls, StreamCall{LocalPath: localPath, RemotePath: remotePath})
+	return f.streamFileErr
+}
+
+// StreamCalls returns a copy of the recorded StreamFile invocations.
+func (f *FakeRunner) StreamCalls() []StreamCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]StreamCall, len(f.streamCalls))
+	copy(out, f.streamCalls)
+	return out
+}
+
+// SetStreamFileErr makes subsequent StreamFile calls return the given
+// error. Useful for asserting that a resource maps a transport-level
+// stream failure to the expected diagnostic. Pass nil to reset.
+func (f *FakeRunner) SetStreamFileErr(err error) *FakeRunner {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.streamFileErr = err
+	return f
 }
 
 // Compile-time check.

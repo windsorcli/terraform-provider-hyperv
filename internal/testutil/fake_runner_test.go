@@ -98,3 +98,57 @@ func TestFakeRunner_StdinIsCopiedNotAliased(t *testing.T) {
 		t.Errorf("recorded stdin was aliased; got %q", string(fr.Calls()[0].StdinJSON))
 	}
 }
+
+func TestFakeRunner_StreamFile_RecordsCalls(t *testing.T) {
+	t.Parallel()
+
+	fr := NewFakeRunner()
+	if err := fr.StreamFile(t.Context(), "/tmp/foo.iso", "C:/iso/foo.iso"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := fr.StreamFile(t.Context(), "/tmp/bar.iso", "C:/iso/bar.iso"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := fr.StreamCalls()
+	if len(calls) != 2 {
+		t.Fatalf("StreamCalls = %d, want 2", len(calls))
+	}
+	if calls[0].LocalPath != "/tmp/foo.iso" || calls[0].RemotePath != "C:/iso/foo.iso" {
+		t.Errorf("call[0] = %+v, want {/tmp/foo.iso C:/iso/foo.iso}", calls[0])
+	}
+	if calls[1].LocalPath != "/tmp/bar.iso" || calls[1].RemotePath != "C:/iso/bar.iso" {
+		t.Errorf("call[1] = %+v, want {/tmp/bar.iso C:/iso/bar.iso}", calls[1])
+	}
+}
+
+func TestFakeRunner_StreamFile_ReturnsConfiguredErr(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("transport oops")
+	fr := NewFakeRunner().SetStreamFileErr(want)
+
+	err := fr.StreamFile(t.Context(), "/tmp/foo.iso", "C:/iso/foo.iso")
+	if !errors.Is(err, want) {
+		t.Errorf("err = %v, want %v", err, want)
+	}
+	// The call is still recorded even when an error is returned -- tests
+	// asserting "the resource attempted the stream" need that signal.
+	if len(fr.StreamCalls()) != 1 {
+		t.Errorf("StreamCalls = %d, want 1", len(fr.StreamCalls()))
+	}
+}
+
+func TestFakeRunner_StreamCalls_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	fr := NewFakeRunner()
+	_ = fr.StreamFile(t.Context(), "/a", "/b")
+	first := fr.StreamCalls()
+	first[0].LocalPath = "MUTATED"
+
+	again := fr.StreamCalls()
+	if again[0].LocalPath != "/a" {
+		t.Errorf("StreamCalls returned aliased slice; got %q after caller-side mutation", again[0].LocalPath)
+	}
+}

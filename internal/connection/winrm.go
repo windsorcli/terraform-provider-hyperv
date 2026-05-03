@@ -222,6 +222,17 @@ func (b *winrmBackend) Close() error {
 	return nil
 }
 
+// StreamFile is not yet implemented for the WinRM backend. The chunked
+// base64-over-stdin approach the design calls for is a separate slice
+// from the SSH backend's SCP path; users on a WinRM-only bench should
+// fall back to host_path-mode (pre-staged file) or url-mode (downloaded
+// from a URL the host can reach) until this lands.
+func (b *winrmBackend) StreamFile(_ context.Context, _, _ string) error {
+	return errors.New("winrm: StreamFile is not yet implemented for the WinRM backend; " +
+		"use the SSH backend for local_path-mode resources, or stage the file " +
+		"out-of-band and switch to host_path-mode")
+}
+
 // buildWinRMParams constructs the per-backend WSMan parameters from the
 // resolved options. Critically, it copies winrm.DefaultParameters by value
 // rather than aliasing the package-level pointer -- the upstream library
