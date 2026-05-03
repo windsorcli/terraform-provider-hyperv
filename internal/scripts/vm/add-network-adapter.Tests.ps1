@@ -79,4 +79,66 @@ Describe 'Add-HypervVMNetworkAdapter' {
                 Should -Throw -ExpectedMessage '*switch not found*'
         }
     }
+
+    Context 'static MAC address' {
+
+        It 'forwards -StaticMacAddress to Add-VMNetworkAdapter when set' {
+            Mock Add-VMNetworkAdapter { }
+
+            Add-HypervVMNetworkAdapter `
+                -Name 'primary' -VMName 'vm01' -SwitchName 'lab' `
+                -MacAddress '00:15:5D:AA:BB:CC' | Out-Null
+
+            Should -Invoke Add-VMNetworkAdapter -Times 1 -Exactly -ParameterFilter {
+                $StaticMacAddress -eq '00:15:5D:AA:BB:CC'
+            }
+        }
+
+        It 'omits -StaticMacAddress when MacAddress is empty (dynamic MAC pool)' {
+            Mock Add-VMNetworkAdapter { }
+
+            Add-HypervVMNetworkAdapter `
+                -Name 'primary' -VMName 'vm01' -SwitchName 'lab' | Out-Null
+
+            # When MacAddress is unset, the cmdlet must NOT receive
+            # -StaticMacAddress -- otherwise Hyper-V interprets the empty
+            # string as a request for an explicit zero-byte MAC.
+            Should -Invoke Add-VMNetworkAdapter -Times 1 -Exactly -ParameterFilter {
+                -not $PSBoundParameters.ContainsKey('StaticMacAddress')
+            }
+        }
+    }
+
+    Context 'VLAN tagging' {
+
+        It 'calls Set-VMNetworkAdapterVlan with -Access -VlanId when VlanID is set' {
+            Mock Add-VMNetworkAdapter { }
+            Mock Set-VMNetworkAdapterVlan { }
+
+            Add-HypervVMNetworkAdapter `
+                -Name 'primary' -VMName 'vm01' -SwitchName 'lab' `
+                -VlanID 100 | Out-Null
+
+            Should -Invoke Set-VMNetworkAdapterVlan -Times 1 -Exactly -ParameterFilter {
+                $VMName -eq 'vm01' -and
+                $VMNetworkAdapterName -eq 'primary' -and
+                $Access -and
+                $VlanId -eq 100
+            }
+        }
+
+        It 'does not call Set-VMNetworkAdapterVlan when VlanID is 0 (untagged)' {
+            Mock Add-VMNetworkAdapter { }
+            Mock Set-VMNetworkAdapterVlan { }
+
+            Add-HypervVMNetworkAdapter `
+                -Name 'primary' -VMName 'vm01' -SwitchName 'lab' | Out-Null
+
+            # Hyper-V's default for new NICs is untagged. Calling
+            # Set-VMNetworkAdapterVlan unnecessarily would still work but
+            # produces a redundant cmdlet invocation per attach -- the
+            # check pins fire-only-when-needed semantics.
+            Should -Invoke Set-VMNetworkAdapterVlan -Times 0 -Exactly
+        }
+    }
 }

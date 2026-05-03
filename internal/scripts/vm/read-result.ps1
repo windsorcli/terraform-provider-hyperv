@@ -105,10 +105,32 @@ function Read-HypervVMResult {
     # the [string[]] cast through the JSON serializer.
     $nics = @(
         foreach ($nic in (Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop)) {
+            # MacAddress: emit only when the NIC has DynamicMacAddressEnabled
+            # = false (i.e. user-set static MAC). Dynamic MACs come back as
+            # whatever Hyper-V auto-assigned this boot, and surfacing that
+            # as state would create a perpetual diff against an empty
+            # config -- the resource layer treats empty string here as
+            # "null state" so unset config matches unset state.
+            $macAddress = if ($nic.DynamicMacAddressEnabled) { '' } else { [string] $nic.MacAddress }
+            # VlanID: 0 means untagged, 1-4094 means access-mode VLAN.
+            # Get-VMNetworkAdapterVlan exposes the active VLAN setting.
+            # Trunk and isolation modes aren't yet supported on the
+            # resource side; we emit the AccessVlanId regardless (a
+            # trunk-mode NIC reports AccessVlanId=0, which the resource
+            # layer surfaces as null -- correct in spirit since the user
+            # didn't set vlan_id, even if Hyper-V has a different mode
+            # configured out-of-band).
+            $vlanID = 0
+            $vlanInfo = Get-VMNetworkAdapterVlan -VMNetworkAdapter $nic -ErrorAction Stop
+            if ($vlanInfo -and $vlanInfo.OperationMode -eq 'Access') {
+                $vlanID = [int] $vlanInfo.AccessVlanId
+            }
             [pscustomobject]@{
                 Name        = $nic.Name
                 SwitchName  = $nic.SwitchName
                 IPAddresses = [string[]] @($nic.IPAddresses)
+                MacAddress  = $macAddress
+                VlanID      = $vlanID
             }
         }
     )

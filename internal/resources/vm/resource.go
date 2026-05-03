@@ -15,6 +15,7 @@ import (
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/typeflatten"
+	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
@@ -942,6 +943,24 @@ func modelFromVM(v *hyperv.VM) Model {
 		for _, ip := range n.IPAddresses {
 			ipElems = append(ipElems, types.StringValue(ip))
 		}
+		// MacAddress: the script emits an empty string when Hyper-V
+		// has DynamicMacAddressEnabled=true (auto-assigned MAC). State
+		// stores null in that case so a refresh doesn't surface a
+		// phantom diff against an empty config. A non-empty value
+		// means a user-set static MAC; the mac.MAC custom type handles
+		// the colon-vs-hyphen-vs-unsigned representation folding so a
+		// user-written "AA:BB:CC:DD:EE:01" rounds-trips against the
+		// "AABBCCDDEE01" form Hyper-V echoes back on Read.
+		macVal := mactype.NewMACNull()
+		if n.MacAddress != "" {
+			macVal = mactype.NewMACValue(n.MacAddress)
+		}
+		// VlanID: the script emits 0 for untagged NICs. Same null-on-
+		// untagged rationale -- unset config matches unset state.
+		vlan := types.Int64Null()
+		if n.VlanID > 0 {
+			vlan = types.Int64Value(int64(n.VlanID))
+		}
 		// types.ListValueMust panics only on element-type mismatch, and
 		// we just built every element as types.String. Same pattern the
 		// schema uses for its empty-list defaults.
@@ -949,6 +968,8 @@ func modelFromVM(v *hyperv.VM) Model {
 			Name:        types.StringValue(n.Name),
 			SwitchName:  types.StringValue(n.SwitchName),
 			IPAddresses: types.ListValueMust(types.StringType, ipElems),
+			MacAddress:  macVal,
+			VlanID:      vlan,
 		})
 	}
 
@@ -1147,10 +1168,27 @@ func diffNetworkAdapters(plan, state []NetworkAdapterModel) (toAttach, toDetach 
 			toAttach = append(toAttach, planN)
 			continue
 		}
-		// Same name: if switch_name differs, detach + attach.
-		// Switch_name comparison is byte-for-byte (no semantic-equals
-		// type yet for switch names).
-		if !planN.SwitchName.Equal(stateN.SwitchName) {
+		// Same name: if any of switch_name / mac_address / vlan_id
+		// differ, detach + attach. Hyper-V doesn't expose a single
+		// in-place "change everything" cmdlet, and the existing
+		// switch_name path already accepts the brief NIC-down window
+		// during scalar updates -- the same trade-off carries over to
+		// the new fields.
+		//
+		// MAC address comparison uses mactype.Normalize so a config-
+		// vs-state representation difference (user wrote
+		// "AA:BB:CC:DD:EE:01", state stores Hyper-V's "AABBCCDDEE01")
+		// doesn't trigger a spurious detach+reattach when something
+		// else on the VM actually changed. SwitchName / VlanID stay on
+		// strict Equal -- those have no representation ambiguity.
+		macsDiffer := mactype.Normalize(planN.MacAddress.ValueString()) !=
+			mactype.Normalize(stateN.MacAddress.ValueString())
+		if planN.MacAddress.IsNull() != stateN.MacAddress.IsNull() {
+			macsDiffer = true
+		}
+		if !planN.SwitchName.Equal(stateN.SwitchName) ||
+			macsDiffer ||
+			!planN.VlanID.Equal(stateN.VlanID) {
 			toDetach = append(toDetach, stateN)
 			toAttach = append(toAttach, planN)
 		}
@@ -1164,12 +1202,22 @@ func diffNetworkAdapters(plan, state []NetworkAdapterModel) (toAttach, toDetach 
 }
 
 // attachNICInputFor builds the wire-level AttachNetworkAdapterInput.
+// Optional MacAddress and VlanID are passed through only when set in
+// the plan; the script side treats empty MacAddress as "use Hyper-V's
+// dynamic-MAC pool" and zero VlanID as "untagged".
 func attachNICInputFor(vmName string, n NetworkAdapterModel) hyperv.AttachNetworkAdapterInput {
-	return hyperv.AttachNetworkAdapterInput{
+	in := hyperv.AttachNetworkAdapterInput{
 		Name:       n.Name.ValueString(),
 		VMName:     vmName,
 		SwitchName: n.SwitchName.ValueString(),
 	}
+	if !n.MacAddress.IsNull() && !n.MacAddress.IsUnknown() {
+		in.MacAddress = n.MacAddress.ValueString()
+	}
+	if !n.VlanID.IsNull() && !n.VlanID.IsUnknown() {
+		in.VlanID = int(n.VlanID.ValueInt64())
+	}
+	return in
 }
 
 // detachNICInputFor mirrors attachNICInputFor but only carries Name +

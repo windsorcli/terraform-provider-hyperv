@@ -272,6 +272,15 @@ Required:
 - `name` (String) Display name of the NIC. Used as the slot key for reconciliation and shown in Hyper-V Manager's NIC list. Must be unique within this VM's `network_adapter` list.
 - `switch_name` (String) Name of the `hyperv_virtual_switch` to bind this NIC to. Hyper-V validates the switch exists at apply time and surfaces its own clear error if it doesn't.
 
+Optional:
+
+- `mac_address` (String) Static MAC address for this NIC, in either colon-separated (`AA:BB:CC:DD:EE:FF`), hyphen-separated (`AA-BB-CC-DD-EE-FF`), or unsigned-12-hex (`AABBCCDDEEFF`) form -- Hyper-V accepts all three. The stored value preserves whatever form you wrote; semantic equality folds separator presence and case so a refresh against Hyper-V's canonical unsigned-12-hex echo doesn't surface a phantom diff. Setting this disables Hyper-V's dynamic-MAC pool for this NIC and pins the address; leave unset to let Hyper-V auto-assign (state stores `null` in that case so unset config matches unset state).
+
+Changes to this field cause the NIC to be detached and re-attached (same shape as `switch_name` updates), which requires the VM to be `Off` for the cmdlet to apply.
+- `vlan_id` (Number) Access-mode VLAN ID for this NIC. Valid range is 1-4094. Leave unset (the default) for an untagged NIC; state stores `null` for untagged NICs rather than the sentinel `0` Hyper-V uses internally, so unset config matches unset state.
+
+Trunk and isolation VLAN modes are not currently supported -- only Access mode. Changes to this field cause the NIC to be detached and re-attached, requiring the VM to be `Off`.
+
 Read-Only:
 
 - `ip_addresses` (List of String) IPv4 / IPv6 addresses Hyper-V's integration services have reported for this specific NIC. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services.

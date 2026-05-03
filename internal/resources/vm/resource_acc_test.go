@@ -27,6 +27,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
@@ -332,6 +333,153 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAcc_VM_withNetworkAdapter_VlanAndMac pins the v5-only NIC fields:
+// a NIC created with a static mac_address and access-mode vlan_id
+// must round-trip those values into state, and a follow-up apply that
+// drops both attributes back to null must surface the post-detach +
+// reattach NIC with state values null again.
+//
+// Two steps:
+//
+//  1. Create the NIC with mac_address = "AA:BB:CC:DD:EE:01" and
+//     vlan_id = 100. State asserts both fields populated as the
+//     cmdlet's canonical hyphenated-uppercase MAC and the integer
+//     VLAN ID.
+//  2. Drop both attributes (back to dynamic MAC + untagged). The
+//     diffNetworkAdapters comparator sees mac_address / vlan_id
+//     change and triggers detach + reattach; state asserts both
+//     fields back to null.
+func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
+	name := acctest.RandomName("vm-nic-vlan")
+	switchName := acctest.RandomName("nic-sw-vlan")
+	client := acctest.NewClient(t)
+
+	staticMAC := "AA:BB:CC:DD:EE:01"
+	// The mac.Type custom string type preserves the USER'S written
+	// form in state -- only equality comparisons normalize. So even
+	// though Hyper-V's Get-VMNetworkAdapter echoes back unsigned-12-hex
+	// ("AABBCCDDEE01"), the framework keeps the planned (user-written)
+	// value when it semantic-equals the post-apply value. Asserting
+	// the user's form pins this contract.
+	staticMACStored := staticMAC
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: NIC with static MAC + access VLAN 100.
+				Config: vmWithNICVlanMacConfig(name, switchName,
+					nicWithVlanMacBlock{
+						Name:       "primary",
+						SwitchRef:  "hyperv_virtual_switch.primary",
+						MacAddress: staticMAC,
+						VlanID:     100,
+					}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("mac_address"),
+						knownvalue.StringExact(staticMACStored),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("vlan_id"),
+						knownvalue.Int64Exact(100),
+					),
+				},
+			},
+			{
+				// Step 2: change both attributes to new values.
+				// Detach + reattach happens because
+				// diffNetworkAdapters sees both fields change.
+				// (Dropping the attributes back to null hits
+				// Optional+Computed "sticky" semantics where the
+				// framework copies state into plan -- a separate
+				// concern from this PR's change-detection contract.)
+				//
+				// The plancheck pin asserts the change is classified
+				// as an in-place Update, not a destroy-and-recreate.
+				// A regression flipping mac_address or vlan_id to
+				// RequiresReplace would silently roll the whole VM,
+				// and the post-apply state checks would still pass
+				// against the fresh resource.
+				Config: vmWithNICVlanMacConfig(name, switchName,
+					nicWithVlanMacBlock{
+						Name:       "primary",
+						SwitchRef:  "hyperv_virtual_switch.primary",
+						MacAddress: "AA:BB:CC:DD:EE:02",
+						VlanID:     200,
+					}),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_vm.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("mac_address"),
+						knownvalue.StringExact("AA:BB:CC:DD:EE:02"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("vlan_id"),
+						knownvalue.Int64Exact(200),
+					),
+				},
+			},
+		},
+	})
+}
+
+// nicWithVlanMacBlock is the shape vmWithNICVlanMacConfig consumes.
+// MacAddress empty / VlanID zero means "omit the attribute" (the
+// shape distinct-value-or-empty test that exercises the detach +
+// reattach path on Update).
+type nicWithVlanMacBlock struct {
+	Name       string
+	SwitchRef  string
+	MacAddress string
+	VlanID     int
+}
+
+// vmWithNICVlanMacConfig renders a single-NIC + single-switch config
+// with optional mac_address and vlan_id. Distinct from
+// vmWithNICConfig because that helper is shared with the basic NIC
+// test and has a different shape (multiple NICs, no per-NIC extras).
+func vmWithNICVlanMacConfig(vmName, switchName string, n nicWithVlanMacBlock) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `
+resource "hyperv_virtual_switch" "primary" {
+  name        = %q
+  switch_type = "Private"
+}
+
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  network_adapter = [
+    {
+      name        = %q
+      switch_name = %s.name
+`, switchName, vmName, vmMinimumMemoryBytes, n.Name, n.SwitchRef)
+	if n.MacAddress != "" {
+		fmt.Fprintf(&b, "      mac_address = %q\n", n.MacAddress)
+	}
+	if n.VlanID > 0 {
+		fmt.Fprintf(&b, "      vlan_id     = %d\n", n.VlanID)
+	}
+	b.WriteString("    },\n  ]\n}\n")
+	return b.String()
 }
 
 // nicBlock and switchBlock are inputs to vmWithNICConfig.

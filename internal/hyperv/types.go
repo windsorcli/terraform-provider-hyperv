@@ -213,16 +213,42 @@ type NetworkAdapter struct {
 	Name        string   `json:"Name"`
 	SwitchName  string   `json:"SwitchName"`
 	IPAddresses []string `json:"IPAddresses"`
+
+	// MacAddress is the active MAC. Only populated by the script when
+	// DynamicMacAddressEnabled is false (i.e. user-set static MAC); for
+	// dynamic MACs the script emits an empty string so the resource
+	// layer's flatten can store state value as null without conflating
+	// "user picked no MAC" with "user picked Hyper-V's auto-assigned
+	// pool value of the moment".
+	MacAddress string `json:"MacAddress"`
+
+	// VlanID is the access-mode VLAN ID. 0 means untagged. The resource
+	// layer flattens 0 to a null state value so unset config matches
+	// unset state on round-trip.
+	VlanID int `json:"VlanID"`
 }
 
 // AttachNetworkAdapterInput is the stdin JSON shape for
-// vm/add-network-adapter.ps1. All three fields are required;
-// uniqueness of Name within a VM is enforced by the resource-layer
-// schema validator (Hyper-V itself doesn't enforce it).
+// vm/add-network-adapter.ps1. Name / VMName / SwitchName are required;
+// MacAddress and VlanID are optional. Uniqueness of Name within a VM
+// is enforced by the resource-layer schema validator (Hyper-V itself
+// doesn't enforce it).
 type AttachNetworkAdapterInput struct {
 	Name       string `json:"name"`
 	VMName     string `json:"vm_name"`
 	SwitchName string `json:"switch_name"`
+
+	// MacAddress is optional. Empty string means "let Hyper-V auto-
+	// assign from its dynamic pool" -- the script omits the
+	// -StaticMacAddress flag in that case. Any non-empty value is
+	// passed through verbatim; the schema validator at the resource
+	// layer pre-screens the format.
+	MacAddress string `json:"mac_address,omitempty"`
+
+	// VlanID is optional. 0 means untagged (the script issues
+	// `Set-VMNetworkAdapterVlan -Untagged` after the Add). 1-4094 sets
+	// access-mode VLAN. The schema validator pre-screens the range.
+	VlanID int `json:"vlan_id,omitempty"`
 }
 
 // DetachNetworkAdapterInput is the stdin JSON shape for

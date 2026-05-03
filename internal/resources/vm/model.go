@@ -22,6 +22,7 @@ package vm
 import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
+	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
@@ -126,10 +127,25 @@ type HardDiskDriveModel struct {
 // homed VMs a stable reference to a specific NIC's IPs (order
 // within a single NIC is host-driven but the NIC selector itself
 // is keyed by the deterministic display Name).
+//
+// MacAddress is Optional+Computed. When the user sets it, the NIC
+// uses a static MAC of that value. When unset, Hyper-V auto-assigns
+// from its dynamic-MAC pool; in that case Read leaves the state
+// value null (we don't store the dynamically-assigned MAC -- that
+// would create a perpetual plan diff against the empty config).
+//
+// VlanID is Optional+Computed. When set to 1-4094, the NIC is
+// tagged with that VLAN ID in Access mode. When unset (or set to 0,
+// which is rejected as untagged-by-explicit-config-is-the-same-as-
+// no-config), the NIC carries untagged frames. Read populates from
+// Get-VMNetworkAdapterVlan.AccessVlanId; an untagged NIC produces
+// state value null (matching unset config to avoid perpetual diff).
 type NetworkAdapterModel struct {
 	Name        types.String `tfsdk:"name"`
 	SwitchName  types.String `tfsdk:"switch_name"`
 	IPAddresses types.List   `tfsdk:"ip_addresses"`
+	MacAddress  mactype.MAC  `tfsdk:"mac_address"`
+	VlanID      types.Int64  `tfsdk:"vlan_id"`
 }
 
 // DvdDriveModel is one element of the `dvd_drive` list on hyperv_vm.

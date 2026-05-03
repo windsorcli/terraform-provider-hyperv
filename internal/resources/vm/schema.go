@@ -1,6 +1,8 @@
 package vm
 
 import (
+	"regexp"
+
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -15,8 +17,25 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
+	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
+
+// macAddressRegex accepts the three forms Hyper-V's
+// Add/Set-VMNetworkAdapter cmdlets accept:
+//
+//   - colon-separated: AA:BB:CC:DD:EE:FF
+//   - hyphen-separated: AA-BB-CC-DD-EE-FF
+//   - unsigned 12-hex: AABBCCDDEEFF
+//
+// Case-insensitive. The separator must be uniform within a single
+// address -- mixed forms like AA:BB-CC:DD-EE:FF parse as valid hex
+// but Set-VMNetworkAdapter -StaticMacAddress rejects them mid-apply,
+// so the schema validator rejects them at plan time instead. A custom
+// type with StringSemanticEquals (mactype.Type) folds separator and
+// case so a refresh against Hyper-V's canonical unsigned-12-hex echo
+// doesn't surface a phantom diff.
+var macAddressRegex = regexp.MustCompile(`(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$|^[0-9a-f]{2}(-[0-9a-f]{2}){5}$|^[0-9a-f]{12}$`)
 
 // hardDiskObjectAttrTypes is the framework's attr.Type representation
 // of one element in the `hard_disk_drive` list. Used to construct the
@@ -39,14 +58,17 @@ func hardDiskObjectAttrTypes() map[string]attr.Type {
 }
 
 // networkAdapterObjectAttrTypes is the analog for network_adapter.
-// Same Default-empty-list rationale as HDDs. Two-field shape mirrors
-// the minimum-viable NIC schema in this slice; vlan_id and
-// mac_address attach as additional keys here in a follow-up.
+// Same Default-empty-list rationale as HDDs. Keep in lockstep with
+// NetworkAdapterModel and the network_adapter NestedAttributeObject
+// schema below -- a drift between any of the three triggers
+// "schema mismatch" diagnostics that take a while to track down.
 func networkAdapterObjectAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"name":         types.StringType,
 		"switch_name":  types.StringType,
 		"ip_addresses": types.ListType{ElemType: types.StringType},
+		"mac_address":  mactype.Type,
+		"vlan_id":      types.Int64Type,
 	}
 }
 
@@ -100,7 +122,7 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 //	    dynamic_memory as static (same on-host behavior as v2).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		Version: 4,
+		Version: 5,
 		MarkdownDescription: "Manages a Hyper-V virtual machine. Configures " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), " +
 			"`secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle " +
@@ -382,6 +404,45 @@ func resourceSchema() schema.Schema {
 							// preserves the state value naturally (state -> plan
 							// for unchanged Computed fields is the default
 							// behavior). Plan-stability is not actually lost.
+						},
+						"mac_address": schema.StringAttribute{
+							CustomType: mactype.Type,
+							Optional:   true,
+							Computed:   true,
+							MarkdownDescription: "Static MAC address for this NIC, in either " +
+								"colon-separated (`AA:BB:CC:DD:EE:FF`), hyphen-separated " +
+								"(`AA-BB-CC-DD-EE-FF`), or unsigned-12-hex (`AABBCCDDEEFF`) " +
+								"form -- Hyper-V accepts all three. The stored value " +
+								"preserves whatever form you wrote; semantic equality " +
+								"folds separator presence and case so a refresh against " +
+								"Hyper-V's canonical unsigned-12-hex echo doesn't surface " +
+								"a phantom diff. Setting this disables Hyper-V's dynamic-" +
+								"MAC pool for this NIC and pins the address; leave unset " +
+								"to let Hyper-V auto-assign (state stores `null` in that " +
+								"case so unset config matches unset state).\n\n" +
+								"Changes to this field cause the NIC to be detached and " +
+								"re-attached (same shape as `switch_name` updates), which " +
+								"requires the VM to be `Off` for the cmdlet to apply.",
+							Validators: []validator.String{
+								stringvalidator.RegexMatches(macAddressRegex, "must be a valid "+
+									"MAC address (e.g. `AA:BB:CC:DD:EE:FF`, `AA-BB-CC-DD-EE-FF`, "+
+									"or `AABBCCDDEEFF`)"),
+							},
+						},
+						"vlan_id": schema.Int64Attribute{
+							Optional: true,
+							Computed: true,
+							MarkdownDescription: "Access-mode VLAN ID for this NIC. Valid " +
+								"range is 1-4094. Leave unset (the default) for an untagged " +
+								"NIC; state stores `null` for untagged NICs rather than the " +
+								"sentinel `0` Hyper-V uses internally, so unset config matches " +
+								"unset state.\n\n" +
+								"Trunk and isolation VLAN modes are not currently supported " +
+								"-- only Access mode. Changes to this field cause the NIC to " +
+								"be detached and re-attached, requiring the VM to be `Off`.",
+							Validators: []validator.Int64{
+								int64validator.Between(1, 4094),
+							},
 						},
 					},
 				},

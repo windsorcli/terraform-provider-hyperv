@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
+	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
@@ -111,6 +112,18 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 					return
 				}
 				upgraded := upgradeV3ToV4(prior)
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
+		4: {
+			PriorSchema: ptrSchema(priorSchemaV4()),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior priorModelV4
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				upgraded := upgradeV4ToV5(prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -477,10 +490,158 @@ func priorSchemaV3() schema.Schema {
 	}
 }
 
-// upgradeV3ToV4 maps a v3 state struct into the v4 Model. The only
-// shape change is network_adapter[].ip_addresses being added. v3
-// state files don't carry per-NIC IPs, so each NIC migrates with
-// IPAddresses set to an empty (known) list -- the next refresh
+// priorNetworkAdapterModelV4 is the NIC shape on v4 -- after
+// ip_addresses landed but before mac_address and vlan_id were added
+// in v5. Used by priorModelV4 so a v4 state file decodes against a
+// struct that exactly matches the v4 schema.
+type priorNetworkAdapterModelV4 struct {
+	Name        types.String `tfsdk:"name"`
+	SwitchName  types.String `tfsdk:"switch_name"`
+	IPAddresses types.List   `tfsdk:"ip_addresses"`
+}
+
+// priorModelV4 mirrors the v4 Model. Identical to the current Model
+// except network_adapter[] entries lack the v5-only mac_address and
+// vlan_id fields.
+type priorModelV4 struct {
+	ID              types.String                 `tfsdk:"id"`
+	Name            types.String                 `tfsdk:"name"`
+	Generation      types.Int64                  `tfsdk:"generation"`
+	CPU             *CPUModel                    `tfsdk:"cpu"`
+	Memory          *MemoryModel                 `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel         `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []priorNetworkAdapterModelV4 `tfsdk:"network_adapter"`
+	DvdDrives       []DvdDriveModel              `tfsdk:"dvd_drive"`
+	BootOrder       []BootOrderEntryModel        `tfsdk:"boot_order"`
+	SecureBoot      types.Bool                   `tfsdk:"secure_boot"`
+	Notes           types.String                 `tfsdk:"notes"`
+	State           *StateModel                  `tfsdk:"state"`
+	IPAddresses     types.List                   `tfsdk:"ip_addresses"`
+	Path            types.String                 `tfsdk:"path"`
+}
+
+// priorSchemaV4 mirrors the v4 schema's structural shape: the v3 shape
+// plus the v4-only network_adapter[].ip_addresses addition. NIC entries
+// still lack mac_address and vlan_id -- those are the v5 additions.
+//
+// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
+// the v5-only network_adapter[].mac_address and network_adapter[].vlan_id
+// additions.
+func priorSchemaV4() schema.Schema {
+	return schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id":         schema.StringAttribute{Computed: true},
+			"name":       schema.StringAttribute{Required: true},
+			"generation": schema.Int64Attribute{Required: true},
+			"cpu": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"count": schema.Int64Attribute{Required: true},
+				},
+			},
+			"memory": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"startup_bytes": schema.Int64Attribute{Required: true},
+					"dynamic":       schema.BoolAttribute{Optional: true, Computed: true},
+					"min_bytes":     schema.Int64Attribute{Optional: true, Computed: true},
+					"max_bytes":     schema.Int64Attribute{Optional: true, Computed: true},
+				},
+			},
+			"hard_disk_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"path":                schema.StringAttribute{CustomType: pathtype.Type, Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"network_adapter": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name":         schema.StringAttribute{Required: true},
+						"switch_name":  schema.StringAttribute{Required: true},
+						"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+					},
+				},
+			},
+			"dvd_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"iso_path":            schema.StringAttribute{CustomType: pathtype.Type, Optional: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"boot_order": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type":                schema.StringAttribute{Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Optional: true, Computed: true},
+						"controller_location": schema.Int64Attribute{Optional: true, Computed: true},
+						"name":                schema.StringAttribute{Optional: true, Computed: true},
+					},
+				},
+			},
+			"secure_boot": schema.BoolAttribute{Optional: true, Computed: true},
+			"notes":       schema.StringAttribute{Optional: true, Computed: true},
+			"state": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"desired":       schema.StringAttribute{Optional: true},
+					"current":       schema.StringAttribute{Computed: true},
+					"shutdown_mode": schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+			"path":         schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+// upgradeV4ToV5 maps a v4 state struct into the v5 Model. The only
+// shape change is network_adapter[] gaining mac_address and vlan_id.
+// v4 state files don't carry per-NIC MAC or VLAN, so each NIC
+// migrates with both fields null. The next refresh populates them
+// from the host (mac_address only when the NIC has DynamicMacAddressEnabled
+// false; vlan_id only when AccessVlanId > 0).
+func upgradeV4ToV5(prior priorModelV4) Model {
+	return Model{
+		ID:              prior.ID,
+		Name:            prior.Name,
+		Generation:      prior.Generation,
+		CPU:             prior.CPU,
+		Memory:          prior.Memory,
+		HardDiskDrives:  prior.HardDiskDrives,
+		NetworkAdapters: expandPriorNICsV4(prior.NetworkAdapters),
+		DvdDrives:       prior.DvdDrives,
+		BootOrder:       prior.BootOrder,
+		SecureBoot:      prior.SecureBoot,
+		Notes:           prior.Notes,
+		State:           prior.State,
+		IPAddresses:     prior.IPAddresses,
+		Path:            prior.Path,
+	}
+}
+
+// upgradeV3ToV4 maps a v3 state struct into the current Model. The
+// shape changes layered in are network_adapter[].ip_addresses (v4)
+// plus network_adapter[].mac_address and .vlan_id (v5). v3 state
+// files don't carry any of those, so each NIC migrates with an empty
+// ip_addresses list and null mac_address / vlan_id; the next refresh
 // populates from the host. Pure function for direct unit testing.
 func upgradeV3ToV4(prior priorModelV3) Model {
 	return Model{
@@ -537,10 +698,10 @@ func upgradeV1ToV2(prior priorModelV1) Model {
 	}
 }
 
-// expandPriorNICs maps the v1/v2/v3 NIC shape into v4 NetworkAdapterModel
-// entries by adding an empty ip_addresses list. The next refresh
-// populates per-NIC IPs from the host; until then, an empty (known)
-// list keeps the post-upgrade state shape valid against the v4 schema.
+// expandPriorNICs maps the v1/v2/v3 NIC shape into v5 NetworkAdapterModel
+// entries by adding empty/null defaults for the v4-and-later fields:
+// ip_addresses (added v4) gets an empty list; mac_address and vlan_id
+// (added v5) get null. The next refresh fills them from the host.
 func expandPriorNICs(prior []priorNetworkAdapterModelV1V2V3) []NetworkAdapterModel {
 	out := make([]NetworkAdapterModel, len(prior))
 	for i, n := range prior {
@@ -548,6 +709,26 @@ func expandPriorNICs(prior []priorNetworkAdapterModelV1V2V3) []NetworkAdapterMod
 			Name:        n.Name,
 			SwitchName:  n.SwitchName,
 			IPAddresses: types.ListValueMust(types.StringType, []attr.Value{}),
+			MacAddress:  mactype.NewMACNull(),
+			VlanID:      types.Int64Null(),
+		}
+	}
+	return out
+}
+
+// expandPriorNICsV4 maps the v4 NIC shape into v5 NetworkAdapterModel
+// entries by adding null defaults for the v5-only fields (mac_address,
+// vlan_id). IPAddresses carries through from the v4 state since that
+// field already existed there.
+func expandPriorNICsV4(prior []priorNetworkAdapterModelV4) []NetworkAdapterModel {
+	out := make([]NetworkAdapterModel, len(prior))
+	for i, n := range prior {
+		out[i] = NetworkAdapterModel{
+			Name:        n.Name,
+			SwitchName:  n.SwitchName,
+			IPAddresses: n.IPAddresses,
+			MacAddress:  mactype.NewMACNull(),
+			VlanID:      types.Int64Null(),
 		}
 	}
 	return out
