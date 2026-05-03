@@ -1,6 +1,6 @@
 package image_file_test
 
-// Acceptance tests for hyperv_image_file. Two modes:
+// Acceptance tests for hyperv_image_file. Three modes:
 //
 //   - host_path: file is already on the bench; the resource verifies
 //     presence and tracks SHA-256 for drift. Cheapest to test (no I/O,
@@ -11,6 +11,12 @@ package image_file_test
 //     an httptest.Server bound to the runner's LAN-routable IP and the
 //     bench downloads from there. No external network dependency, no
 //     fixture-host coordination.
+//   - local_path: provider streams a runner-local file through the
+//     active connection backend (SSH or WinRM) to a sibling .part of
+//     destination_path, verifies the streamed bytes' SHA against the
+//     runner-computed value, atomic-renames into place. Hermetic too:
+//     the runner-side fixture is written in t.TempDir(); destination is
+//     a per-test path under HYPERV_TEST_VHD_DIR.
 //
 // See docs/contributing/acceptance-tests.md for the bench setup that
 // stages a test fixture file at a stable path.
@@ -21,6 +27,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -220,6 +227,190 @@ func TestAcc_ImageFile_url(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAcc_ImageFile_localPath exercises local_path mode end-to-end:
+// stream a runner-local file to a staging path on the bench, verify
+// the streamed bytes' SHA, atomic-rename, then re-stream after a
+// content change to prove the ModifyPlan-driven Update path works.
+//
+// Hermetic: the runner-side fixture is written in t.TempDir(); the
+// bench-side destination is a per-test file under HYPERV_TEST_VHD_DIR
+// that gets cleaned up by destroy. Two TestSteps:
+//
+//  1. Apply with the original fixture; assert state mirrors the
+//     runner-computed SHA / size, and local_path round-trips through
+//     state.
+//  2. Rewrite the runner-side file in PreConfig with different bytes
+//     (same path), re-apply; assert state reflects the new SHA / size.
+//     This is the load-bearing assertion that ModifyPlan + the Update
+//     re-stream path actually wire up -- a regression that left
+//     UseStateForUnknown in charge would silently skip the re-stream.
+//
+// CheckDestroy: provider put the file on the bench, so destroy must
+// remove it (parallel to url-mode). A regression that made local_path
+// Delete a no-op (e.g., extending the host_path skip rule) would
+// catch fire here.
+func TestAcc_ImageFile_localPath(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	runnerDir := t.TempDir()
+	fixturePath := filepath.Join(runnerDir, "fixture.bin")
+
+	v1 := []byte("tfacc local_path mode v1\n")
+	v1Hex := hex.EncodeToString(sha256OfBytes(v1))
+	if err := os.WriteFile(fixturePath, v1, 0o644); err != nil {
+		t.Fatalf("write fixture v1: %v", err)
+	}
+
+	v2 := []byte("tfacc local_path mode v2 (rewritten with different content)\n")
+	v2Hex := hex.EncodeToString(sha256OfBytes(v2))
+
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-local")+".bin"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// local_path mode: provider streamed the file on Create, so
+		// destroy must remove it (parallel to url-mode).
+		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileLocalPathConfig(dest, fixturePath),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("destination_path"),
+						knownvalue.StringExact(dest),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("local_path"),
+						knownvalue.StringExact(fixturePath),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(v1Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(v1))),
+					),
+				},
+			},
+			{
+				// Rewrite the runner-side file with different bytes at
+				// the same path. ModifyPlan recomputes the SHA at plan
+				// time; framework sees the diff against state's SHA;
+				// Update re-streams.
+				PreConfig: func() {
+					if err := os.WriteFile(fixturePath, v2, 0o644); err != nil {
+						t.Fatalf("rewrite fixture v2: %v", err)
+					}
+				},
+				Config: imageFileLocalPathConfig(dest, fixturePath),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(v2Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(v2))),
+					),
+				},
+			},
+		},
+	})
+}
+
+// TestAcc_ImageFile_urlAndLocalPathConflict drives the
+// urlAndLocalPathConflictValidator from the actual plan-time path
+// (rather than the unit test's direct .validate(...) call). A regression
+// that dropped the validator from ConfigValidators would let an
+// ambiguous config through to apply, where the resource layer would
+// pick url over local_path silently -- the validator is the only thing
+// keeping that confused config out.
+//
+// The malformed-on-purpose config doesn't actually need a reachable
+// bench since the framework's plan-time validators run before any
+// resource-level network call. The TF_ACC gate via RequireEnv keeps
+// this test out of `task test:unit` runs (matching the other acc
+// tests in this file); PreCheck inside resource.TestCase still runs
+// the standard env-var checks under `task test:acc`.
+func TestAcc_ImageFile_urlAndLocalPathConflict(t *testing.T) {
+	// The test doesn't read HYPERV_TEST_VHD_DIR, but RequireEnv's
+	// TF_ACC gate is the cleanest way to skip outside acceptance runs.
+	// The dir value itself is unused -- the bench is never touched
+	// because the validator rejects at plan time.
+	_ = acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
+
+	runnerDir := t.TempDir()
+	fixturePath := filepath.Join(runnerDir, "fixture.bin")
+	if err := os.WriteFile(fixturePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileURLAndLocalPathConfig(
+					"C:/hyperv/tfacc/never-applied.bin",
+					fixturePath,
+					"https://example.com/never-fetched.bin",
+					// 64 hex chars to satisfy the schema regex; the
+					// validator fires before checksum verification, so
+					// the actual bytes don't matter.
+					"sha256:0000000000000000000000000000000000000000000000000000000000000000",
+				),
+				ExpectError: regexp.MustCompile(`mutually exclusive`),
+			},
+		},
+	})
+}
+
+// sha256OfBytes is a tiny helper so the local_path test can compute
+// expected hashes inline without three lines of boilerplate per step.
+func sha256OfBytes(b []byte) []byte {
+	sum := sha256.Sum256(b)
+	return sum[:]
+}
+
+// imageFileLocalPathConfig is the smallest valid HCL for local_path
+// mode -- destination_path on the bench, local_path on the runner.
+// `url` is omitted because url + local_path is a config-validator
+// rejection (covered separately by TestAcc_ImageFile_urlAndLocalPathConflict).
+func imageFileLocalPathConfig(destPath, localPath string) string {
+	return fmt.Sprintf(`
+resource "hyperv_image_file" "test" {
+  destination_path = %q
+  local_path       = %q
+}
+`, destPath, localPath)
+}
+
+// imageFileURLAndLocalPathConfig deliberately violates the
+// urlAndLocalPathConflictValidator so the acc test can verify the
+// validator fires from the actual plan-time path (not just the unit
+// test's direct call).
+func imageFileURLAndLocalPathConfig(destPath, localPath, url, checksum string) string {
+	return fmt.Sprintf(`
+resource "hyperv_image_file" "test" {
+  destination_path = %q
+  local_path       = %q
+  url = {
+    url      = %q
+    checksum = %q
+  }
+}
+`, destPath, localPath, url, checksum)
 }
 
 // imageFileHostPathConfig is the smallest valid HCL for host_path mode.

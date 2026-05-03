@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -101,12 +102,18 @@ func (v urlAndLocalPathConflictValidator) validate(data Model) diag.Diagnostics 
 	return diags
 }
 
-// ModifyPlan computes the runner-side SHA-256 of `local_path` at plan
-// time and writes it into the planned `sha256` attribute. This is what
-// makes content changes to the local file (same path, different bytes)
-// surface as a plan diff -- without it, `UseStateForUnknown` would
-// carry the prior SHA forward and the framework wouldn't know to call
-// Update.
+// ModifyPlan computes the runner-side SHA-256 and size of `local_path`
+// at plan time and writes them into the planned `sha256` / `size_bytes`
+// attributes. This is what makes content changes to the local file
+// (same path, different bytes) surface as a plan diff -- without it,
+// `UseStateForUnknown` would carry the prior values forward and the
+// framework would either skip the Update entirely or reject the apply
+// with a "Provider produced inconsistent result" check on the
+// Computed attribute that didn't match its planned value.
+//
+// Both attributes must be updated together: a content change generally
+// changes both, and the framework's post-apply consistency check
+// triggers on either one drifting from plan to apply.
 //
 // Skipped for url-mode and host_path-mode (LocalPath null/unknown), and
 // during destroy (no plan).
@@ -125,21 +132,35 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		return
 	}
 
-	sha, err := hyperv.ComputeFileSHA256(plan.LocalPath.ValueString())
+	localPath := plan.LocalPath.ValueString()
+
+	info, err := os.Stat(localPath)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("local_path"),
+			"Cannot stat local file at plan time",
+			fmt.Sprintf("os.Stat(%s) failed: %v\n\n"+
+				"The provider reads local_path during plan so changes to the file's "+
+				"contents between applies trigger a re-stream. The file must exist "+
+				"and be readable when running plan/apply.",
+				localPath, err),
+		)
+		return
+	}
+
+	sha, err := hyperv.ComputeFileSHA256(localPath)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("local_path"),
 			"Cannot read local file at plan time",
-			fmt.Sprintf("Computing SHA-256 of %s failed: %v\n\n"+
-				"The provider hashes local_path during plan so changes to the file's "+
-				"contents between applies trigger a re-stream. The file must exist and "+
-				"be readable when running plan/apply.",
-				plan.LocalPath.ValueString(), err),
+			fmt.Sprintf("Computing SHA-256 of %s failed: %v",
+				localPath, err),
 		)
 		return
 	}
 
 	plan.Sha256 = types.StringValue(sha)
+	plan.SizeBytes = types.Int64Value(info.Size())
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
