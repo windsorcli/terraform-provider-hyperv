@@ -1,8 +1,12 @@
 package hyperv
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,6 +198,173 @@ func TestClient_NewImageFileFromHostPath_NotFoundMapsToErrNotFound(t *testing.T)
 	_, err := c.NewImageFileFromHostPath(t.Context(), "C:\\nope.vhdx")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// NewImageFileFromLocalPath orchestrates two transport calls (StreamFile
+// then RunScript). This test pins the wire shape of both: StreamFile
+// lands at a sibling .part of DestinationPath, RunScript carries
+// destination_path + source_mode=local_path + the runner-computed
+// expected_sha256 + the same staging_path that StreamFile used. A drift
+// in any of these fields would surface as a host-side
+// ImageFileStagingNotFound or ImageFileChecksumMismatch.
+func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T) {
+	t.Parallel()
+
+	// Real fixture file -- the typed client opens it for SHA computation
+	// before any transport call, so the test needs an actual on-disk
+	// blob. Tiny content is fine; we're verifying wire shape, not
+	// streaming throughput.
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "fixture.iso")
+	payload := []byte("hello local_path mode")
+	if err := os.WriteFile(localPath, payload, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	wantHash := sha256.Sum256(payload)
+	wantHex := hex.EncodeToString(wantHash[:])
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := NewImageFileFromLocalPathInput{
+		DestinationPath: "C:/hyperv/iso/fixture.iso",
+		LocalPath:       localPath,
+	}
+	if _, err := c.NewImageFileFromLocalPath(t.Context(), in); err != nil {
+		t.Fatalf("NewImageFileFromLocalPath: %v", err)
+	}
+
+	streams := fr.StreamCalls()
+	if len(streams) != 1 {
+		t.Fatalf("StreamCalls = %d, want 1", len(streams))
+	}
+	if streams[0].LocalPath != localPath {
+		t.Errorf("stream.LocalPath = %q, want %q", streams[0].LocalPath, localPath)
+	}
+	if !strings.HasPrefix(streams[0].RemotePath, "C:/hyperv/iso/fixture.iso.part-") {
+		t.Errorf("stream.RemotePath = %q, want a `<destination>.part-*` sibling",
+			streams[0].RemotePath)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls = %d, want 1", len(calls))
+	}
+	stdin := string(calls[0].StdinJSON)
+	for _, want := range []string{
+		`"destination_path":"C:/hyperv/iso/fixture.iso"`,
+		`"source_mode":"local_path"`,
+		`"expected_sha256":"` + wantHex + `"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+	// LocalPath is `json:"-"` on the input -- it must never reach the wire.
+	if strings.Contains(stdin, localPath) {
+		t.Errorf("stdin leaks LocalPath %q (should be runner-only)\nfull stdin: %s", localPath, stdin)
+	}
+	// staging_path on the wire must equal the path StreamFile wrote to;
+	// PS Test-Path keys on it for the verify-and-rename step.
+	var got struct {
+		StagingPath string `json:"staging_path"`
+	}
+	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.StagingPath != streams[0].RemotePath {
+		t.Errorf("stdin.staging_path = %q, want %q (must match StreamFile destination)",
+			got.StagingPath, streams[0].RemotePath)
+	}
+}
+
+// NewImageFileFromLocalPath maps the InvalidData + ImageFileChecksumMismatch
+// envelope to ErrChecksumMismatch -- same shape as url-mode so the
+// resource layer's diagnostic can use one rule for both source modes.
+// In local_path mode this signals transport corruption (Connection
+// streamed bytes, host-side hash didn't match).
+func TestClient_NewImageFileFromLocalPath_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "fixture.iso")
+	if err := os.WriteFile(localPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	envelope := `{"category":"InvalidData","fullyQualifiedErrorId":"ImageFileChecksumMismatch","message":"checksum mismatch for staged file","cmdlet":""}`
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromLocalPath(t.Context(), NewImageFileFromLocalPathInput{
+		DestinationPath: "C:/iso/fixture.iso",
+		LocalPath:       localPath,
+	})
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("err = %v, want ErrChecksumMismatch", err)
+	}
+}
+
+// NewImageFileFromLocalPath surfaces a clear error when the runner-side
+// file doesn't exist, before any transport call. The SHA computation
+// fails first -- we never stream and we never call RunScript, so the
+// host stays untouched on a config typo.
+func TestClient_NewImageFileFromLocalPath_MissingLocalFile(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromLocalPath(t.Context(), NewImageFileFromLocalPathInput{
+		DestinationPath: "C:/iso/dest.iso",
+		LocalPath:       filepath.Join(t.TempDir(), "does-not-exist.iso"),
+	})
+	if err == nil {
+		t.Fatal("expected error for missing local file")
+	}
+	if !strings.Contains(err.Error(), "compute sha256") {
+		t.Errorf("err = %v, want substring 'compute sha256'", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (no transport on missing local file)", len(fr.StreamCalls()))
+	}
+	if len(fr.Calls()) != 0 {
+		t.Errorf("RunScript Calls = %d, want 0 (no transport on missing local file)", len(fr.Calls()))
+	}
+}
+
+// NewImageFileFromLocalPath short-circuits on a StreamFile failure --
+// don't proceed to RunScript with a non-existent staging path, that
+// would surface as ImageFileStagingNotFound and obscure the underlying
+// transport-level diagnostic.
+func TestClient_NewImageFileFromLocalPath_StreamFailureSurfacesAndSkipsRunScript(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "fixture.iso")
+	if err := os.WriteFile(localPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	want := errors.New("transport refused")
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0).
+		SetStreamFileErr(want)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromLocalPath(t.Context(), NewImageFileFromLocalPathInput{
+		DestinationPath: "C:/iso/fixture.iso",
+		LocalPath:       localPath,
+	})
+	if !errors.Is(err, want) {
+		t.Errorf("err = %v, want %v wrapped", err, want)
+	}
+	if len(fr.Calls()) != 0 {
+		t.Errorf("RunScript Calls = %d, want 0 (stream failure must short-circuit)", len(fr.Calls()))
 	}
 }
 
