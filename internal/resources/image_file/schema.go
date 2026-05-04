@@ -5,6 +5,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -120,6 +122,25 @@ func resourceSchema() schema.Schema {
 				MarkdownDescription: "Size of the file in bytes. Refreshed from the host on every `Read`.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
+				},
+			},
+			"keep_on_destroy": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				MarkdownDescription: "When `true`, `terraform destroy` removes this resource from state but " +
+					"leaves the file at `destination_path` on the host. Useful for large vendor artifacts " +
+					"(multi-GiB ISOs, sysprepped VHDXs) where the destroy/apply cycle would otherwise " +
+					"re-stream the same bytes every iteration. Re-creating with the same " +
+					"`destination_path` is a SHA-skip no-op when the file content matches.\n\n" +
+					"**No-op for `host_path`-mode** -- destroy was already a no-op in that mode (the user " +
+					"attested the file pre-existed, so the provider never deleted it). Setting the flag is " +
+					"harmless on `host_path` but communicates intent.\n\n" +
+					"**Caveat:** the bytes outlive the resource. Files-on-bench accumulate over time if you " +
+					"set this and never come back. There is no provider-level sweep; clean up out-of-band " +
+					"or with a `null_resource` + `local-exec` if you need automated reclamation.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
 		},

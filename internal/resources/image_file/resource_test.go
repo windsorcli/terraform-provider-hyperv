@@ -44,6 +44,7 @@ func TestResource_Schema(t *testing.T) {
 		"local_path",
 		"sha256",
 		"size_bytes",
+		"keep_on_destroy",
 	}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -364,6 +365,39 @@ func TestResource_Schema_LocalPathRequiresReplace(t *testing.T) {
 	}
 	if !hasPlanModifier(lp.PlanModifiers, "RequiresReplace") {
 		t.Error(`"local_path" must carry RequiresReplace (path-string change forces replace)`)
+	}
+}
+
+// TestResource_Schema_KeepOnDestroy pins the keep_on_destroy attribute's
+// shape: Optional+Computed (so users can omit it; framework fills in the
+// default) with a static-false default and UseStateForUnknown so plan
+// stays clean across applies that don't touch the flag.
+func TestResource_Schema_KeepOnDestroy(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	raw, ok := resp.Schema.Attributes["keep_on_destroy"]
+	if !ok {
+		t.Fatal(`missing attribute "keep_on_destroy"`)
+	}
+	attr, ok := raw.(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("keep_on_destroy is not a BoolAttribute (got %T)", raw)
+	}
+	if !attr.Optional {
+		t.Error(`"keep_on_destroy" must be Optional`)
+	}
+	if !attr.Computed {
+		t.Error(`"keep_on_destroy" must be Computed (default carries through unset configs)`)
+	}
+	if attr.Default == nil {
+		t.Error(`"keep_on_destroy" must carry a Default (false), or null configs surface as null instead of false`)
+	}
+	if !hasPlanModifier(attr.PlanModifiers, "UseStateForUnknown") {
+		t.Error(`"keep_on_destroy" must carry UseStateForUnknown`)
 	}
 }
 

@@ -42,6 +42,7 @@ type Model struct {
 	LocalPath       pathtype.Path `tfsdk:"local_path"`
 	Sha256          types.String  `tfsdk:"sha256"`
 	SizeBytes       types.Int64   `tfsdk:"size_bytes"`
+	KeepOnDestroy   types.Bool    `tfsdk:"keep_on_destroy"`
 }
 
 // URLConfig is the user-supplied URL-mode source configuration. Both fields

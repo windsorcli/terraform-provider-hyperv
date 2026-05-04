@@ -418,6 +418,19 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
+	// keep_on_destroy=true is the cache-the-bytes-on-the-bench escape
+	// hatch -- the resource is removed from state but the file persists
+	// at destination_path. Subsequent re-creates with the same path
+	// short-circuit on the SHA-skip path. host_path-mode bails earlier
+	// since destroy is already a no-op there; this branch only matters
+	// for url-mode and local_path-mode.
+	if state.KeepOnDestroy.ValueBool() {
+		tflog.Info(ctx, "keep_on_destroy=true; leaving file on host", map[string]any{
+			"destination_path": state.DestinationPath.ValueString(),
+		})
+		return
+	}
+
 	tflog.Debug(ctx, "deleting hyperv_image_file", map[string]any{
 		"destination_path": state.DestinationPath.ValueString(),
 	})
