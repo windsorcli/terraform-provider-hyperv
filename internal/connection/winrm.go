@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -96,9 +97,13 @@ var _ Connection = (*winrmBackend)(nil)
 // backend; the actual HTTP client is constructed lazily by Open so a unit
 // test that only exercises NewWinRM doesn't pay the construction cost.
 //
-// Auth methods supported: ntlm (default), basic. Kerberos is rejected here
-// with a clear message until SPN rendering and krb5 config are wired
-// through in a follow-up.
+// Auth methods supported: ntlm (default), basic, kerberos.
+//
+// Kerberos uses jcmturner/gokrb5 under the hood (pure-Go MIT Kerberos,
+// no GSSAPI library on the runner) and supports two credential modes:
+// password (inline AS-REQ) or ccache (re-use an existing TGT). The
+// caller picks the mode by setting Password or KrbCCachePath; setting
+// both, or neither, is rejected.
 func NewWinRM(opts WinRMOptions) (Connection, error) {
 	if opts.Host == "" {
 		return nil, errors.New("winrm: host is required")
@@ -117,8 +122,19 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 			return nil, fmt.Errorf("winrm: %s auth requires a password", auth)
 		}
 	case "kerberos":
-		return nil, errors.New("winrm: kerberos auth is not currently implemented; " +
-			"use ntlm or basic, or wait for the kerberos follow-up")
+		if opts.KrbRealm == "" {
+			return nil, errors.New("winrm: kerberos auth requires kerberos.realm")
+		}
+		// Password XOR ccache: exactly one credential source. Both is
+		// ambiguous (which wins?), neither leaves no way to authenticate.
+		hasPassword := opts.Password != ""
+		hasCCache := opts.KrbCCachePath != ""
+		if hasPassword && hasCCache {
+			return nil, errors.New("winrm: kerberos auth: password and kerberos.ccache_path are mutually exclusive (pick one)")
+		}
+		if !hasPassword && !hasCCache {
+			return nil, errors.New("winrm: kerberos auth requires either password or kerberos.ccache_path")
+		}
 	default:
 		return nil, fmt.Errorf("winrm: unknown auth %q (expected ntlm | basic | kerberos)", auth)
 	}
@@ -149,6 +165,21 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 		pwshPath = defaultWinRMPwshPath
 	}
 
+	// Kerberos defaults: SPN renders as HTTP/<host> per the standard
+	// WinRM service principal naming convention; krb5.conf path probes
+	// the canonical locations so an operator who didn't set one still
+	// gets a working config on a typical Linux/macOS runner. Both apply
+	// only when auth=kerberos; the masterzen library ignores these
+	// fields for ntlm/basic so passing them through is harmless.
+	krbSpn := opts.KrbSpn
+	if auth == "kerberos" && krbSpn == "" {
+		krbSpn = "HTTP/" + opts.Host
+	}
+	krbConfigPath := opts.KrbConfigPath
+	if auth == "kerberos" && krbConfigPath == "" {
+		krbConfigPath = defaultKrbConfigPath()
+	}
+
 	return &winrmBackend{
 		opts: WinRMOptions{
 			Host:           opts.Host,
@@ -159,11 +190,41 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 			Insecure:       opts.Insecure,
 			Auth:           auth,
 			CACert:         opts.CACert,
+			KrbRealm:       opts.KrbRealm,
+			KrbSpn:         krbSpn,
+			KrbConfigPath:  krbConfigPath,
+			KrbCCachePath:  opts.KrbCCachePath,
 			Timeout:        timeout,
 			CommandTimeout: commandTimeout,
 			PwshPath:       pwshPath,
 		},
 	}, nil
+}
+
+// defaultKrbConfigPath probes the canonical krb5.conf locations in
+// priority order: KRB5_CONFIG env var (the standard MIT/Heimdal
+// override), ~/.config/krb5.conf (user-level, common with brew-
+// installed krb5 on macOS), then /etc/krb5.conf (system-level on
+// Linux/macOS). Returns the first existing path or empty if none
+// found -- in the empty case, masterzen/winrm's config.Load will
+// surface a clear "open <empty>: no such file or directory" error
+// at first auth attempt, which is the right shape for "you didn't
+// set this and we couldn't auto-detect" misconfig.
+func defaultKrbConfigPath() string {
+	if p := os.Getenv("KRB5_CONFIG"); p != "" {
+		return p
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		userPath := filepath.Join(home, ".config", "krb5.conf")
+		if _, err := os.Stat(userPath); err == nil {
+			return userPath
+		}
+	}
+	const systemPath = "/etc/krb5.conf"
+	if _, err := os.Stat(systemPath); err == nil {
+		return systemPath
+	}
+	return ""
 }
 
 // Backend returns the lowercase identifier used for tflog field decoration.
@@ -416,6 +477,35 @@ func buildWinRMParams(opts WinRMOptions) *winrm.Parameters {
 	params.Timeout = formatXSDDuration(opts.CommandTimeout)
 	if opts.Auth == "basic" {
 		params.TransportDecorator = nil
+	}
+	if opts.Auth == "kerberos" {
+		// Swap the default NTLM/Negotiate transport for the masterzen-
+		// supplied Kerberos transport, which uses jcmturner/gokrb5 to
+		// obtain a TGT (password mode via inline AS-REQ, or ccache
+		// mode by reading a pre-existing ticket file) and sets the
+		// SPNEGO Authorization header per request. NewWinRM has
+		// already validated realm + password-XOR-ccache + filled in
+		// SPN/krb5.conf defaults, so the values handed off here are
+		// the resolved final config.
+		proto := "http"
+		if opts.UseHTTPS {
+			proto = "https"
+		}
+		settings := &winrm.Settings{
+			WinRMUsername: opts.Username,
+			WinRMPassword: opts.Password,
+			WinRMHost:     opts.Host,
+			WinRMPort:     opts.Port,
+			WinRMProto:    proto,
+			WinRMInsecure: opts.Insecure,
+			KrbRealm:      opts.KrbRealm,
+			KrbConfig:     opts.KrbConfigPath,
+			KrbSpn:        opts.KrbSpn,
+			KrbCCache:     opts.KrbCCachePath,
+		}
+		params.TransportDecorator = func() winrm.Transporter {
+			return winrm.NewClientKerberos(settings)
+		}
 	}
 	return params
 }
