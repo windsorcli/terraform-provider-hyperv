@@ -204,6 +204,22 @@ tasks:
     cmds:
       - bash hack/lab/kerberos/build-iso.sh
 
+  lab:client-setup:
+    desc: Configure this macOS workstation as a Kerberos client for HV.LAB
+    summary: |
+      One-shot Phase 3 setup -- installs MIT krb5 from brew, renders
+      ~/.config/krb5.conf, adds HV.LAB FQDNs to /etc/hosts (sudo, only
+      on first run), and runs kinit + kvno against the lab to validate
+      the full client path. Reads HVLAB_ADMIN_PASSWORD from .env.local
+      so re-runs after TGT expiry stay non-interactive.
+
+      Prereqs: Phase 1 (DC up) and Phase 2 (bench domain-joined,
+      portproxy + SPNs registered) per
+      examples/lab/kerberos/README.md. macOS-only (uname check).
+      sudo prompts once on first run for /etc/hosts.
+    cmds:
+      - bash hack/lab/kerberos/client-setup.sh
+
   # ---------- Docs ----------
 
   generate:

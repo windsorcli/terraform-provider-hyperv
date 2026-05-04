@@ -146,50 +146,38 @@ New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-389' -Direction Inbound -Pr
 ## Phase 3: Configure the dev workstation (macOS, one-time)
 
 ```sh
+task lab:client-setup
+```
+
+That wraps the full client setup: installs MIT krb5 from Homebrew,
+renders `~/.config/krb5.conf`, adds the HV.LAB FQDNs to `/etc/hosts`
+(sudo prompt, first run only), runs `kinit` against the lab using
+`HVLAB_ADMIN_PASSWORD` from `.env.local`, and verifies the TGT plus
+the `HTTP/hv-bench-01.hv.lab` service ticket. Re-running after the
+TGT expires (10 hours by default) just refreshes the ticket without
+re-prompting for sudo.
+
+The task prints the exact `go test` invocation for the smoke test
+when it finishes, so copy-paste that to validate end-to-end.
+
+If you'd rather do it by hand, the underlying steps are:
+
+```sh
 brew install krb5
-
-mkdir -p ~/.config
-cat > ~/.config/krb5.conf <<'EOF'
-[libdefaults]
-    default_realm = HV.LAB
-    dns_lookup_kdc = false
-    dns_lookup_realm = false
-    udp_preference_limit = 1
-    forwardable = true
-    rdns = false
-
-[realms]
-    HV.LAB = {
-        kdc = hv-dc-01.hv.lab
-        admin_server = hv-dc-01.hv.lab
-        default_domain = hv.lab
-    }
-
-[domain_realm]
-    .hv.lab = HV.LAB
-    hv.lab = HV.LAB
-EOF
-
-# Both names resolve to the bench IP; the bench's portproxy from Phase
-# 2 forwards 88/389 to the DC.
-sudo tee -a /etc/hosts >/dev/null <<EOF
-
-# HV.LAB Kerberos demo
-192.168.3.77    hv-dc-01.hv.lab hv-dc-01
-192.168.3.77    hv-bench-01.hv.lab hv-bench-01
-EOF
-
-# Use the brew kinit (MIT) and a FILE: ccache so jcmturner/gokrb5 can
-# read the ticket. The macOS-builtin /usr/bin/kinit defaults to API:
-# (Keychain) which gokrb5 doesn't understand.
+# write ~/.config/krb5.conf with default_realm=HV.LAB, kdc=hv-dc-01.hv.lab,
+# udp_preference_limit=1 (TCP-only; netsh portproxy is TCP-only).
+# add to /etc/hosts: 192.168.3.77 hv-dc-01.hv.lab and hv-bench-01.hv.lab.
 export KRB5_CONFIG="$HOME/.config/krb5.conf"
 export KRB5CCNAME="FILE:/tmp/krb5cc_$(id -u)"
 export PATH="/opt/homebrew/opt/krb5/bin:$PATH"
-
-kinit Administrator@HV.LAB           # password from .env.local
-klist                                 # expect a krbtgt/HV.LAB ticket
-kvno HTTP/hv-bench-01.hv.lab          # expect a service ticket
+kinit Administrator@HV.LAB
+klist
+kvno HTTP/hv-bench-01.hv.lab
 ```
+
+The brew `kinit` and a `FILE:` ccache are non-negotiable: macOS's
+built-in `/usr/bin/kinit` defaults to `API:` (Keychain) ccache, which
+the provider's `jcmturner/gokrb5` library doesn't read.
 
 ## Verification
 
