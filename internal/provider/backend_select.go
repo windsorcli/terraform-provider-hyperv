@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -202,13 +203,25 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
 	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
 
-	// Password gate: NTLM and Basic both require one. Kerberos in principle
-	// can use a pre-cached TGT (we reject it at NewWinRM time today, but
-	// the gate is shaped so future Kerberos support doesn't break this
-	// path). Anchored at path.Root("password") so the operator sees an
-	// inline pointer to the missing field rather than the generic
-	// "WinRM backend initialization failed" wrapping that NewWinRM's
-	// password error would otherwise produce.
+	// Kerberos sub-block is optional; absent means types.StringNull() for
+	// every field, which resolveString collapses to the env-var fallback
+	// or the empty default. This matches how WinRMConfig itself is
+	// handled when winrm = {} is omitted entirely.
+	var krbAttrs WinRMKerberosConfig
+	if winrmAttrs.Kerberos != nil {
+		krbAttrs = *winrmAttrs.Kerberos
+	}
+	krbRealm := resolveString(krbAttrs.Realm, "HYPERV_KRB5_REALM", "")
+	krbSpn := resolveString(krbAttrs.Spn, "HYPERV_KRB5_SPN", "")
+	krbConfigPath := resolveString(krbAttrs.ConfigPath, "HYPERV_KRB5_CONF_PATH", "")
+	krbCCachePath := resolveString(krbAttrs.CCachePath, "HYPERV_KRB5_CCACHE_PATH", "")
+
+	// Password gate: NTLM and Basic both require one. Kerberos has its
+	// own credential rules (password OR ccache_path, not both, exactly
+	// one) checked further down. Anchored at path.Root("password") so
+	// the operator sees an inline pointer to the missing field rather
+	// than the generic "WinRM backend initialization failed" wrapping
+	// that NewWinRM's password error would otherwise produce.
 	if password == "" && auth != "kerberos" {
 		diags.AddAttributeError(
 			path.Root("password"),
@@ -217,6 +230,74 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 				"%s auth needs one.", auth),
 		)
 		return nil
+	}
+
+	// Kerberos-specific config gates. Anchored at the actual misconfigured
+	// attribute (winrm.kerberos.<attr> or password) so the operator
+	// sees an inline pointer; without these hoists, NewWinRM's plain-
+	// string errors would surface as a generic "WinRM backend
+	// initialization failed" diagnostic with no attribute context.
+	if auth == "kerberos" {
+		if krbRealm == "" {
+			diags.AddAttributeError(
+				path.Root("winrm").AtName("kerberos").AtName("realm"),
+				"WinRM kerberos auth requires a realm",
+				"Set the provider's `winrm.kerberos.realm` attribute or HYPERV_KRB5_REALM. "+
+					"The realm is the uppercase Kerberos domain, e.g. \"HV.LAB\".",
+			)
+			return nil
+		}
+
+		// Credential mode: exactly one of password or ccache_path. Both
+		// is ambiguous (which wins?), neither leaves no way to obtain
+		// a TGT.
+		hasPassword := password != ""
+		hasCCache := krbCCachePath != ""
+		switch {
+		case hasPassword && hasCCache:
+			diags.AddAttributeError(
+				path.Root("winrm").AtName("kerberos").AtName("ccache_path"),
+				"WinRM kerberos auth: password and ccache_path are mutually exclusive",
+				"Either set `password` (or HYPERV_PASSWORD) for inline AS-REQ, "+
+					"or set `winrm.kerberos.ccache_path` (or HYPERV_KRB5_CCACHE_PATH) "+
+					"to re-use a pre-existing TGT. Pick one; both is ambiguous.",
+			)
+			return nil
+		case !hasPassword && !hasCCache:
+			diags.AddAttributeError(
+				path.Root("password"),
+				"WinRM kerberos auth requires either password or ccache_path",
+				"Set `password` (or HYPERV_PASSWORD) for inline AS-REQ, "+
+					"or set `winrm.kerberos.ccache_path` (or HYPERV_KRB5_CCACHE_PATH) "+
+					"to re-use a pre-existing TGT obtained via `kinit`.",
+			)
+			return nil
+		}
+
+		// Host should be an FQDN for Kerberos -- the SPN match keys on
+		// hostname, and bare IPs almost never have an SPN registered.
+		// Two failure modes both want this warning:
+		//   - Short name like "hv-bench-01" -- no dot at all.
+		//   - Raw IPv4/IPv6 like "10.0.0.1" or "fe80::1" -- has dots
+		//     (or colons) but is still not a hostname; net.ParseIP
+		//     catches both forms.
+		// Warning rather than error: a host with a working /etc/hosts
+		// entry that resolves to an FQDN-anchored cert + SPN may pass
+		// fine even if `host` is set to a short name. Users with that
+		// setup should ignore the warning; users without it will see
+		// the warning and the apply-time auth failure together.
+		if !strings.Contains(host, ".") || net.ParseIP(host) != nil {
+			diags.AddAttributeWarning(
+				path.Root("host"),
+				"WinRM kerberos auth typically requires an FQDN host",
+				fmt.Sprintf("`host` is %q, which is not an FQDN (either no domain "+
+					"part, or a raw IP literal). Kerberos SPN matching keys on "+
+					"hostname, and the default SPN renders to `HTTP/<host>`. "+
+					"Set `host` to the bench's FQDN (e.g. `hv-bench-01.hv.lab`) "+
+					"unless your environment resolves it to a properly SPN-"+
+					"registered service.", host),
+			)
+		}
 	}
 
 	// Basic auth without HTTPS sends credentials as base64 in the
@@ -281,6 +362,10 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		Insecure:       insecure,
 		Auth:           auth,
 		CACert:         cacert,
+		KrbRealm:       krbRealm,
+		KrbSpn:         krbSpn,
+		KrbConfigPath:  krbConfigPath,
+		KrbCCachePath:  krbCCachePath,
 		CommandTimeout: commandTimeout,
 	})
 	if err != nil {

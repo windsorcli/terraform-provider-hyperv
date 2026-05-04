@@ -417,6 +417,190 @@ func TestNewConnection_WinRMRequiresPassword(t *testing.T) {
 	}
 }
 
+// TestNewConnection_WinRMKerberosRequiresRealm anchors the realm-required
+// error at winrm.kerberos.realm so the operator gets a direct pointer to
+// the misconfigured attribute, not a generic "WinRM backend init failed"
+// wrapper. Connection-layer NewWinRM also enforces this; the duplicate at
+// backend_select is for diagnostic anchoring.
+func TestNewConnection_WinRMKerberosRequiresRealm(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_KRB5_REALM", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv-bench-01.hv.lab"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("x"),
+		WinRM: &WinRMConfig{
+			Auth: types.StringValue("kerberos"),
+			// Kerberos block omitted -> realm absent.
+		},
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection when kerberos.realm is missing")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic")
+	}
+	combined := strings.ToLower(diags[0].Summary() + " " + diags[0].Detail())
+	if !strings.Contains(combined, "realm") {
+		t.Errorf("diagnostic should mention 'realm'; got summary=%q detail=%q",
+			diags[0].Summary(), diags[0].Detail())
+	}
+}
+
+// TestNewConnection_WinRMKerberosRejectsBothCreds covers the password-
+// AND-ccache_path case. Anchored at winrm.kerberos.ccache_path so the
+// operator sees the additive attribute as the one to remove (rather
+// than the password they likely intended).
+func TestNewConnection_WinRMKerberosRejectsBothCreds(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_KRB5_REALM", "")
+	t.Setenv("HYPERV_KRB5_CCACHE_PATH", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv-bench-01.hv.lab"),
+		Username: types.StringValue("Administrator"),
+		Password: types.StringValue("secret"),
+		WinRM: &WinRMConfig{
+			Auth: types.StringValue("kerberos"),
+			Kerberos: &WinRMKerberosConfig{
+				Realm:      types.StringValue("HV.LAB"),
+				CCachePath: types.StringValue("/tmp/krb5cc"),
+			},
+		},
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection when both password and ccache_path are set")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic")
+	}
+	combined := strings.ToLower(diags[0].Summary() + " " + diags[0].Detail())
+	if !strings.Contains(combined, "mutually exclusive") {
+		t.Errorf("diagnostic should mention 'mutually exclusive'; got summary=%q detail=%q",
+			diags[0].Summary(), diags[0].Detail())
+	}
+}
+
+// TestNewConnection_WinRMKerberosRejectsNoCreds covers the inverse: realm
+// set but neither password nor ccache_path. The diagnostic anchors at
+// path.Root("password") (the most-likely-intended attribute the
+// operator will fix).
+func TestNewConnection_WinRMKerberosRejectsNoCreds(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	t.Setenv("HYPERV_HOST", "")
+	t.Setenv("HYPERV_USERNAME", "")
+	t.Setenv("HYPERV_PASSWORD", "")
+	t.Setenv("HYPERV_KRB5_REALM", "")
+	t.Setenv("HYPERV_KRB5_CCACHE_PATH", "")
+
+	m := HypervProviderModel{
+		Backend:  types.StringValue("winrm"),
+		Host:     types.StringValue("hv-bench-01.hv.lab"),
+		Username: types.StringValue("Administrator"),
+		// password deliberately omitted
+		WinRM: &WinRMConfig{
+			Auth: types.StringValue("kerberos"),
+			Kerberos: &WinRMKerberosConfig{
+				Realm: types.StringValue("HV.LAB"),
+				// ccache_path also omitted
+			},
+		},
+	}
+	conn, diags := newConnection(t.Context(), m)
+	if conn != nil {
+		t.Error("expected nil connection when neither password nor ccache_path is set")
+	}
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic")
+	}
+	combined := strings.ToLower(diags[0].Summary() + " " + diags[0].Detail())
+	if !strings.Contains(combined, "password") || !strings.Contains(combined, "ccache") {
+		t.Errorf("diagnostic should mention both 'password' and 'ccache'; got summary=%q detail=%q",
+			diags[0].Summary(), diags[0].Detail())
+	}
+}
+
+// TestNewConnection_WinRMKerberosNonFQDNHostWarns covers the FQDN
+// warning across the two non-FQDN shapes the predicate must catch:
+//
+//   - Short bare hostname (no dot at all) -- the obvious case.
+//   - Raw IPv4 / IPv6 literal -- contains dots/colons but isn't a
+//     hostname; SPNs are never registered against IPs.
+//
+// Warn rather than error: a host with a working /etc/hosts entry that
+// resolves the short name to an FQDN-anchored cert + SPN may pass
+// fine. Users with that setup should ignore the warning; users
+// without it see the warning and the apply-time auth failure.
+//
+// Hardens against the "predicate uses string contains '.'" regression
+// that was caught in PR review (raw IPv4 satisfies that condition and
+// silently bypassed the warning before this fix).
+func TestNewConnection_WinRMKerberosNonFQDNHostWarns(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+	}{
+		{"short name", "hv-bench-01"},
+		{"raw ipv4", "10.0.0.1"},
+		{"raw ipv6", "fe80::1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HYPERV_BACKEND", "")
+			t.Setenv("HYPERV_HOST", "")
+			t.Setenv("HYPERV_USERNAME", "")
+			t.Setenv("HYPERV_PASSWORD", "")
+			t.Setenv("HYPERV_KRB5_REALM", "")
+			t.Setenv("HYPERV_KRB5_CCACHE_PATH", "")
+
+			m := HypervProviderModel{
+				Backend:  types.StringValue("winrm"),
+				Host:     types.StringValue(tc.host),
+				Username: types.StringValue("Administrator"),
+				Password: types.StringValue("secret"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringValue("kerberos"),
+					Kerberos: &WinRMKerberosConfig{
+						Realm: types.StringValue("HV.LAB"),
+					},
+				},
+			}
+			conn, diags := newConnection(t.Context(), m)
+			if conn == nil {
+				t.Fatalf("expected non-nil connection (warning, not error); diags = %v", diags)
+			}
+			if diags.HasError() {
+				t.Fatalf("expected warning, got error diagnostic: %v", diags)
+			}
+			if diags.WarningsCount() == 0 {
+				t.Fatalf("expected a warning diagnostic for %s host kerberos config", tc.name)
+			}
+			var found bool
+			for _, d := range diags.Warnings() {
+				combined := strings.ToLower(d.Summary() + " " + d.Detail())
+				if strings.Contains(combined, "fqdn") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected a warning mentioning 'FQDN'; got %v", diags.Warnings())
+			}
+		})
+	}
+}
+
 // TestNewConnection_WinRMRejectsMalformedBoolEnv pins the fail-loud
 // behavior on unrecognized boolean env values. Previously a typo like
 // HYPERV_WINRM_USE_HTTPS=disabled silently fell back to the default

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 // Sanity check that the provider type satisfies the framework interface and
@@ -81,5 +82,141 @@ func TestProvider_DataSources(t *testing.T) {
 		if factory() == nil {
 			t.Errorf("data source factory %d returned nil", i)
 		}
+	}
+}
+
+// TestProvider_ConfigValidators_RegistersAll confirms every provider-level
+// validator is wired into ConfigValidators(). Mirrors the resource-level
+// "RegistersAll" tests under internal/resources/*; drift here means a
+// validator silently dropped from the cross-attribute check surface.
+func TestProvider_ConfigValidators_RegistersAll(t *testing.T) {
+	t.Parallel()
+
+	p, ok := New("test")().(*HypervProvider)
+	if !ok {
+		t.Fatal("New() did not return *HypervProvider")
+	}
+	got := p.ConfigValidators(t.Context())
+	if len(got) != 1 {
+		t.Fatalf("got %d ConfigValidators, want 1 (kerberosRealmRequiredValidator)", len(got))
+	}
+}
+
+// TestKerberosRealmRequiredValidator covers the framework-level realm-
+// required rule. The schema layer can only mark the attribute Optional
+// (Terraform doesn't model conditional requirements at schema), so the
+// validator is the seam where "auth=kerberos but no realm" surfaces at
+// `terraform validate` instead of waiting until plan/apply.
+func TestKerberosRealmRequiredValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		model     HypervProviderModel
+		wantError bool
+	}{
+		{
+			name: "no winrm block -> ok (other backends or default ntlm)",
+			model: HypervProviderModel{
+				Backend: types.StringValue("local"),
+			},
+		},
+		{
+			name: "winrm but auth omitted -> ok (defaults to ntlm)",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM:   &WinRMConfig{},
+			},
+		},
+		{
+			name: "winrm auth=ntlm -> ok",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM:   &WinRMConfig{Auth: types.StringValue("ntlm")},
+			},
+		},
+		{
+			name: "winrm auth=kerberos with realm -> ok",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringValue("kerberos"),
+					Kerberos: &WinRMKerberosConfig{
+						Realm: types.StringValue("HV.LAB"),
+					},
+				},
+			},
+		},
+		{
+			name: "winrm auth=kerberos with empty realm -> fires",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringValue("kerberos"),
+					Kerberos: &WinRMKerberosConfig{
+						Realm: types.StringValue(""),
+					},
+				},
+			},
+			wantError: true,
+		},
+		{
+			name: "winrm auth=kerberos with no kerberos block -> fires",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringValue("kerberos"),
+					// Kerberos block omitted entirely.
+				},
+			},
+			wantError: true,
+		},
+		{
+			name: "winrm auth=kerberos with null realm -> fires",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringValue("kerberos"),
+					Kerberos: &WinRMKerberosConfig{
+						Realm: types.StringNull(),
+					},
+				},
+			},
+			wantError: true,
+		},
+		{
+			name: "auth=kerberos but realm unknown -> skip (deferred dep)",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringValue("kerberos"),
+					Kerberos: &WinRMKerberosConfig{
+						Realm: types.StringUnknown(),
+					},
+				},
+			},
+		},
+		{
+			name: "auth unknown -> skip (deferred dep)",
+			model: HypervProviderModel{
+				Backend: types.StringValue("winrm"),
+				WinRM: &WinRMConfig{
+					Auth: types.StringUnknown(),
+				},
+			},
+		},
+	}
+	v := kerberosRealmRequiredValidator{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(tc.model)
+			if tc.wantError && !diags.HasError() {
+				t.Errorf("expected error, got none")
+			}
+			if !tc.wantError && diags.HasError() {
+				t.Errorf("expected no error, got %v", diags)
+			}
+		})
 	}
 }
