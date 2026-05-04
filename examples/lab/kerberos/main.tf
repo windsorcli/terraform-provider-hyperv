@@ -12,11 +12,18 @@
 # streams it to the bench on apply. url-mode would be the usual
 # choice for a vendor artifact, but Microsoft's Eval Center URLs
 # require a registration form and expire per refresh -- so local_path
-# is the right pattern here. The ~5 GiB stream is one-shot for the
-# lab's lifetime; subsequent applies are no-ops once the SHA matches.
+# is the right pattern here.
+#
+# `keep_on_destroy = true`: leave the streamed file on the bench when
+# `terraform destroy` runs the lab down. The 5 GiB Eval ISO doesn't
+# change between rebuilds (it's a vendor artifact with a 180-day Eval
+# license), so re-streaming it on every destroy/apply cycle is pure
+# bench-network waste. Subsequent applies that find the file already
+# in place with a matching SHA short-circuit the stream entirely.
 resource "hyperv_image_file" "windows_iso" {
   destination_path = "${var.bench_iso_dir}/${var.windows_iso_filename}"
   local_path       = "${path.module}/../../../dist/${var.windows_iso_filename}"
+  keep_on_destroy  = true
 }
 
 # Autounattend ISO produced locally by `task lab:build-iso`. The
