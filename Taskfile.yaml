@@ -195,8 +195,9 @@ tasks:
       Substitutes secrets into hack/lab/kerberos/*.tpl from env vars
       (HVLAB_ADMIN_PASSWORD, HVLAB_DSRM_PASSWORD; load via .env.local),
       packages the staged files into dist/autounattend.iso. The output
-      is consumed by examples/lab/kerberos/main.tf as a host_path-mode
-      hyperv_image_file after a manual upload to the bench host.
+      is consumed by examples/lab/kerberos/main.tf as a local_path-mode
+      hyperv_image_file -- the provider streams it to the bench host
+      on `terraform apply`, no manual upload step.
 
       Prereq: xorriso on PATH (`brew install xorriso` or
       `apt install xorriso`). Python 3 (already on macOS by default).
