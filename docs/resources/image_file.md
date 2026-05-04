@@ -84,6 +84,11 @@ resource "hyperv_image_file" "preplaced_iso" {
 
 ### Optional
 
+- `keep_on_destroy` (Boolean) When `true`, `terraform destroy` removes this resource from state but leaves the file at `destination_path` on the host. Useful for large vendor artifacts (multi-GiB ISOs, sysprepped VHDXs) where the destroy/apply cycle would otherwise re-stream the same bytes every iteration. Re-creating with the same `destination_path` is a SHA-skip no-op when the file content matches.
+
+**No-op for `host_path`-mode** -- destroy was already a no-op in that mode (the user attested the file pre-existed, so the provider never deleted it). Setting the flag is harmless on `host_path` but communicates intent.
+
+**Caveat:** the bytes outlive the resource. Files-on-bench accumulate over time if you set this and never come back. There is no provider-level sweep; clean up out-of-band or with a `null_resource` + `local-exec` if you need automated reclamation.
 - `local_path` (String) Absolute path on the Terraform runner of the file to stream to the host. When set, the resource operates in `local_path`-mode: the provider opens the file on the runner, computes a SHA-256, and streams the bytes through the active connection backend (SSH or WinRM) to a sibling `.part` file under `destination_path`'s directory. The host-side script verifies the streamed bytes' SHA against the runner-computed value and atomic-renames into place. Mutually exclusive with `url` (a config validator rejects both set together).
 
 **Forces replacement** when changed -- streaming a different source file is conceptually a different resource. **Content changes at the same path are NOT a replace**: the runner-side file is hashed at plan time, and a different SHA than what's in state surfaces as a `sha256` diff that triggers in-place Update (re-stream + atomic rename).

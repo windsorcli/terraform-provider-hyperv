@@ -44,6 +44,7 @@ func TestResource_Schema(t *testing.T) {
 		"local_path",
 		"sha256",
 		"size_bytes",
+		"keep_on_destroy",
 	}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -278,7 +279,7 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 		Checksum: types.StringValue("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"),
 	}
 
-	got := modelFromImageFile(f, url, pathtype.NewPathNull())
+	got := modelFromImageFile(f, url, pathtype.NewPathNull(), types.BoolNull())
 
 	if got.ID.ValueString() != f.Path {
 		t.Errorf("ID = %q, want %q", got.ID.ValueString(), f.Path)
@@ -309,7 +310,7 @@ func TestModelFromImageFile_HostPathModePreservesNilURL(t *testing.T) {
 		Sha256:    "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
-	got := modelFromImageFile(f, nil, pathtype.NewPathNull())
+	got := modelFromImageFile(f, nil, pathtype.NewPathNull(), types.BoolNull())
 
 	if got.URL != nil {
 		t.Errorf("URL = %+v, want nil (host_path mode)", got.URL)
@@ -334,13 +335,40 @@ func TestModelFromImageFile_PreservesLocalPath(t *testing.T) {
 	}
 	localPath := pathtype.NewPathValue("/Users/me/dist/foo.iso")
 
-	got := modelFromImageFile(f, nil, localPath)
+	got := modelFromImageFile(f, nil, localPath, types.BoolNull())
 
 	if got.URL != nil {
 		t.Errorf("URL = %+v, want nil (local_path mode)", got.URL)
 	}
 	if got.LocalPath.ValueString() != "/Users/me/dist/foo.iso" {
 		t.Errorf("LocalPath = %q, want %q", got.LocalPath.ValueString(), "/Users/me/dist/foo.iso")
+	}
+}
+
+// TestModelFromImageFile_PreservesKeepOnDestroy round-trips the caller-
+// supplied keep_on_destroy through Read/Create/Update. The bench has
+// no concept of this flag (it's a Terraform-only destroy-behavior
+// switch), so modelFromImageFile must thread the caller's value into
+// the returned model. Without this, state holds null after every
+// Create, Delete reads null, ValueBool() returns false, the early-
+// return branch never fires, and the file is deleted regardless of
+// the user's config -- the entire feature is silently a no-op.
+func TestModelFromImageFile_PreservesKeepOnDestroy(t *testing.T) {
+	t.Parallel()
+
+	f := &hyperv.ImageFile{
+		Path:      "C:\\images\\cached.iso",
+		SizeBytes: 5044094976,
+		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+	}
+
+	got := modelFromImageFile(f, nil, pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.BoolValue(true))
+
+	if got.KeepOnDestroy.IsNull() {
+		t.Fatal("KeepOnDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
+	}
+	if !got.KeepOnDestroy.ValueBool() {
+		t.Errorf("KeepOnDestroy = false, want true (caller passed types.BoolValue(true))")
 	}
 }
 
@@ -364,6 +392,39 @@ func TestResource_Schema_LocalPathRequiresReplace(t *testing.T) {
 	}
 	if !hasPlanModifier(lp.PlanModifiers, "RequiresReplace") {
 		t.Error(`"local_path" must carry RequiresReplace (path-string change forces replace)`)
+	}
+}
+
+// TestResource_Schema_KeepOnDestroy pins the keep_on_destroy attribute's
+// shape: Optional+Computed (so users can omit it; framework fills in the
+// default) with a static-false default and UseStateForUnknown so plan
+// stays clean across applies that don't touch the flag.
+func TestResource_Schema_KeepOnDestroy(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	raw, ok := resp.Schema.Attributes["keep_on_destroy"]
+	if !ok {
+		t.Fatal(`missing attribute "keep_on_destroy"`)
+	}
+	attr, ok := raw.(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("keep_on_destroy is not a BoolAttribute (got %T)", raw)
+	}
+	if !attr.Optional {
+		t.Error(`"keep_on_destroy" must be Optional`)
+	}
+	if !attr.Computed {
+		t.Error(`"keep_on_destroy" must be Computed (default carries through unset configs)`)
+	}
+	if attr.Default == nil {
+		t.Error(`"keep_on_destroy" must carry a Default (false), or null configs surface as null instead of false`)
+	}
+	if !hasPlanModifier(attr.PlanModifiers, "UseStateForUnknown") {
+		t.Error(`"keep_on_destroy" must carry UseStateForUnknown`)
 	}
 }
 

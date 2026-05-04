@@ -329,6 +329,86 @@ func TestAcc_ImageFile_localPath(t *testing.T) {
 	})
 }
 
+// TestAcc_ImageFile_keepOnDestroy_localPath exercises the cache-the-
+// bytes escape hatch: with keep_on_destroy=true, a streamed local_path
+// file persists on the bench after `terraform destroy` removes the
+// resource from state. CheckResourceGone is the inverse of what we
+// want here -- using it would fail the test the moment Delete returns
+// (correctly) without invoking RemoveImageFile. Instead, the
+// CheckDestroy here asserts the *opposite*: the file must STILL be
+// readable on the bench after destroy. A regression that made
+// keep_on_destroy ignore the flag and delete anyway would surface
+// here as the file going missing.
+//
+// Cleans up the orphan in t.Cleanup so the bench doesn't accumulate
+// stale fixtures across runs.
+func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	runnerDir := t.TempDir()
+	fixturePath := filepath.Join(runnerDir, "fixture.bin")
+	body := []byte("tfacc keep_on_destroy local_path mode\n")
+	if err := os.WriteFile(fixturePath, body, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-keep")+".bin"))
+
+	// Belt-and-braces orphan cleanup. The whole point of this test is
+	// that destroy leaves the file behind; the test itself must clean
+	// up so subsequent runs start from a known-empty bench state.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := client.RemoveImageFile(ctx, dest); err != nil {
+			t.Logf("orphan cleanup of %s failed (file may have been removed already): %v", dest, err)
+		}
+	})
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// Inverse of CheckResourceGone: the file must persist post-
+		// destroy. A regression that ignored keep_on_destroy and
+		// deleted anyway would fail this with a clear error pointing
+		// at the destination_path that should still exist.
+		CheckDestroy: func(s *terraform.State) error {
+			for _, rs := range s.RootModule().Resources {
+				if rs.Type != "hyperv_image_file" {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				_, err := client.GetImageFile(ctx, rs.Primary.ID)
+				cancel()
+				if err != nil {
+					return fmt.Errorf("keep_on_destroy=true file %s should still exist on bench after destroy "+
+						"(destroy must skip the host-side delete when this flag is set): %v",
+						rs.Primary.ID, err)
+				}
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileLocalPathKeepOnDestroyConfig(dest, fixturePath),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("destination_path"),
+						knownvalue.StringExact(dest),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("keep_on_destroy"),
+						knownvalue.Bool(true),
+					),
+				},
+			},
+		},
+	})
+}
+
 // TestAcc_ImageFile_urlAndLocalPathConflict drives the
 // urlAndLocalPathConflictValidator from the actual plan-time path
 // (rather than the unit test's direct .validate(...) call). A regression
@@ -392,6 +472,19 @@ func imageFileLocalPathConfig(destPath, localPath string) string {
 resource "hyperv_image_file" "test" {
   destination_path = %q
   local_path       = %q
+}
+`, destPath, localPath)
+}
+
+// imageFileLocalPathKeepOnDestroyConfig is local_path mode with
+// keep_on_destroy=true wired in. Used by TestAcc_ImageFile_keepOnDestroy_localPath
+// to verify the destroy-path branches on the flag.
+func imageFileLocalPathKeepOnDestroyConfig(destPath, localPath string) string {
+	return fmt.Sprintf(`
+resource "hyperv_image_file" "test" {
+  destination_path = %q
+  local_path       = %q
+  keep_on_destroy  = true
 }
 `, destPath, localPath)
 }
