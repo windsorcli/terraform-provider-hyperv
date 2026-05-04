@@ -7,17 +7,17 @@
     variables (see Taskfile.yaml lab:build-iso for the var list).
 
     Intentional choices:
-      * Datacenter Eval (180-day) -- Standard would also work; Datacenter
+      * Datacenter Eval (180-day) — Standard would also work; Datacenter
         is the more common lab pick. Eval renews via slmgr /rearm.
-      * Single GPT disk wiped to one partition -- this is a fresh VHDX,
+      * Single GPT disk wiped to one partition — this is a fresh VHDX,
         no preservation needed.
-      * AutoLogon with LogonCount=1 -- machine logs in as Administrator
+      * AutoLogon with LogonCount=1 — machine logs in as Administrator
         once, runs FirstLogon.ps1, then auto-login disables. Anything
         higher leaves a security hole if the script fails midway.
       * specialize-pass xcopy of FirstLogon.ps1 from the unattend ISO
-        to C:\Windows\Setup\Scripts\ -- the ISO drive letter isn't
+        to C:\Windows\Setup\Scripts\ — the ISO drive letter isn't
         deterministic, so the cmd loop probes D-H to find it.
-      * en-US locale, UTC time zone -- match the Azure-VM defaults so
+      * en-US locale, UTC time zone — match the Azure-VM defaults so
         this lab behaves the same if it ever migrates.
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend"
@@ -48,7 +48,7 @@
         BIOS / MBR partitioning for Gen 1 VMs. Single bootable Primary
         partition that holds both the boot files and the OS. UEFI/GPT
         layouts (with separate EFI + MSR partitions) are wrong on Gen
-        1 -- Windows Setup refuses to install MBR when the disk is
+        1 — Windows Setup refuses to install MBR when the disk is
         already GPT, and vice versa. The <WillWipeDisk> above forces a
         clean MBR table on the empty VHDX.
       -->
@@ -101,13 +101,26 @@
         </OSImage>
       </ImageInstall>
 
+      <!--
+        Element order in <UserData> is load-bearing. The autounattend
+        XSD declares children as <xs:sequence>, so out-of-order
+        elements pass top-level validation but the per-callback
+        binding step silently drops them. Original 2026-04 install
+        had ProductKey before AcceptEula/FullName/Organization, which
+        meant Setup didn't see the EULA acceptance, prompted at the
+        EULA page, and (downstream) skipped <ImageInstall> too.
+        Spike #9 has the full trace.
+
+        Required order: AcceptEula -> FullName -> Organization ->
+        ProductKey.
+      -->
       <UserData>
-        <ProductKey>
-          <WillShowUI>OnError</WillShowUI>
-        </ProductKey>
         <AcceptEula>true</AcceptEula>
         <FullName>Lab Admin</FullName>
         <Organization>HV Lab</Organization>
+        <ProductKey>
+          <WillShowUI>OnError</WillShowUI>
+        </ProductKey>
       </UserData>
     </component>
   </settings>
@@ -143,7 +156,7 @@
           Hyper-V vSwitch so Public never applies in normal use, but
           (a) during the windowsPE-to-oobeSystem window the network
           is classified as Public until specialize finishes, and
-          (b) any future second NIC inherits this rule -- "all"
+          (b) any future second NIC inherits this rule — "all"
           would expose RDP externally if either case ever lands.
         -->
         <FirewallGroup wcm:action="add" wcm:keyValue="rdp">

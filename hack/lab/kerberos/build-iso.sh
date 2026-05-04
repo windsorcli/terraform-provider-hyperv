@@ -45,6 +45,18 @@ substitute "$SRC_DIR/autounattend.xml.tpl" "$STAGE/autounattend.xml" \
 substitute "$SRC_DIR/FirstLogon.ps1.tpl"   "$STAGE/FirstLogon.ps1"   \
            DSRM_PASSWORD  HVLAB_DSRM_PASSWORD
 
+# Well-formedness check on the rendered autounattend. Setup's parser
+# is lenient enough that malformed XML (e.g. `--` inside comments,
+# which XML 1.0 forbids) deserializes "successfully" but silently
+# drops elements at the binding step — see docs/spikes/09 for the
+# trace from the original install. xmllint catches the structural
+# issues offline so we don't burn another full install cycle.
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$STAGE/autounattend.xml"
+else
+    echo 'xmllint not on PATH; skipping autounattend XML validation' >&2
+fi
+
 # Flag intent (load-bearing -- WinPE's early-stage CD filesystem driver
 # reads ISO9660 base names, not Joliet/Rock Ridge aliases, when scanning
 # attached optical drives for Autounattend.xml. A naive `-J -r` ISO has
