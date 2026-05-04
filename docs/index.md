@@ -42,7 +42,7 @@ provider "hyperv" {}
 - `ssh` (Attributes) SSH-backend-specific configuration. (see [below for nested schema](#nestedatt--ssh))
 - `timeout` (String) Per-call PowerShell execution timeout as a Go duration (e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`. Set to `0s` to disable. Bump for legitimately slow cmdlets like `New-VHD` on a multi-GB fixed disk.
 - `username` (String) Username. Required for `ssh` and `winrm`. Falls back to `HYPERV_USERNAME`.
-- `winrm` (Attributes) WinRM-backend-specific configuration. NTLM-over-HTTPS is the supported auth path; Basic also works for diagnosing TLS issues. Kerberos is not currently implemented. (see [below for nested schema](#nestedatt--winrm))
+- `winrm` (Attributes) WinRM-backend-specific configuration. NTLM-over-HTTPS is the default auth path; Basic also works for diagnosing TLS issues. Kerberos is supported via the nested `kerberos` block (requires a domain-joined host and an FQDN in `host`). (see [below for nested schema](#nestedatt--winrm))
 
 <a id="nestedatt--local"></a>
 ### Nested Schema for `local`
@@ -68,7 +68,27 @@ Optional:
 
 Optional:
 
-- `auth` (String) Authentication method. One of `basic`, `ntlm`, `kerberos`. Default: `ntlm`. Falls back to `HYPERV_WINRM_AUTH`.
+- `auth` (String) Authentication method. One of `basic`, `ntlm`, `kerberos`. Default: `ntlm`. Falls back to `HYPERV_WINRM_AUTH`. When set to `kerberos`, the nested `kerberos` block must also be supplied with at least `realm`.
 - `cacert` (String) Path to a CA bundle. Falls back to `HYPERV_WINRM_CACERT`.
 - `insecure` (Boolean) Skip TLS verification. Useful with self-signed certs. Default: `false`. Falls back to `HYPERV_WINRM_INSECURE`.
+- `kerberos` (Attributes) Kerberos auth configuration. Only meaningful when `auth = "kerberos"`. The provider uses `jcmturner/gokrb5` (pure-Go MIT Kerberos) -- no GSSAPI library on the runner is required, and macOS / Linux / Windows runners all behave identically. Two credential modes:
+
+  * **Password mode** -- the provider's top-level `password` is sent in an inline AS-REQ to obtain a TGT. Simplest setup; password lives in provider config or `HYPERV_PASSWORD`.
+  * **CCache mode** -- set `ccache_path` to a credential cache file populated by an out-of-band `kinit`. The top-level `password` is ignored in this mode. Better fit for shared workstations where the user already has a TGT.
+
+`password` and `ccache_path` are mutually exclusive (a config validator rejects configs that set both, or neither, when `auth = "kerberos"`).
+
+`host` must be an FQDN (e.g. `hv-bench-01.hv.lab`), not a bare IP -- the SPN match keys on hostname. (see [below for nested schema](#nestedatt--winrm--kerberos))
 - `use_https` (Boolean) Use HTTPS (port 5986). Default: `true`. Setting `false` requires the host's WSMan service to have `AllowUnencrypted = $true` (strongly discouraged). Falls back to `HYPERV_WINRM_USE_HTTPS`.
+
+<a id="nestedatt--winrm--kerberos"></a>
+### Nested Schema for `winrm.kerberos`
+
+Optional:
+
+- `ccache_path` (String) Path to a Kerberos credential cache file (e.g. `/tmp/krb5cc_$UID` or the FILE: prefix output of `klist`). When set, the provider reads the TGT from this file and the top-level `password` is ignored. Falls back to `HYPERV_KRB5_CCACHE_PATH`.
+- `krb5_conf_path` (String) Path to a krb5.conf file. Default: first existing of `$KRB5_CONFIG`, `~/.config/krb5.conf`, `/etc/krb5.conf`. Falls back to `HYPERV_KRB5_CONF_PATH`.
+
+The file must define the realm (`[realms]` block) and either `kdc =` entries or DNS lookups (`dns_lookup_kdc = true`).
+- `realm` (String) Kerberos realm (uppercase by convention, e.g. `HV.LAB`). **Required when `auth = "kerberos"`** -- a config validator rejects configs that omit it. Falls back to `HYPERV_KRB5_REALM`.
+- `spn` (String) Service Principal Name to authenticate against. Default: `HTTP/<host>`. Override only when the WinRM listener was registered under a non-standard SPN. Falls back to `HYPERV_KRB5_SPN`.
