@@ -63,19 +63,208 @@ func TestNewWinRM_RequiresPasswordForBasic(t *testing.T) {
 	}
 }
 
-// TestNewWinRM_RejectsKerberos pins the current scope: NTLM and Basic ship
-// in the first slice; Kerberos is gated behind a "not currently implemented"
-// diagnostic until SPN rendering and krb5 config are wired through. Re-check
-// this when Kerberos lands.
-func TestNewWinRM_RejectsKerberos(t *testing.T) {
-	_, err := NewWinRM(WinRMOptions{
-		Host:     "host",
+// TestNewWinRM_KerberosValidationErrors covers the three negative paths the
+// Kerberos auth construction guards: realm-required, password-XOR-ccache
+// (both set), password-XOR-ccache (neither set). Each surfaces as an
+// inline NewWinRM error so misconfig lands at provider-Configure rather
+// than as an opaque mid-plan SPNEGO failure.
+func TestNewWinRM_KerberosValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		opts WinRMOptions
+		want string // substring of expected error
+	}{
+		{
+			name: "empty realm",
+			opts: WinRMOptions{
+				Host:     "hv.example.com",
+				Username: "Administrator",
+				Password: "x",
+				Auth:     "kerberos",
+			},
+			want: "realm",
+		},
+		{
+			name: "both password and ccache",
+			opts: WinRMOptions{
+				Host:          "hv.example.com",
+				Username:      "Administrator",
+				Password:      "x",
+				Auth:          "kerberos",
+				KrbRealm:      "EXAMPLE.COM",
+				KrbCCachePath: "/tmp/krb5cc",
+			},
+			want: "mutually exclusive",
+		},
+		{
+			name: "neither password nor ccache",
+			opts: WinRMOptions{
+				Host:     "hv.example.com",
+				Username: "Administrator",
+				Auth:     "kerberos",
+				KrbRealm: "EXAMPLE.COM",
+			},
+			want: "password or kerberos.ccache_path",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewWinRM(tc.opts)
+			if err == nil {
+				t.Fatalf("err = nil, want non-nil with substring %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestNewWinRM_KerberosPasswordMode is the happy-path: realm + password,
+// no ccache. Verifies fields land on the backend opts and SPN renders
+// to HTTP/<host> when not explicitly set.
+func TestNewWinRM_KerberosPasswordMode(t *testing.T) {
+	t.Parallel()
+
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     "hv-bench-01.hv.lab",
+		Username: "Administrator",
+		Password: "secret",
+		Auth:     "kerberos",
+		KrbRealm: "HV.LAB",
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	b, ok := conn.(*winrmBackend)
+	if !ok {
+		t.Fatalf("type = %T, want *winrmBackend", conn)
+	}
+	if b.opts.Auth != "kerberos" {
+		t.Errorf("Auth = %q, want kerberos", b.opts.Auth)
+	}
+	if b.opts.KrbRealm != "HV.LAB" {
+		t.Errorf("KrbRealm = %q, want HV.LAB", b.opts.KrbRealm)
+	}
+	if b.opts.KrbSpn != "HTTP/hv-bench-01.hv.lab" {
+		t.Errorf("KrbSpn default = %q, want HTTP/hv-bench-01.hv.lab", b.opts.KrbSpn)
+	}
+}
+
+// TestNewWinRM_KerberosCCacheMode is the alternate happy-path: realm +
+// ccache, no password. Verifies the password-less invocation passes
+// validation and the ccache path threads through.
+func TestNewWinRM_KerberosCCacheMode(t *testing.T) {
+	t.Parallel()
+
+	conn, err := NewWinRM(WinRMOptions{
+		Host:          "hv-bench-01.hv.lab",
+		Username:      "ryan@HV.LAB",
+		Auth:          "kerberos",
+		KrbRealm:      "HV.LAB",
+		KrbCCachePath: "/tmp/krb5cc_501",
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	b, ok := conn.(*winrmBackend)
+	if !ok {
+		t.Fatalf("type = %T, want *winrmBackend", conn)
+	}
+	if b.opts.KrbCCachePath != "/tmp/krb5cc_501" {
+		t.Errorf("KrbCCachePath = %q, want /tmp/krb5cc_501", b.opts.KrbCCachePath)
+	}
+	if b.opts.Password != "" {
+		t.Errorf("Password = %q, want empty (ccache mode does not require it)", b.opts.Password)
+	}
+}
+
+// TestNewWinRM_KerberosExplicitSPN locks the override path: when KrbSpn
+// is set explicitly, NewWinRM does NOT render the HTTP/<host> default.
+// This matters for sites that registered a non-standard SPN (e.g. an
+// instance-specific HTTP/hv-bench-01.hv.lab:5986).
+func TestNewWinRM_KerberosExplicitSPN(t *testing.T) {
+	t.Parallel()
+
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     "hv-bench-01.hv.lab",
 		Username: "Administrator",
 		Password: "x",
 		Auth:     "kerberos",
+		KrbRealm: "HV.LAB",
+		KrbSpn:   "HTTP/wsman.hv.lab",
 	})
-	if err == nil || !strings.Contains(err.Error(), "kerberos") {
-		t.Fatalf("err = %v, want substring 'kerberos'", err)
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	b, ok := conn.(*winrmBackend)
+	if !ok {
+		t.Fatalf("type = %T, want *winrmBackend", conn)
+	}
+	if b.opts.KrbSpn != "HTTP/wsman.hv.lab" {
+		t.Errorf("KrbSpn = %q, want HTTP/wsman.hv.lab (no default override)", b.opts.KrbSpn)
+	}
+}
+
+// TestNewWinRM_KerberosKrb5ConfigFromEnv exercises the canonical-path
+// detection: when KrbConfigPath is empty, defaultKrbConfigPath probes
+// $KRB5_CONFIG first. The other priorities (~/.config/krb5.conf,
+// /etc/krb5.conf) depend on filesystem state and aren't unit-testable
+// hermetically; t.Setenv covers the most common operator-driven case.
+func TestNewWinRM_KerberosKrb5ConfigFromEnv(t *testing.T) {
+	t.Setenv("KRB5_CONFIG", "/custom/path/krb5.conf")
+
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     "hv.example.com",
+		Username: "Administrator",
+		Password: "x",
+		Auth:     "kerberos",
+		KrbRealm: "EXAMPLE.COM",
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	b, ok := conn.(*winrmBackend)
+	if !ok {
+		t.Fatalf("type = %T, want *winrmBackend", conn)
+	}
+	if b.opts.KrbConfigPath != "/custom/path/krb5.conf" {
+		t.Errorf("KrbConfigPath = %q, want /custom/path/krb5.conf (from KRB5_CONFIG)", b.opts.KrbConfigPath)
+	}
+}
+
+// TestBuildWinRMParams_KerberosSetsTransportDecorator verifies the
+// load-bearing handoff: when Auth=kerberos, the masterzen-library
+// Parameters get a non-nil TransportDecorator that returns the
+// Kerberos transport. Without this, the library's NewClient falls
+// back to NTLM/Negotiate and the Kerberos config is silently
+// ignored -- exactly the regression the spike doc warned about.
+func TestBuildWinRMParams_KerberosSetsTransportDecorator(t *testing.T) {
+	t.Parallel()
+
+	params := buildWinRMParams(WinRMOptions{
+		Host:          "hv.example.com",
+		Port:          5986,
+		Username:      "Administrator",
+		Password:      "x",
+		UseHTTPS:      true,
+		Auth:          "kerberos",
+		KrbRealm:      "EXAMPLE.COM",
+		KrbSpn:        "HTTP/hv.example.com",
+		KrbConfigPath: "/etc/krb5.conf",
+	})
+	if params.TransportDecorator == nil {
+		t.Fatal("TransportDecorator = nil, want non-nil for kerberos auth")
+	}
+	transport := params.TransportDecorator()
+	// The masterzen library's *ClientKerberos is the only type we expect
+	// here. A drift to a different transport (NTLM/Negotiate decorator,
+	// nil clientRequest) would silently bypass Kerberos at runtime.
+	if _, ok := transport.(*winrm.ClientKerberos); !ok {
+		t.Errorf("TransportDecorator returned %T, want *winrm.ClientKerberos", transport)
 	}
 }
 
