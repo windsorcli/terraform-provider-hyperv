@@ -1,16 +1,16 @@
 # Kerberos lab
 
 Stands up a Windows Server 2022 guest on a Hyper-V bench host that
-unattend-installs and self-promotes to a new AD DS forest (`hv.lab`).
-Once promo finishes, the bench host can be domain-joined and the
-provider's `winrm.auth = kerberos` code path can be exercised against
-a real KDC.
+self-promotes to a new AD DS forest (`hv.lab`). Once the DC is up, the
+bench host domain-joins it and the workstation gets a Kerberos client
+config so the provider's `winrm.auth = kerberos` code path can be
+exercised against a real KDC.
 
 This example dogfoods the provider end-to-end: the DC's vSwitch, VHDX,
-and VM are all `hyperv_*` resources. Everything post-boot (Windows
-install, AD DS promo, DNS, NTP) is driven by an autounattend ISO that
-the provider attaches as a second DVD drive -- the provider stays out
-of the config-management business.
+and VM are all `hyperv_*` resources, and both ISOs are streamed from
+the runner to the bench via `hyperv_image_file` `local_path`-mode. The
+provider stays out of the config-management business; everything
+post-boot is driven by an autounattend ISO attached as a second DVD.
 
 ## Prerequisites
 
@@ -21,107 +21,202 @@ of the config-management business.
   Download once from
   [Microsoft Eval Center](https://www.microsoft.com/en-us/evalcenter/download-windows-server-2022)
   (registration form, ~5 GiB). The provider streams it to the bench on
-  apply via local_path-mode, so no manual upload step is needed. Re-use
-  the same file across rebuilds; refresh when the Eval license expires
-  (180 days) or when Microsoft publishes a newer build.
+  apply via `local_path`-mode, so no manual upload step is needed.
+  Re-use the same file across rebuilds; refresh when the Eval license
+  expires (180 days) or when Microsoft publishes a newer build.
 - `HVLAB_ADMIN_PASSWORD` and `HVLAB_DSRM_PASSWORD` set in
   `.env.local`. Avoid XML metacharacters (`<`, `>`, `&`) in those
   values.
+- For Phase 3: MIT krb5 from Homebrew (`brew install krb5`). macOS's
+  built-in Heimdal `kinit` works for getting a TGT, but it writes the
+  ticket to `API:` (Keychain) ccache by default. The provider's
+  Kerberos transport (jcmturner/gokrb5) only reads MIT `FILE:` ccache,
+  so the brew-installed `kinit` plus an explicit `KRB5CCNAME=FILE:...`
+  is the path that stays consistent across runners.
 
 ## Phase 1: Stand up the DC (this directory)
 
 ```sh
-# 1. Build the autounattend ISO (substitutes secrets from .env.local
-#    into hack/lab/kerberos/*.tpl, packages dist/autounattend.iso).
+# 1. Build the autounattend ISO. Substitutes secrets from .env.local
+#    into hack/lab/kerberos/*.tpl, packages dist/autounattend.iso.
 task lab:build-iso
 
-# 2. Apply. The provider streams dist/autounattend.iso from the
-#    runner to the bench host on apply via local_path-mode -- no
-#    manual upload step.
+# 2. Apply. The provider streams both ISOs from the runner to the
+#    bench on apply (local_path-mode); no manual upload step.
 cd examples/lab/kerberos
 terraform init
 terraform apply
 ```
 
-`apply` returns once the VM is powered on. Windows install + AD DS
-promo then run unattended on the DC; expect ~15 minutes from VM start
-to "DC is up and serving Kerberos." Watch progress with
-`vmconnect.exe HV-BENCH-01 HV-DC-01` from a Windows machine, or RDP to
-the host and use Hyper-V Manager.
+`apply` returns once the VM is powered on. In the happy path, Setup
+reads `Autounattend.xml` off the second DVD, installs Server Core, and
+runs `FirstLogon.ps1` which configures the lab vNIC (10.10.0.10/24),
+NTP, and `Install-ADDSForest -DomainName hv.lab -DomainNetbiosName
+HVLAB`. Total time from `apply` return to "DC is serving Kerberos" is
+roughly 15 minutes including the post-promo reboots.
+
+### Caveat: autounattend may be ignored on some Setup builds
+
+On the bench used during initial bring-up, Setup ignored
+`Autounattend.xml` regardless of where it was placed (secondary DVD,
+embedded in the install ISO at multiple filesystem layers, passed via
+`/unattend:` flag). The root cause looks like a per-image quirk in the
+WinPE-stage autounattend scan; we did not chase it down past the point
+of confirming that the working flag set documented in
+`hack/lab/kerberos/build-iso.sh` is correct against the
+[community reference](https://blog.linux-ng.de/2025/01/02/build-unattended-windows-iso/).
+
+If `apply` returns and the VM sits at the Setup language picker after
+several minutes, treat Phase 1 as a manual step: click through Setup
+to get a logged-in Server Core console, then drive the rest via
+PowerShell Direct from the bench:
+
+```powershell
+# From the bench host, against the running guest VM. Passwords come
+# from .env.local; substitute as appropriate.
+$cred = New-Object System.Management.Automation.PSCredential(
+    'Administrator', (ConvertTo-SecureString 'Kr8L4b!Admin-7q4p' -AsPlainText -Force))
+
+Invoke-Command -VMName HV-DC-01 -Credential $cred -ScriptBlock {
+    Rename-Computer -NewName HV-DC-01 -Force
+    $nic = Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1
+    New-NetIPAddress -InterfaceIndex $nic.ifIndex `
+                     -IPAddress 10.10.0.10 -PrefixLength 24
+    w32tm /config /manualpeerlist:'time.windows.com' /syncfromflags:manual /update
+    Restart-Computer -Force
+}
+
+# After the rename reboot:
+Invoke-Command -VMName HV-DC-01 -Credential $cred -ScriptBlock {
+    Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
+    $dsrm = ConvertTo-SecureString '<DSRM password from .env.local>' -AsPlainText -Force
+    Install-ADDSForest -DomainName hv.lab -DomainNetbiosName HVLAB `
+                       -SafeModeAdministratorPassword $dsrm `
+                       -InstallDns -Force -NoRebootOnCompletion
+    Restart-Computer -Force
+}
+```
+
+The autounattend payload remains the source of truth for the
+declarative path; the manual fallback shells out the same operations
+verbatim so the post-DC state matches either way.
 
 ## Phase 2: Domain-join the bench host (manual, one-time)
 
-After the DC is up:
+Once the DC is up:
 
 ```powershell
-# On the bench host. The lab vNIC name is "vEthernet (HV-LAB)" if
-# you used the default switch name.
+# On the bench host. Lab vNIC name is 'vEthernet (HV-LAB)' if the
+# default switch name was kept.
 $nic = Get-NetAdapter -Name 'vEthernet (HV-LAB)'
 New-NetIPAddress -InterfaceIndex $nic.ifIndex `
                  -IPAddress 10.10.0.5 -PrefixLength 24
 Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex `
                            -ServerAddresses '10.10.0.10'
 
-# Domain-join. Hyper-V's HOST/ and HTTP/ SPNs register automatically.
 Add-Computer -DomainName hv.lab -Restart
 ```
 
-After the reboot, `setspn -L HV-BENCH-01` (run as a domain admin from
-the DC) should list `HOST/HV-BENCH-01` and `HOST/HV-BENCH-01.hv.lab`.
-If WinRM's `HTTP/` SPN is missing, register it manually:
+After the reboot, register the WinRM `HTTP/` SPN on the bench's
+computer account. Hyper-V's `HOST/` SPN auto-registers, but the WinRM
+listener's `HTTP/` does not on Server Core:
 
 ```powershell
 setspn -S HTTP/HV-BENCH-01.hv.lab HV-BENCH-01
+setspn -S HTTP/HV-BENCH-01        HV-BENCH-01
+setspn -L HV-BENCH-01    # confirm all four (HOST/{,fqdn}, HTTP/{,fqdn})
 ```
 
-Re-create the WinRM HTTPS listener cert with the FQDN as a SAN so
-Kerberos service-ticket validation matches the cert principal.
+If the workstation can't reach the DC's lab IP (`10.10.0.10`) directly
+— which is the common case, since the lab vSwitch is internal-only —
+add a TCP port-forward on the bench so KDC and LDAP traffic flow
+through to the DC:
 
-## Phase 3: Configure the dev workstation (manual, one-time)
+```powershell
+# As Administrator on the bench. Both rules forward bench-public:88
+# (and :389) → 10.10.0.10:88 (and :389). netsh portproxy is TCP-only;
+# Phase 3 forces krb5 to TCP via udp_preference_limit = 1.
+netsh interface portproxy add v4tov4 listenport=88  listenaddress=0.0.0.0 connectport=88  connectaddress=10.10.0.10
+netsh interface portproxy add v4tov4 listenport=389 listenaddress=0.0.0.0 connectport=389 connectaddress=10.10.0.10
 
-On the workstation that runs Terraform / acceptance tests (assumed
-macOS):
+New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-88'  -Direction Inbound -Protocol TCP -LocalPort 88  -Action Allow
+New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-389' -Direction Inbound -Protocol TCP -LocalPort 389 -Action Allow
+```
+
+## Phase 3: Configure the dev workstation (macOS, one-time)
 
 ```sh
 brew install krb5
+
 mkdir -p ~/.config
 cat > ~/.config/krb5.conf <<'EOF'
 [libdefaults]
-  default_realm = HV.LAB
-  dns_lookup_kdc = true
-  dns_lookup_realm = true
+    default_realm = HV.LAB
+    dns_lookup_kdc = false
+    dns_lookup_realm = false
+    udp_preference_limit = 1
+    forwardable = true
+    rdns = false
+
 [realms]
-  HV.LAB = {
-    kdc = hv-dc-01.hv.lab
-    admin_server = hv-dc-01.hv.lab
-  }
+    HV.LAB = {
+        kdc = hv-dc-01.hv.lab
+        admin_server = hv-dc-01.hv.lab
+        default_domain = hv.lab
+    }
+
 [domain_realm]
-  .hv.lab = HV.LAB
-  hv.lab = HV.LAB
+    .hv.lab = HV.LAB
+    hv.lab = HV.LAB
 EOF
+
+# Both names resolve to the bench IP; the bench's portproxy from Phase
+# 2 forwards 88/389 to the DC.
+sudo tee -a /etc/hosts >/dev/null <<EOF
+
+# HV.LAB Kerberos demo
+192.168.3.77    hv-dc-01.hv.lab hv-dc-01
+192.168.3.77    hv-bench-01.hv.lab hv-bench-01
+EOF
+
+# Use the brew kinit (MIT) and a FILE: ccache so jcmturner/gokrb5 can
+# read the ticket. The macOS-builtin /usr/bin/kinit defaults to API:
+# (Keychain) which gokrb5 doesn't understand.
+export KRB5_CONFIG="$HOME/.config/krb5.conf"
+export KRB5CCNAME="FILE:/tmp/krb5cc_$(id -u)"
+export PATH="/opt/homebrew/opt/krb5/bin:$PATH"
+
+kinit Administrator@HV.LAB           # password from .env.local
+klist                                 # expect a krbtgt/HV.LAB ticket
+kvno HTTP/hv-bench-01.hv.lab          # expect a service ticket
 ```
-
-Resolve `hv-dc-01.hv.lab` and `hv-bench-01.hv.lab` to the *bench-host*
-LAN IP via `/etc/hosts` (simplest) -- the DC's lab IP `10.10.0.10`
-isn't reachable from the workstation, but the bench host has a vNIC
-on `HV-LAB` and runs a DNS forwarder you'll add separately if needed.
-
-Smoke-test: `kinit ryan@HV.LAB` should succeed and `klist` should show
-a TGT.
 
 ## Verification
 
 A successful Kerberos round-trip means all of:
 
-1. `setspn -L HV-BENCH-01` lists the expected `HOST/` SPNs (and
-   `HTTP/` after the manual register if WinRM didn't auto-add it).
-2. `kinit` from the workstation gets a TGT against `HV.LAB`.
+1. `setspn -L HV-BENCH-01` on the DC lists `HOST/HV-BENCH-01`,
+   `HOST/HV-BENCH-01.hv.lab`, `HTTP/HV-BENCH-01`, and
+   `HTTP/HV-BENCH-01.hv.lab`.
+2. `kinit Administrator@HV.LAB` from the workstation gets a TGT in
+   the FILE ccache.
 3. `kvno HTTP/hv-bench-01.hv.lab` returns a service ticket.
-4. The provider's `Get-VMHost` smoke test passes with
-   `winrm.auth = kerberos` set in the provider config.
-5. Per-call latency stays in the same ballpark as NTLM (~2 s mean
-   on this provider; Kerberos shouldn't add meaningful overhead once
-   the TGT is cached).
+4. The build-tag-gated Kerberos smoke test passes:
+
+```sh
+export KRB5_CONFIG="$HOME/.config/krb5.conf"
+export PATH="/opt/homebrew/opt/krb5/bin:$PATH"
+BENCH_HOST=hv-bench-01.hv.lab \
+  BENCH_USER=Administrator@HV.LAB \
+  BENCH_KRB_REALM=HV.LAB \
+  BENCH_KRB_CCACHE="/tmp/krb5cc_$(id -u)" \
+  BENCH_KRB_CONF="$HOME/.config/krb5.conf" \
+  go test -tags=winrm_bench -run=TestWinRMBenchSmoke_Kerberos -v ./internal/connection/
+```
+
+The test runs `Get-VMHost` over a Kerberos-authed WinRM session and
+prints the bench's `ComputerName`. Per-call latency is in the same
+ballpark as NTLM (~2 s mean) once the TGT is cached.
 
 ## Teardown
 
@@ -131,7 +226,7 @@ terraform destroy
 ```
 
 `destroy` hard-powers-off the DC (`Stop-VM -TurnOff -Force`) before
-removing it. Both `hyperv_image_file` resources are local_path-mode,
+removing it. Both `hyperv_image_file` resources are `local_path`-mode,
 but they're treated differently on teardown by design:
 
 - **`windows_iso`** carries `keep_on_destroy = true`. The 5 GiB Eval
@@ -149,9 +244,9 @@ but they're treated differently on teardown by design:
 The `hyperv_vhd` resource removes the VHDX file. The vSwitch is
 removed. Runner-local copies under `dist/` are never touched.
 
-If you've already domain-joined the bench host, leave the domain
-manually before tearing down the DC -- otherwise the host loses its
-trust relationship with no DC to negotiate the leave with:
+If the bench is already domain-joined, leave the domain manually
+before tearing down the DC — otherwise the host loses its trust
+relationship with no DC to negotiate the leave with:
 
 ```powershell
 Remove-Computer -UnjoinDomainCredential (Get-Credential) -PassThru -Restart
@@ -160,9 +255,19 @@ Remove-Computer -UnjoinDomainCredential (Get-Credential) -PassThru -Restart
 ## Lab-only caveats
 
 - The `Administrator` password is set at install time and becomes the
-  domain admin password after promo. Lab credentials only -- don't
+  domain admin password after promo. Lab credentials only — don't
   reuse production secrets.
 - Server 2022 Eval expires after 180 days. `slmgr /rearm` extends, or
   rebuild the lab from scratch.
 - The autounattend ISO is rebuilt from `hack/lab/kerberos/` text
   files; no binary lives in the repo.
+- The Kerberos smoke test runs in **ccache mode**. Password-mode
+  (inline AS-REQ via `gokrb5`) hits a `KDC_ERR_PREAUTH_FAILED` against
+  AD's default Administrator account due to a salt-derivation
+  difference the library doesn't currently round-trip. The
+  ccache-mode path is the standard Kerberos client experience anyway
+  (`kinit` → cached TGT), so production deployments wouldn't use
+  password-mode regardless. Both code paths exist in the provider; if
+  password-mode lands a working AS-REQ in a future `gokrb5` release,
+  the smoke test should start passing in both modes without code
+  changes.
