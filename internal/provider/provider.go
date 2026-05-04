@@ -11,6 +11,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -27,12 +29,95 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
 )
 
-var _ provider.Provider = (*HypervProvider)(nil)
+var (
+	_ provider.Provider                     = (*HypervProvider)(nil)
+	_ provider.ProviderWithConfigValidators = (*HypervProvider)(nil)
+)
 
 // HypervProvider is the root provider type. Each terraform plan/apply gets
 // its own instance via the closure returned by New.
 type HypervProvider struct {
 	version string
+}
+
+// ConfigValidators surfaces cross-attribute validators at `terraform
+// validate` time, one step earlier than the inline checks in Configure
+// (which only fire at plan/apply). The schema layer can't express
+// conditional requirements ("Required when auth=kerberos") -- this is
+// the framework's escape hatch for that.
+func (p *HypervProvider) ConfigValidators(_ context.Context) []provider.ConfigValidator {
+	return []provider.ConfigValidator{
+		kerberosRealmRequiredValidator{},
+	}
+}
+
+// kerberosRealmRequiredValidator enforces winrm.kerberos.realm being set
+// whenever winrm.auth="kerberos" -- the schema layer can only mark the
+// attribute Optional. Mirrors the resource-level shape of
+// secureBootRejectedForGen1Validator in internal/resources/vm/resource.go.
+type kerberosRealmRequiredValidator struct{}
+
+func (v kerberosRealmRequiredValidator) Description(_ context.Context) string {
+	return "winrm.kerberos.realm is required when winrm.auth = \"kerberos\""
+}
+
+func (v kerberosRealmRequiredValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateProvider pulls the typed model from Config and dispatches to
+// validate. Split for direct unit testing without tfsdk.Config plumbing.
+func (v kerberosRealmRequiredValidator) ValidateProvider(ctx context.Context, req provider.ValidateConfigRequest, resp *provider.ValidateConfigResponse) {
+	var data HypervProviderModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+// validate is the pure-Go core. Skips on Unknown (deferred deps), on
+// non-kerberos auth (rule doesn't apply), and on env-var fallback (the
+// validator can't see env vars; backend_select.go's Configure-time
+// check still catches the env-only case at plan).
+func (v kerberosRealmRequiredValidator) validate(data HypervProviderModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.WinRM == nil {
+		return diags
+	}
+	auth := data.WinRM.Auth
+	if auth.IsUnknown() || auth.IsNull() {
+		return diags
+	}
+	if auth.ValueString() != "kerberos" {
+		return diags
+	}
+	// auth=kerberos. Realm must resolve to a non-empty string -- but
+	// HYPERV_KRB5_REALM env-var fallback isn't visible at validate
+	// time, so we only fire when the *attribute* itself is null AND
+	// the kerberos block was either omitted entirely or supplied
+	// without a realm value. Configure-time check at backend_select
+	// still catches the env-only case. This validator's contribution
+	// is moving the obvious "you wrote auth=kerberos but no realm
+	// anywhere" misconfig from plan to validate.
+	if data.WinRM.Kerberos != nil {
+		realm := data.WinRM.Kerberos.Realm
+		if realm.IsUnknown() {
+			return diags
+		}
+		if !realm.IsNull() && realm.ValueString() != "" {
+			return diags
+		}
+	}
+	diags.AddAttributeError(
+		path.Root("winrm").AtName("kerberos").AtName("realm"),
+		"winrm.kerberos.realm is required when winrm.auth = \"kerberos\"",
+		"Set the provider's `winrm.kerberos.realm` attribute to the Kerberos "+
+			"realm (uppercase, e.g. \"HV.LAB\") or use HYPERV_KRB5_REALM. "+
+			"The realm is mandatory for the Kerberos auth path -- without "+
+			"it, the gokrb5 client has no KDC to dispatch to.",
+	)
+	return diags
 }
 
 // New returns a provider factory suitable for providerserver.Serve.
