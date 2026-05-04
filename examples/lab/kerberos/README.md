@@ -48,58 +48,19 @@ terraform init
 terraform apply
 ```
 
-`apply` returns once the VM is powered on. In the happy path, Setup
-reads `Autounattend.xml` off the second DVD, installs Server Core, and
-runs `FirstLogon.ps1` which configures the lab vNIC (10.10.0.10/24),
-NTP, and `Install-ADDSForest -DomainName hv.lab -DomainNetbiosName
-HVLAB`. Total time from `apply` return to "DC is serving Kerberos" is
-roughly 15 minutes including the post-promo reboots.
+`apply` returns once the VM is powered on. Setup reads
+`autounattend.xml` off the second DVD, installs Server Core, and runs
+`FirstLogon.ps1` which configures the lab vNIC (10.10.0.10/24), NTP,
+and `Install-ADDSForest -DomainName hv.lab -DomainNetbiosName HVLAB`.
+End-to-end is roughly 8 minutes from `apply` return to "DC serving
+Kerberos" — `Get-ADDomain` succeeds against the guest at that point.
 
-### Caveat: autounattend may be ignored on some Setup builds
-
-On the bench used during initial bring-up, Setup ignored
-`Autounattend.xml` regardless of where it was placed (secondary DVD,
-embedded in the install ISO at multiple filesystem layers, passed via
-`/unattend:` flag). The root cause looks like a per-image quirk in the
-WinPE-stage autounattend scan; we did not chase it down past the point
-of confirming that the working flag set documented in
-`hack/lab/kerberos/build-iso.sh` is correct against the
-[community reference](https://blog.linux-ng.de/2025/01/02/build-unattended-windows-iso/).
-
-If `apply` returns and the VM sits at the Setup language picker after
-several minutes, treat Phase 1 as a manual step: click through Setup
-to get a logged-in Server Core console, then drive the rest via
-PowerShell Direct from the bench:
-
-```powershell
-# From the bench host, against the running guest VM. Passwords come
-# from .env.local; substitute as appropriate.
-$cred = New-Object System.Management.Automation.PSCredential(
-    'Administrator', (ConvertTo-SecureString 'Kr8L4b!Admin-7q4p' -AsPlainText -Force))
-
-Invoke-Command -VMName HV-DC-01 -Credential $cred -ScriptBlock {
-    Rename-Computer -NewName HV-DC-01 -Force
-    $nic = Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1
-    New-NetIPAddress -InterfaceIndex $nic.ifIndex `
-                     -IPAddress 10.10.0.10 -PrefixLength 24
-    w32tm /config /manualpeerlist:'time.windows.com' /syncfromflags:manual /update
-    Restart-Computer -Force
-}
-
-# After the rename reboot:
-Invoke-Command -VMName HV-DC-01 -Credential $cred -ScriptBlock {
-    Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
-    $dsrm = ConvertTo-SecureString '<DSRM password from .env.local>' -AsPlainText -Force
-    Install-ADDSForest -DomainName hv.lab -DomainNetbiosName HVLAB `
-                       -SafeModeAdministratorPassword $dsrm `
-                       -InstallDns -Force -NoRebootOnCompletion
-    Restart-Computer -Force
-}
-```
-
-The autounattend payload remains the source of truth for the
-declarative path; the manual fallback shells out the same operations
-verbatim so the post-DC state matches either way.
+If you change `hack/lab/kerberos/autounattend.xml.tpl`, the
+`task lab:build-iso` step runs `xmllint --noout` against the rendered
+file. That catches the two failure classes that historically cost us
+multi-hour install cycles: malformed XML (e.g. `--` in comments) and
+schema-order regressions in `<UserData>` / `<OSImage>`. See
+`docs/spikes/09` if anything autounattend-shaped breaks.
 
 ## Phase 2: Domain-join the bench host (manual, one-time)
 

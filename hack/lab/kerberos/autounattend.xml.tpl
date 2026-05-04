@@ -6,6 +6,17 @@
     which substitutes @@VAR@@ placeholders below from environment
     variables (see Taskfile.yaml lab:build-iso for the var list).
 
+    ELEMENT ORDER IS LOAD-BEARING. The autounattend XSD declares
+    every component's children as <xs:sequence>, which means the
+    parser silently drops elements that appear out of canonical
+    order. Per-callback log lines show "User did not accept the
+    EULA" / "No <ImageInstall> section is specified" even when the
+    elements are physically present in the file. The XSD sequence
+    for these components matches the alphabetical "Child elements"
+    listing on each component's Microsoft Docs page; keep every
+    sibling group alphabetical or Setup will silently fall back
+    into interactive mode. See docs/spikes/09 for the full trace.
+
     Intentional choices:
       * Datacenter Eval (180-day) — Standard would also work; Datacenter
         is the more common lab pick. Eval renews via slmgr /rearm.
@@ -30,10 +41,10 @@
                publicKeyToken="31bf3856ad364e35"
                language="neutral"
                versionScope="nonSxS">
+      <InputLocale>0409:00000409</InputLocale>
       <SetupUILanguage>
         <UILanguage>en-US</UILanguage>
       </SetupUILanguage>
-      <InputLocale>0409:00000409</InputLocale>
       <SystemLocale>en-US</SystemLocale>
       <UILanguage>en-US</UILanguage>
       <UserLocale>en-US</UserLocale>
@@ -44,76 +55,45 @@
                publicKeyToken="31bf3856ad364e35"
                language="neutral"
                versionScope="nonSxS">
-      <!--
-        BIOS / MBR partitioning for Gen 1 VMs. Single bootable Primary
-        partition that holds both the boot files and the OS. UEFI/GPT
-        layouts (with separate EFI + MSR partitions) are wrong on Gen
-        1 — Windows Setup refuses to install MBR when the disk is
-        already GPT, and vice versa. The <WillWipeDisk> above forces a
-        clean MBR table on the empty VHDX.
-      -->
       <DiskConfiguration>
         <Disk wcm:action="add">
-          <DiskID>0</DiskID>
-          <WillWipeDisk>true</WillWipeDisk>
           <CreatePartitions>
             <CreatePartition wcm:action="add">
+              <Extend>true</Extend>
               <Order>1</Order>
               <Type>Primary</Type>
-              <Extend>true</Extend>
             </CreatePartition>
           </CreatePartitions>
+          <DiskID>0</DiskID>
           <ModifyPartitions>
             <ModifyPartition wcm:action="add">
-              <Order>1</Order>
-              <PartitionID>1</PartitionID>
-              <Format>NTFS</Format>
               <Active>true</Active>
+              <Format>NTFS</Format>
               <Label>Windows</Label>
               <Letter>C</Letter>
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
             </ModifyPartition>
           </ModifyPartitions>
+          <WillWipeDisk>true</WillWipeDisk>
         </Disk>
       </DiskConfiguration>
 
       <ImageInstall>
         <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>4</Value>
+            </MetaData>
+          </InstallFrom>
           <InstallTo>
             <DiskID>0</DiskID>
             <PartitionID>1</PartitionID>
           </InstallTo>
-          <InstallFrom>
-            <!--
-              Image name MUST match an entry inside install.wim of the
-              specific media in use. The Microsoft Eval ISO carries
-              the four "Evaluation" SKUs (Standard/Datacenter, Core/
-              Desktop), NOT the historical "SERVERDATACENTER" retail
-              key string. Mismatch = setup waits at the SKU picker
-              for a human, which on an unattended VM means an
-              indefinite stall (verified empirically: 20-min stuck
-              install with VHDX frozen at boot.wim extraction).
-            -->
-            <MetaData wcm:action="add">
-              <Key>/IMAGE/NAME</Key>
-              <Value>Windows Server 2022 Datacenter Evaluation (Desktop Experience)</Value>
-            </MetaData>
-          </InstallFrom>
         </OSImage>
       </ImageInstall>
 
-      <!--
-        Element order in <UserData> is load-bearing. The autounattend
-        XSD declares children as <xs:sequence>, so out-of-order
-        elements pass top-level validation but the per-callback
-        binding step silently drops them. Original 2026-04 install
-        had ProductKey before AcceptEula/FullName/Organization, which
-        meant Setup didn't see the EULA acceptance, prompted at the
-        EULA page, and (downstream) skipped <ImageInstall> too.
-        Spike #9 has the full trace.
-
-        Required order: AcceptEula -> FullName -> Organization ->
-        ProductKey.
-      -->
       <UserData>
         <AcceptEula>true</AcceptEula>
         <FullName>Lab Admin</FullName>
@@ -132,9 +112,9 @@
                language="neutral"
                versionScope="nonSxS">
       <ComputerName>HV-DC-01</ComputerName>
-      <TimeZone>UTC</TimeZone>
       <RegisteredOrganization>HV Lab</RegisteredOrganization>
       <RegisteredOwner>Lab Admin</RegisteredOwner>
+      <TimeZone>UTC</TimeZone>
     </component>
 
     <component name="Microsoft-Windows-TerminalServices-LocalSessionManager"
@@ -145,28 +125,6 @@
       <fDenyTSConnections>false</fDenyTSConnections>
     </component>
 
-    <component name="Networking-MPSSVC-Svc"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS">
-      <FirewallGroups>
-        <!--
-          Scope to Domain,Private only. The DC sits on a private
-          Hyper-V vSwitch so Public never applies in normal use, but
-          (a) during the windowsPE-to-oobeSystem window the network
-          is classified as Public until specialize finishes, and
-          (b) any future second NIC inherits this rule — "all"
-          would expose RDP externally if either case ever lands.
-        -->
-        <FirewallGroup wcm:action="add" wcm:keyValue="rdp">
-          <Active>true</Active>
-          <Group>Remote Desktop</Group>
-          <Profile>domain,private</Profile>
-        </FirewallGroup>
-      </FirewallGroups>
-    </component>
-
     <component name="Microsoft-Windows-Deployment"
                processorArchitecture="amd64"
                publicKeyToken="31bf3856ad364e35"
@@ -174,8 +132,8 @@
                versionScope="nonSxS">
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
-          <Order>1</Order>
           <Description>Stage FirstLogon.ps1 to local disk</Description>
+          <Order>1</Order>
           <Path>cmd.exe /c "if not exist C:\Windows\Setup\Scripts\ mkdir C:\Windows\Setup\Scripts\ &amp; for %d in (D E F G H I) do if exist %d:\FirstLogon.ps1 xcopy /Y %d:\FirstLogon.ps1 C:\Windows\Setup\Scripts\"</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
@@ -188,22 +146,23 @@
                publicKeyToken="31bf3856ad364e35"
                language="neutral"
                versionScope="nonSxS">
-      <UserAccounts>
-        <AdministratorPassword>
-          <Value>@@ADMIN_PASSWORD@@</Value>
-          <PlainText>true</PlainText>
-        </AdministratorPassword>
-      </UserAccounts>
-
       <AutoLogon>
         <Enabled>true</Enabled>
-        <Username>Administrator</Username>
         <LogonCount>1</LogonCount>
         <Password>
           <Value>@@ADMIN_PASSWORD@@</Value>
           <PlainText>true</PlainText>
         </Password>
+        <Username>Administrator</Username>
       </AutoLogon>
+
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add">
+          <CommandLine>powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\FirstLogon.ps1</CommandLine>
+          <Description>AD DS forest promo and lab config</Description>
+          <Order>1</Order>
+        </SynchronousCommand>
+      </FirstLogonCommands>
 
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
@@ -216,13 +175,12 @@
         <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
 
-      <FirstLogonCommands>
-        <SynchronousCommand wcm:action="add">
-          <Order>1</Order>
-          <Description>AD DS forest promo and lab config</Description>
-          <CommandLine>powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\FirstLogon.ps1</CommandLine>
-        </SynchronousCommand>
-      </FirstLogonCommands>
+      <UserAccounts>
+        <AdministratorPassword>
+          <Value>@@ADMIN_PASSWORD@@</Value>
+          <PlainText>true</PlainText>
+        </AdministratorPassword>
+      </UserAccounts>
     </component>
   </settings>
 </unattend>
