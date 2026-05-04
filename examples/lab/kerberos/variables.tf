@@ -44,12 +44,21 @@ variable "unattend_iso_filename" {
 variable "dc_vm_name" {
   description = <<-EOT
     Hyper-V VM name for the lab DC. Also becomes the Windows ComputerName
-    via the unattend `<ComputerName>` element -- if you change this,
-    update `hack/lab/kerberos/autounattend.xml.tpl` to match before
-    rebuilding the ISO.
+    via the unattend `<ComputerName>` element. Currently locked to
+    `HV-DC-01`: the value is hardcoded in `hack/lab/kerberos/autounattend.xml.tpl`
+    and the AD-registered SPNs (`HOST/HV-DC-01`, `HOST/HV-DC-01.hv.lab`)
+    that the bench-domain-join and workstation Kerberos steps depend on.
+    The validation block below enforces this -- a follow-up could thread
+    the name through the ISO build task to lift the constraint, but until
+    then, overriding silently breaks Kerberos SPN matching.
   EOT
   type        = string
   default     = "HV-DC-01"
+
+  validation {
+    condition     = var.dc_vm_name == "HV-DC-01"
+    error_message = "dc_vm_name is currently locked to \"HV-DC-01\" because the autounattend ISO and Phase 2/3 SPN lookups assume that name. To use a different name, also update hack/lab/kerberos/autounattend.xml.tpl's <ComputerName> and rebuild the ISO."
+  }
 }
 
 variable "lab_switch_name" {
