@@ -25,10 +25,14 @@ function Read-HypervVMResult {
     # supported for the current configuration", which we don't want
     # to surface. Single fetch covers both fields when on gen 2.
     $secureBoot = $null
+    $secureBootTemplate = ''
     $bootOrder  = @()
     if ($Vm.Generation -eq 2) {
         $firmware = Get-VMFirmware -VM $Vm -ErrorAction Stop
         $secureBoot = ($firmware.SecureBoot.ToString() -eq 'On')
+        # Template is meaningful only on gen 2; emit empty string on
+        # gen 1 so the Go-side decode collapses to types.StringNull().
+        $secureBootTemplate = [string] $firmware.SecureBootTemplate
         $bootOrder = @(
             foreach ($entry in $firmware.BootOrder) {
                 # The Microsoft.HyperV.PowerShell.VMBootSourceType enum
@@ -173,6 +177,7 @@ function Read-HypervVMResult {
         Notes                = $Vm.Notes
         Path                 = $Vm.Path
         SecureBootEnabled    = $secureBoot
+        SecureBootTemplate   = $secureBootTemplate
         HardDiskDrives       = $hdds
         NetworkAdapters      = $nics
         DvdDrives            = $dvds

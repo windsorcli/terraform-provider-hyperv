@@ -784,6 +784,10 @@ func buildNewInput(plan Model) hyperv.NewVMInput {
 		v := plan.SecureBoot.ValueBool()
 		in.SecureBoot = &v
 	}
+	if !plan.SecureBootTemplate.IsNull() && !plan.SecureBootTemplate.IsUnknown() {
+		v := plan.SecureBootTemplate.ValueString()
+		in.SecureBootTemplate = &v
+	}
 	if !plan.Notes.IsNull() && !plan.Notes.IsUnknown() {
 		v := plan.Notes.ValueString()
 		in.Notes = &v
@@ -902,6 +906,12 @@ func modelFromVM(v *hyperv.VM) Model {
 	secureBoot := types.BoolNull()
 	if v.SecureBootEnabled != nil {
 		secureBoot = types.BoolValue(*v.SecureBootEnabled)
+	}
+	// Empty string from the wire (gen 1 path) collapses to null so omit-
+	// from-config is a stable no-diff state. Gen 2 always populates.
+	secureBootTemplate := types.StringNull()
+	if v.SecureBootTemplate != "" {
+		secureBootTemplate = types.StringValue(v.SecureBootTemplate)
 	}
 	notes := types.StringValue(v.Notes)
 	if v.Notes == "" {
@@ -1032,20 +1042,21 @@ func modelFromVM(v *hyperv.VM) Model {
 	}
 
 	return Model{
-		ID:              types.StringValue(v.Name),
-		Name:            types.StringValue(v.Name),
-		Generation:      types.Int64Value(int64(v.Generation)),
-		CPU:             &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:          memoryModelFromVM(v),
-		HardDiskDrives:  hdds,
-		NetworkAdapters: nics,
-		DvdDrives:       dvds,
-		BootOrder:       bootOrder,
-		SecureBoot:      secureBoot,
-		Notes:           notes,
-		State:           &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
-		IPAddresses:     typeflatten.IPAddresses(v.NetworkAdapters),
-		Path:            types.StringValue(v.Path),
+		ID:                 types.StringValue(v.Name),
+		Name:               types.StringValue(v.Name),
+		Generation:         types.Int64Value(int64(v.Generation)),
+		CPU:                &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:             memoryModelFromVM(v),
+		HardDiskDrives:     hdds,
+		NetworkAdapters:    nics,
+		DvdDrives:          dvds,
+		BootOrder:          bootOrder,
+		SecureBoot:         secureBoot,
+		SecureBootTemplate: secureBootTemplate,
+		Notes:              notes,
+		State:              &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
+		IPAddresses:        typeflatten.IPAddresses(v.NetworkAdapters),
+		Path:               types.StringValue(v.Path),
 	}
 }
 
