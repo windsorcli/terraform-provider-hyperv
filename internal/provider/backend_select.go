@@ -202,6 +202,19 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 	auth := resolveString(winrmAttrs.Auth, "HYPERV_WINRM_AUTH", "ntlm")
 	cacert := resolveString(winrmAttrs.CACert, "HYPERV_WINRM_CACERT", "")
 
+	// Kerberos sub-block is optional; absent means types.StringNull() for
+	// every field, which resolveString collapses to the env-var fallback
+	// or the empty default. This matches how WinRMConfig itself is
+	// handled when winrm = {} is omitted entirely.
+	var krbAttrs WinRMKerberosConfig
+	if winrmAttrs.Kerberos != nil {
+		krbAttrs = *winrmAttrs.Kerberos
+	}
+	krbRealm := resolveString(krbAttrs.Realm, "HYPERV_KRB5_REALM", "")
+	krbSpn := resolveString(krbAttrs.Spn, "HYPERV_KRB5_SPN", "")
+	krbConfigPath := resolveString(krbAttrs.ConfigPath, "HYPERV_KRB5_CONF_PATH", "")
+	krbCCachePath := resolveString(krbAttrs.CCachePath, "HYPERV_KRB5_CCACHE_PATH", "")
+
 	// Password gate: NTLM and Basic both require one. Kerberos in principle
 	// can use a pre-cached TGT (we reject it at NewWinRM time today, but
 	// the gate is shaped so future Kerberos support doesn't break this
@@ -281,6 +294,10 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		Insecure:       insecure,
 		Auth:           auth,
 		CACert:         cacert,
+		KrbRealm:       krbRealm,
+		KrbSpn:         krbSpn,
+		KrbConfigPath:  krbConfigPath,
+		KrbCCachePath:  krbCCachePath,
 		CommandTimeout: commandTimeout,
 	})
 	if err != nil {

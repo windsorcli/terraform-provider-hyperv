@@ -34,6 +34,23 @@ type WinRMOptions struct {
 	Auth     string // "ntlm" | "basic" | "kerberos"; default "ntlm"
 	CACert   string // path to a CA bundle PEM; empty = system roots
 
+	// Kerberos auth fields. Only meaningful when Auth=="kerberos"; ignored
+	// otherwise. The provider-config layer is responsible for catching the
+	// "kerberos fields set without auth=kerberos" misconfig at plan time;
+	// this struct just transports the values.
+	//
+	// KrbRealm is required (NewWinRM rejects empty when Auth=="kerberos").
+	// KrbSpn defaults to "HTTP/<Host>" when empty.
+	// KrbConfigPath defaults to first-existing of $KRB5_CONFIG,
+	// ~/.config/krb5.conf, /etc/krb5.conf when empty.
+	// KrbCCachePath, when set, switches from password-mode (inline AS-REQ)
+	// to ccache-mode (re-use a pre-existing TGT). When set, Password is
+	// ignored.
+	KrbRealm      string
+	KrbSpn        string
+	KrbConfigPath string
+	KrbCCachePath string
+
 	// Timeout bounds an individual WinRM operation (dial, auth, request).
 	// Default 30s. Distinct from CommandTimeout, which bounds the remote
 	// PowerShell call.
