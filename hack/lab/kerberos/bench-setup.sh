@@ -26,6 +26,12 @@ BENCH_LAB_IP="10.10.0.5"
 LAB_NIC='vEthernet (HV-LAB)'
 REALM="hv.lab"
 
+# Base64 the password once on the bash side. The decoded alphabet
+# ([A-Za-z0-9+/=]) is inert in both bash double-quoted expansion and
+# PowerShell double-quoted strings, so password content (incl. ", $,
+# backtick) cannot break PowerShell parsing or be interpreted as code.
+PW_B64="$(printf '%s' "$HVLAB_ADMIN_PASSWORD" | base64 | tr -d '\n')"
+
 # Always connect to the bench as the LOCAL Administrator (NTLM). For
 # steps that need domain-admin authority (setspn writes to AD),
 # PSDirect from the bench into the DC's guest VM with HVLAB credentials
@@ -171,7 +177,8 @@ fi
 if [ "$domain_joined" = "no" ]; then
     echo "==> domain-joining bench to $REALM (will reboot)"
     bench_local '
-        $pw = ConvertTo-SecureString "'"$HVLAB_ADMIN_PASSWORD"'" -AsPlainText -Force
+        $pwPlain = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("'"$PW_B64"'"))
+        $pw = ConvertTo-SecureString $pwPlain -AsPlainText -Force
         $cred = New-Object System.Management.Automation.PSCredential("HVLAB\Administrator", $pw)
         Add-Computer -DomainName "'"$REALM"'" -Server "'"$DC_FQDN"'" -Credential $cred -Force
         Restart-Computer -Force
@@ -189,7 +196,8 @@ fi
 # through any bench-side WinRM auth.
 echo "==> registering HTTP SPNs (PSDirect from bench to DC)"
 bench_local '
-    $pw = ConvertTo-SecureString "'"$HVLAB_ADMIN_PASSWORD"'" -AsPlainText -Force
+    $pwPlain = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("'"$PW_B64"'"))
+    $pw = ConvertTo-SecureString $pwPlain -AsPlainText -Force
     $cred = New-Object System.Management.Automation.PSCredential("HVLAB\Administrator", $pw)
     Invoke-Command -VMName HV-DC-01 -Credential $cred -ScriptBlock {
         param($benchName, $realm)
