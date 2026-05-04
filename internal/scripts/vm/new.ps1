@@ -71,8 +71,8 @@ function New-HypervVM {
     # "Provider produced inconsistent result after apply" check.
     # Gen 2 doesn't get an auto-DVD, so this is a Gen 1-only no-op
     # check that's cheap to leave unconditional.
-    Get-VMDvdDrive -VMName $Name -ErrorAction SilentlyContinue |
-        Remove-VMDvdDrive -ErrorAction SilentlyContinue
+    Get-VMDvdDrive -VMName $Name -ErrorAction Stop |
+        Remove-VMDvdDrive -ErrorAction Stop
 
     # Atomicity guard: New-VM has now committed the VM to the host. Any
     # failure in the post-create Set-* sequence below would leave a
