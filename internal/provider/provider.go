@@ -128,7 +128,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			},
 			"winrm": schema.SingleNestedAttribute{
 				Optional:            true,
-				MarkdownDescription: "WinRM-backend-specific configuration. NTLM-over-HTTPS is the supported auth path; Basic also works for diagnosing TLS issues. Kerberos is not currently implemented.",
+				MarkdownDescription: "WinRM-backend-specific configuration. NTLM-over-HTTPS is the default auth path; Basic also works for diagnosing TLS issues. Kerberos is supported via the nested `kerberos` block (requires a domain-joined host and an FQDN in `host`).",
 				Attributes: map[string]schema.Attribute{
 					"use_https": schema.BoolAttribute{
 						Optional:            true,
@@ -140,7 +140,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 					},
 					"auth": schema.StringAttribute{
 						Optional:            true,
-						MarkdownDescription: "Authentication method. One of `basic`, `ntlm`, `kerberos`. Default: `ntlm`. Falls back to `HYPERV_WINRM_AUTH`.",
+						MarkdownDescription: "Authentication method. One of `basic`, `ntlm`, `kerberos`. Default: `ntlm`. Falls back to `HYPERV_WINRM_AUTH`. When set to `kerberos`, the nested `kerberos` block must also be supplied with at least `realm`.",
 						Validators: []validator.String{
 							stringvalidator.OneOf("basic", "ntlm", "kerberos"),
 						},
@@ -148,6 +148,35 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 					"cacert": schema.StringAttribute{
 						Optional:            true,
 						MarkdownDescription: "Path to a CA bundle. Falls back to `HYPERV_WINRM_CACERT`.",
+					},
+					"kerberos": schema.SingleNestedAttribute{
+						Optional: true,
+						MarkdownDescription: "Kerberos auth configuration. Only meaningful when `auth = \"kerberos\"`. " +
+							"The provider uses `jcmturner/gokrb5` (pure-Go MIT Kerberos) -- no GSSAPI library on the runner is required, and macOS / Linux / Windows runners all behave identically. " +
+							"Two credential modes:\n\n" +
+							"  * **Password mode** -- the provider's top-level `password` is sent in an inline AS-REQ to obtain a TGT. Simplest setup; password lives in provider config or `HYPERV_PASSWORD`.\n" +
+							"  * **CCache mode** -- set `ccache_path` to a credential cache file populated by an out-of-band `kinit`. The top-level `password` is ignored in this mode. Better fit for shared workstations where the user already has a TGT.\n\n" +
+							"`password` and `ccache_path` are mutually exclusive (a config validator rejects configs that set both, or neither, when `auth = \"kerberos\"`).\n\n" +
+							"`host` must be an FQDN (e.g. `hv-bench-01.hv.lab`), not a bare IP -- the SPN match keys on hostname.",
+						Attributes: map[string]schema.Attribute{
+							"realm": schema.StringAttribute{
+								Optional:            true,
+								MarkdownDescription: "Kerberos realm (uppercase by convention, e.g. `HV.LAB`). **Required when `auth = \"kerberos\"`** -- a config validator rejects configs that omit it. Falls back to `HYPERV_KRB5_REALM`.",
+							},
+							"spn": schema.StringAttribute{
+								Optional:            true,
+								MarkdownDescription: "Service Principal Name to authenticate against. Default: `HTTP/<host>`. Override only when the WinRM listener was registered under a non-standard SPN. Falls back to `HYPERV_KRB5_SPN`.",
+							},
+							"krb5_conf_path": schema.StringAttribute{
+								Optional: true,
+								MarkdownDescription: "Path to a krb5.conf file. Default: first existing of `$KRB5_CONFIG`, `~/.config/krb5.conf`, `/etc/krb5.conf`. Falls back to `HYPERV_KRB5_CONF_PATH`.\n\n" +
+									"The file must define the realm (`[realms]` block) and either `kdc =` entries or DNS lookups (`dns_lookup_kdc = true`).",
+							},
+							"ccache_path": schema.StringAttribute{
+								Optional:            true,
+								MarkdownDescription: "Path to a Kerberos credential cache file (e.g. `/tmp/krb5cc_$UID` or the FILE: prefix output of `klist`). When set, the provider reads the TGT from this file and the top-level `password` is ignored. Falls back to `HYPERV_KRB5_CCACHE_PATH`.",
+							},
+						},
 					},
 				},
 			},
