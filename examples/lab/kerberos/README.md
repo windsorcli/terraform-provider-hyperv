@@ -132,9 +132,22 @@ terraform destroy
 
 `destroy` hard-powers-off the DC (`Stop-VM -TurnOff -Force`) before
 removing it. Both `hyperv_image_file` resources are local_path-mode,
-so the provider deletes both ISOs from the bench (the runner-local
-copies under `dist/` are never touched). The `hyperv_vhd` resource
-removes the VHDX file. The vSwitch is removed.
+but they're treated differently on teardown by design:
+
+- **`windows_iso`** carries `keep_on_destroy = true`. The 5 GiB Eval
+  ISO is a vendor artifact that rarely changes, so the file stays on
+  the bench across destroy/apply cycles. The next apply finds it
+  already in place with a matching SHA and skips the stream entirely
+  (~4 minutes of bench-network bandwidth saved per iteration). Clean
+  up the orphan out-of-band when the Eval license rolls or when you
+  truly want a clean bench: `Remove-Item C:\hyperv\iso\server2022-eval.iso`.
+- **`unattend_iso`** is removed. It's small (387 KB), rebuilt every
+  time `task lab:build-iso` runs (it bakes in passwords from
+  `.env.local`), so persisting it across destroys gains nothing and
+  could leave a stale autounattend with old credentials behind.
+
+The `hyperv_vhd` resource removes the VHDX file. The vSwitch is
+removed. Runner-local copies under `dist/` are never touched.
 
 If you've already domain-joined the bench host, leave the domain
 manually before tearing down the DC -- otherwise the host loses its
