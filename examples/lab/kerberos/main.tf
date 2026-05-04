@@ -49,14 +49,18 @@ resource "hyperv_vhd" "dc_os" {
 
 resource "hyperv_vm" "dc" {
   name       = var.dc_vm_name
-  generation = 2
+  generation = 1
   cpu        = { count = 2 }
   memory = {
     startup_bytes = var.dc_memory_bytes
   }
-  # Secure Boot stays on (Hyper-V's gen 2 default). Server 2022 has
-  # Microsoft-signed UEFI bootloaders so the install media boots
-  # cleanly with Secure Boot enabled.
+  # Generation 1 (BIOS) -- not Gen 2 (UEFI). Bench hosts whose UEFI
+  # firmware was provisioned without Microsoft signing certs in the
+  # platform db cannot boot a Gen 2 guest from current Server 2022
+  # install media (the virtual UEFI rejects the signed bootloader at
+  # boot 0). Gen 1 BIOS sidesteps the signature path entirely; for a
+  # Kerberos lab DC, BIOS vs UEFI is functionally irrelevant -- AD
+  # DS, DNS, NTP, KDC roles run identically on either firmware.
   notes = "Kerberos lab DC -- managed by examples/lab/kerberos"
 
   network_adapter = [
@@ -66,16 +70,24 @@ resource "hyperv_vm" "dc" {
     },
   ]
 
+  # Gen 1 boots from IDE controllers, not SCSI. IDE topology: two
+  # controllers (0 and 1), two locations each. Hyper-V's `New-VM
+  # -Generation 1` auto-attaches an empty DVD at IDE 1,0; the slots
+  # this resource declares must avoid that one or Add-VMDvdDrive
+  # rejects the duplicate. Convention here: IDE 0,0 = OS disk;
+  # IDE 0,1 = install media; IDE 1,1 = autounattend (skipping the
+  # default at IDE 1,0).
   hard_disk_drive = [
     {
       path                = hyperv_vhd.dc_os.path
+      controller_type     = "IDE"
       controller_number   = 0
       controller_location = 0
     },
   ]
 
-  # Two DVD drives: Windows install media at slot 1 and the
-  # autounattend ISO at slot 2. The autounattend ISO is what makes
+  # Two DVD drives: Windows install media at IDE 0,1 and the
+  # autounattend ISO at IDE 1,1. The autounattend ISO is what makes
   # this lab reproducible -- the Windows installer reads
   # autounattend.xml from the root of any attached optical drive,
   # then the specialize-pass cmd loop in autounattend.xml copies
@@ -83,38 +95,24 @@ resource "hyperv_vm" "dc" {
   dvd_drive = [
     {
       iso_path            = hyperv_image_file.windows_iso.destination_path
+      controller_type     = "IDE"
       controller_number   = 0
       controller_location = 1
     },
     {
       iso_path            = hyperv_image_file.unattend_iso.destination_path
-      controller_number   = 0
-      controller_location = 2
+      controller_type     = "IDE"
+      controller_number   = 1
+      controller_location = 1
     },
   ]
 
-  # Boot order: install media first, then the OS disk.
-  #
-  # The Windows installer reboots several times during install
-  # (windowsPE -> specialize -> oobeSystem). On each intermediate
-  # reboot the firmware re-tries the install ISO first; the
-  # installer's bootmgr detects the in-progress install on disk
-  # and chains to disk boot rather than re-running setup. After
-  # the final reboot the OS owns boot and the install media never
-  # runs again -- but the DVD entries stay in the VM until you
-  # tear them down or remove them in a follow-up apply.
-  boot_order = [
-    {
-      type                = "dvd_drive"
-      controller_number   = 0
-      controller_location = 1
-    },
-    {
-      type                = "hard_disk_drive"
-      controller_number   = 0
-      controller_location = 0
-    },
-  ]
+  # No boot_order: Gen 1 BIOS boot order is set via Set-VMBios
+  # -StartupOrder (category strings), which the resource doesn't
+  # currently expose. Hyper-V's Gen 1 default is CD-then-IDE-then-
+  # network-then-floppy, which boots the install media first and
+  # falls through to the OS disk after Windows installs. Adequate
+  # for this lab.
 
   state = {
     desired = "Running"

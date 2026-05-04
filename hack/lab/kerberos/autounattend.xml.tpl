@@ -44,6 +44,14 @@
                publicKeyToken="31bf3856ad364e35"
                language="neutral"
                versionScope="nonSxS">
+      <!--
+        BIOS / MBR partitioning for Gen 1 VMs. Single bootable Primary
+        partition that holds both the boot files and the OS. UEFI/GPT
+        layouts (with separate EFI + MSR partitions) are wrong on Gen
+        1 -- Windows Setup refuses to install MBR when the disk is
+        already GPT, and vice versa. The <WillWipeDisk> above forces a
+        clean MBR table on the empty VHDX.
+      -->
       <DiskConfiguration>
         <Disk wcm:action="add">
           <DiskID>0</DiskID>
@@ -51,16 +59,6 @@
           <CreatePartitions>
             <CreatePartition wcm:action="add">
               <Order>1</Order>
-              <Type>EFI</Type>
-              <Size>100</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>2</Order>
-              <Type>MSR</Type>
-              <Size>16</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>3</Order>
               <Type>Primary</Type>
               <Extend>true</Extend>
             </CreatePartition>
@@ -69,17 +67,8 @@
             <ModifyPartition wcm:action="add">
               <Order>1</Order>
               <PartitionID>1</PartitionID>
-              <Format>FAT32</Format>
-              <Label>System</Label>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Order>2</Order>
-              <PartitionID>2</PartitionID>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Order>3</Order>
-              <PartitionID>3</PartitionID>
               <Format>NTFS</Format>
+              <Active>true</Active>
               <Label>Windows</Label>
               <Letter>C</Letter>
             </ModifyPartition>
@@ -91,12 +80,22 @@
         <OSImage>
           <InstallTo>
             <DiskID>0</DiskID>
-            <PartitionID>3</PartitionID>
+            <PartitionID>1</PartitionID>
           </InstallTo>
           <InstallFrom>
+            <!--
+              Image name MUST match an entry inside install.wim of the
+              specific media in use. The Microsoft Eval ISO carries
+              the four "Evaluation" SKUs (Standard/Datacenter, Core/
+              Desktop), NOT the historical "SERVERDATACENTER" retail
+              key string. Mismatch = setup waits at the SKU picker
+              for a human, which on an unattended VM means an
+              indefinite stall (verified empirically: 20-min stuck
+              install with VHDX frozen at boot.wim extraction).
+            -->
             <MetaData wcm:action="add">
               <Key>/IMAGE/NAME</Key>
-              <Value>Windows Server 2022 SERVERDATACENTER</Value>
+              <Value>Windows Server 2022 Datacenter Evaluation (Desktop Experience)</Value>
             </MetaData>
           </InstallFrom>
         </OSImage>
