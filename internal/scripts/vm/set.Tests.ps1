@@ -140,7 +140,8 @@ Describe 'Set-HypervVM' {
                 'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
                 'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
                 'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
-                'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled', 'State'
+                'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
+                'SecureBootTemplate', 'State'
             )
         }
     }

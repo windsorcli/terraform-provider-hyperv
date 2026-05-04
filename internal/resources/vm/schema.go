@@ -617,6 +617,24 @@ func resourceSchema() schema.Schema {
 					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"secure_boot_template": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "UEFI Secure Boot template controlling which signing CAs the VM " +
+					"firmware trusts. **Valid only when `generation = 2`.** Common values: " +
+					"`MicrosoftWindows` (default for new gen 2 VMs), " +
+					"`MicrosoftUEFICertificateAuthority` (broader Microsoft UEFI CA -- required for " +
+					"current Server 2022 install media after Microsoft's CVE-2023-24932 cert rotation), " +
+					"`OpenSourceShieldedVM`. Hyper-V validates the value and surfaces unknown " +
+					"templates as a clear cmdlet error.\n\n" +
+					"**Forces replacement** when changed -- the template is set at create time via " +
+					"`Set-VMFirmware`; in-place updates require the VM to be off and platform-key " +
+					"reset, which the resource layer does not yet wire through.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"notes": schema.StringAttribute{
 				Optional: true,
 				Computed: true,

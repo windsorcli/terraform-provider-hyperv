@@ -53,20 +53,21 @@ import (
 // ordering matches canonical state on subsequent applies) with a
 // simpler decode.
 type Model struct {
-	ID              types.String          `tfsdk:"id"`
-	Name            types.String          `tfsdk:"name"`
-	Generation      types.Int64           `tfsdk:"generation"`
-	CPU             *CPUModel             `tfsdk:"cpu"`
-	Memory          *MemoryModel          `tfsdk:"memory"`
-	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
-	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
-	DvdDrives       []DvdDriveModel       `tfsdk:"dvd_drive"`
-	BootOrder       []BootOrderEntryModel `tfsdk:"boot_order"`
-	SecureBoot      types.Bool            `tfsdk:"secure_boot"`
-	Notes           types.String          `tfsdk:"notes"`
-	State           *StateModel           `tfsdk:"state"`
-	IPAddresses     types.List            `tfsdk:"ip_addresses"`
-	Path            types.String          `tfsdk:"path"`
+	ID                 types.String          `tfsdk:"id"`
+	Name               types.String          `tfsdk:"name"`
+	Generation         types.Int64           `tfsdk:"generation"`
+	CPU                *CPUModel             `tfsdk:"cpu"`
+	Memory             *MemoryModel          `tfsdk:"memory"`
+	HardDiskDrives     []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
+	NetworkAdapters    []NetworkAdapterModel `tfsdk:"network_adapter"`
+	DvdDrives          []DvdDriveModel       `tfsdk:"dvd_drive"`
+	BootOrder          []BootOrderEntryModel `tfsdk:"boot_order"`
+	SecureBoot         types.Bool            `tfsdk:"secure_boot"`
+	SecureBootTemplate types.String          `tfsdk:"secure_boot_template"`
+	Notes              types.String          `tfsdk:"notes"`
+	State              *StateModel           `tfsdk:"state"`
+	IPAddresses        types.List            `tfsdk:"ip_addresses"`
+	Path               types.String          `tfsdk:"path"`
 }
 
 // CPUModel is the nested `cpu` block. Static count only in this slice;

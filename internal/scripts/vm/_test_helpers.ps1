@@ -276,12 +276,14 @@ function New-HypervVMMemorySample {
 function New-HypervVMFirmwareSample {
     [CmdletBinding()]
     param(
-        [string]   $SecureBoot = 'On',  # 'On' | 'Off'
-        [object[]] $BootOrder  = @()
+        [string]   $SecureBoot         = 'On',                 # 'On' | 'Off'
+        [string]   $SecureBootTemplate = 'MicrosoftWindows',   # cmdlet's gen-2 default
+        [object[]] $BootOrder          = @()
     )
     [pscustomobject]@{
-        SecureBoot = $SecureBoot
-        BootOrder  = $BootOrder
+        SecureBoot         = $SecureBoot
+        SecureBootTemplate = $SecureBootTemplate
+        BootOrder          = $BootOrder
     }
 }
 

@@ -246,8 +246,8 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 4 {
-		t.Fatalf("got %d ConfigValidators, want 4 (secure_boot rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1, dynamic memory bounds)", len(got))
+	if len(got) != 5 {
+		t.Fatalf("got %d ConfigValidators, want 5 (secure_boot rejected for gen 1, secure_boot_template rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1, dynamic memory bounds)", len(got))
 	}
 }
 
@@ -325,6 +325,75 @@ func TestSecureBootValidator(t *testing.T) {
 		},
 	}
 	v := secureBootRejectedForGen1Validator{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			diags := v.validate(tc.model)
+			assertValidatorDiags(t, diags, tc.wantError, tc.wantPath)
+		})
+	}
+}
+
+// TestSecureBootTemplateValidator exercises the sibling rule for the
+// secure_boot_template attribute: gen 1 + template-set is rejected.
+// Same shape as TestSecureBootValidator -- catches the misconfig at
+// plan time before it becomes a "Provider produced inconsistent
+// result after apply" error.
+func TestSecureBootTemplateValidator(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		model     Model
+		wantError bool
+		wantPath  string
+	}{
+		{
+			name: "gen 2 with template set -> ok",
+			model: Model{
+				Generation:         types.Int64Value(2),
+				SecureBootTemplate: types.StringValue("MicrosoftWindows"),
+			},
+		},
+		{
+			name: "gen 2 without template -> ok (host default applies)",
+			model: Model{
+				Generation:         types.Int64Value(2),
+				SecureBootTemplate: types.StringNull(),
+			},
+		},
+		{
+			name: "gen 1 without template -> ok (omitted is fine)",
+			model: Model{
+				Generation:         types.Int64Value(1),
+				SecureBootTemplate: types.StringNull(),
+			},
+		},
+		{
+			name: "gen 1 with template set -> fires",
+			model: Model{
+				Generation:         types.Int64Value(1),
+				SecureBootTemplate: types.StringValue("MicrosoftWindows"),
+			},
+			wantError: true,
+			wantPath:  "secure_boot_template",
+		},
+		{
+			name: "generation unknown -> skip (deferred dep)",
+			model: Model{
+				Generation:         types.Int64Unknown(),
+				SecureBootTemplate: types.StringValue("MicrosoftWindows"),
+			},
+		},
+		{
+			name: "template unknown -> skip (deferred dep)",
+			model: Model{
+				Generation:         types.Int64Value(1),
+				SecureBootTemplate: types.StringUnknown(),
+			},
+		},
+	}
+	v := secureBootTemplateRejectedForGen1Validator{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

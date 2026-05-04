@@ -160,6 +160,7 @@ type VM struct {
 	Notes                string           `json:"Notes"`
 	Path                 string           `json:"Path"`
 	SecureBootEnabled    *bool            `json:"SecureBootEnabled"`
+	SecureBootTemplate   string           `json:"SecureBootTemplate"`
 	HardDiskDrives       []HardDiskDrive  `json:"HardDiskDrives"`
 	NetworkAdapters      []NetworkAdapter `json:"NetworkAdapters"`
 	DvdDrives            []DvdDrive       `json:"DvdDrives"`
@@ -358,15 +359,16 @@ type DetachHardDiskInput struct {
 // to static memory (DynamicMemoryEnabled=$false), preserving the v2-and-
 // prior behavior for callers that don't manage dynamic memory.
 type NewVMInput struct {
-	Name           string  `json:"name"`
-	Generation     int     `json:"generation"`
-	Vcpu           int     `json:"vcpu"`
-	MemoryBytes    int64   `json:"memory_bytes"`
-	DynamicMemory  *bool   `json:"dynamic_memory,omitempty"`
-	MinMemoryBytes *int64  `json:"min_memory_bytes,omitempty"`
-	MaxMemoryBytes *int64  `json:"max_memory_bytes,omitempty"`
-	SecureBoot     *bool   `json:"secure_boot,omitempty"`
-	Notes          *string `json:"notes,omitempty"`
+	Name               string  `json:"name"`
+	Generation         int     `json:"generation"`
+	Vcpu               int     `json:"vcpu"`
+	MemoryBytes        int64   `json:"memory_bytes"`
+	DynamicMemory      *bool   `json:"dynamic_memory,omitempty"`
+	MinMemoryBytes     *int64  `json:"min_memory_bytes,omitempty"`
+	MaxMemoryBytes     *int64  `json:"max_memory_bytes,omitempty"`
+	SecureBoot         *bool   `json:"secure_boot,omitempty"`
+	SecureBootTemplate *string `json:"secure_boot_template,omitempty"`
+	Notes              *string `json:"notes,omitempty"`
 }
 
 // SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.

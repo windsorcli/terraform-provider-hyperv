@@ -50,6 +50,7 @@ func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
 	return []resource.ConfigValidator{
 		secureBootRejectedForGen1Validator{},
+		secureBootTemplateRejectedForGen1Validator{},
 		networkAdapterUniqueNamesValidator{},
 		bootOrderRejectedForGen1Validator{},
 		dynamicMemoryBoundsValidator{},
@@ -204,6 +205,56 @@ func (v secureBootRejectedForGen1Validator) validate(data Model) diag.Diagnostic
 		"secure_boot is not valid for generation 1 VMs",
 		"Generation 1 VMs use BIOS, not UEFI -- there is no Secure Boot concept. "+
 			"Remove secure_boot from the config or change generation to 2.",
+	)
+	return diags
+}
+
+// secureBootTemplateRejectedForGen1Validator is the sibling of
+// secureBootRejectedForGen1Validator for the secure_boot_template
+// attribute. Same shape, same one-directional rule -- gen 1 + template
+// set is rejected at plan time, gen 2 + omitted template uses Hyper-V's
+// default. Catching at plan keeps the operator out of the post-apply
+// "Provider produced inconsistent result" path: the script-side
+// Set-VMFirmware guard at new.ps1:97 silently skips on gen 1, the
+// read shape returns empty string, modelFromVM collapses to null, and
+// the framework rejects the planned-string vs returned-null mismatch
+// with a diagnostic that doesn't point at the actual misconfiguration.
+type secureBootTemplateRejectedForGen1Validator struct{}
+
+func (v secureBootTemplateRejectedForGen1Validator) Description(_ context.Context) string {
+	return "secure_boot_template is not valid for generation 1 VMs (BIOS, no UEFI firmware DB)"
+}
+
+func (v secureBootTemplateRejectedForGen1Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v secureBootTemplateRejectedForGen1Validator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+
+func (v secureBootTemplateRejectedForGen1Validator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.Generation.IsUnknown() || data.SecureBootTemplate.IsUnknown() {
+		return diags
+	}
+	if data.Generation.ValueInt64() == 2 {
+		return diags
+	}
+	if data.SecureBootTemplate.IsNull() {
+		return diags
+	}
+	diags.AddAttributeError(
+		path.Root("secure_boot_template"),
+		"secure_boot_template is not valid for generation 1 VMs",
+		"Generation 1 VMs use BIOS, not UEFI -- there is no firmware key store "+
+			"to apply a Secure Boot template against. Remove secure_boot_template "+
+			"from the config or change generation to 2.",
 	)
 	return diags
 }
@@ -784,6 +835,10 @@ func buildNewInput(plan Model) hyperv.NewVMInput {
 		v := plan.SecureBoot.ValueBool()
 		in.SecureBoot = &v
 	}
+	if !plan.SecureBootTemplate.IsNull() && !plan.SecureBootTemplate.IsUnknown() {
+		v := plan.SecureBootTemplate.ValueString()
+		in.SecureBootTemplate = &v
+	}
 	if !plan.Notes.IsNull() && !plan.Notes.IsUnknown() {
 		v := plan.Notes.ValueString()
 		in.Notes = &v
@@ -902,6 +957,12 @@ func modelFromVM(v *hyperv.VM) Model {
 	secureBoot := types.BoolNull()
 	if v.SecureBootEnabled != nil {
 		secureBoot = types.BoolValue(*v.SecureBootEnabled)
+	}
+	// Empty string from the wire (gen 1 path) collapses to null so omit-
+	// from-config is a stable no-diff state. Gen 2 always populates.
+	secureBootTemplate := types.StringNull()
+	if v.SecureBootTemplate != "" {
+		secureBootTemplate = types.StringValue(v.SecureBootTemplate)
 	}
 	notes := types.StringValue(v.Notes)
 	if v.Notes == "" {
@@ -1032,20 +1093,21 @@ func modelFromVM(v *hyperv.VM) Model {
 	}
 
 	return Model{
-		ID:              types.StringValue(v.Name),
-		Name:            types.StringValue(v.Name),
-		Generation:      types.Int64Value(int64(v.Generation)),
-		CPU:             &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:          memoryModelFromVM(v),
-		HardDiskDrives:  hdds,
-		NetworkAdapters: nics,
-		DvdDrives:       dvds,
-		BootOrder:       bootOrder,
-		SecureBoot:      secureBoot,
-		Notes:           notes,
-		State:           &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
-		IPAddresses:     typeflatten.IPAddresses(v.NetworkAdapters),
-		Path:            types.StringValue(v.Path),
+		ID:                 types.StringValue(v.Name),
+		Name:               types.StringValue(v.Name),
+		Generation:         types.Int64Value(int64(v.Generation)),
+		CPU:                &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:             memoryModelFromVM(v),
+		HardDiskDrives:     hdds,
+		NetworkAdapters:    nics,
+		DvdDrives:          dvds,
+		BootOrder:          bootOrder,
+		SecureBoot:         secureBoot,
+		SecureBootTemplate: secureBootTemplate,
+		Notes:              notes,
+		State:              &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
+		IPAddresses:        typeflatten.IPAddresses(v.NetworkAdapters),
+		Path:               types.StringValue(v.Path),
 	}
 }
 

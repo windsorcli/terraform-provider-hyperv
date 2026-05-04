@@ -42,6 +42,7 @@ function New-HypervVM {
         [Nullable[int64]]               $MinMemoryBytes,
         [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
+        [string]                        $SecureBootTemplate,
         [string]                        $Notes
     )
     New-VM -Name $Name -Generation $Generation `
@@ -61,6 +62,17 @@ function New-HypervVM {
     # because the cmdlet doesn't accept wildcards on -Name.
     Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop |
         Remove-VMNetworkAdapter -ErrorAction Stop
+
+    # Same pattern for Gen 1: New-VM auto-creates an empty DVD drive
+    # at IDE 1,0. Strip it so the VM starts with zero DVDs and the
+    # resource-layer Create attaches exactly what the user declared.
+    # Without this, the auto-DVD shows up as a phantom dvd_drive entry
+    # in the post-apply read shape and trips the framework's
+    # "Provider produced inconsistent result after apply" check.
+    # Gen 2 doesn't get an auto-DVD, so this is a Gen 1-only no-op
+    # check that's cheap to leave unconditional.
+    Get-VMDvdDrive -VMName $Name -ErrorAction Stop |
+        Remove-VMDvdDrive -ErrorAction Stop
 
     # Atomicity guard: New-VM has now committed the VM to the host. Any
     # failure in the post-create Set-* sequence below would leave a
@@ -94,9 +106,18 @@ function New-HypervVM {
 
         Set-VMProcessor -VMName $Name -Count $Vcpu -ErrorAction Stop
 
-        if ($Generation -eq 2 -and $null -ne $SecureBoot) {
-            $sb = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
-            Set-VMFirmware -VMName $Name -EnableSecureBoot $sb -ErrorAction Stop
+        if ($Generation -eq 2 -and ($null -ne $SecureBoot -or $SecureBootTemplate)) {
+            $fwArgs = @{ VMName = $Name; ErrorAction = 'Stop' }
+            if ($null -ne $SecureBoot) {
+                $fwArgs.EnableSecureBoot = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
+            }
+            if ($SecureBootTemplate) {
+                # Hyper-V cmdlet validates the template name and errors clearly
+                # on unknowns (e.g. "MicrosoftWindows", "MicrosoftUEFICertificateAuthority",
+                # "OpenSourceShieldedVM") -- no PS-side allowlist needed.
+                $fwArgs.SecureBootTemplate = $SecureBootTemplate
+            }
+            Set-VMFirmware @fwArgs
         }
 
         if ($PSBoundParameters.ContainsKey('Notes')) {
@@ -159,6 +180,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($params.PSObject.Properties.Name -contains 'secure_boot' -and
             $null -ne $params.secure_boot) {
             $callArgs.SecureBoot = [bool] $params.secure_boot
+        }
+        if ($params.PSObject.Properties.Name -contains 'secure_boot_template' -and
+            $null -ne $params.secure_boot_template) {
+            $callArgs.SecureBootTemplate = [string] $params.secure_boot_template
         }
         if ($params.PSObject.Properties.Name -contains 'notes' -and
             $null -ne $params.notes) {
