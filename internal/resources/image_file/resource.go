@@ -291,7 +291,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	state := modelFromImageFile(f, plan.URL, plan.LocalPath)
+	state := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.KeepOnDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -326,10 +326,12 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	// Preserve the user's url block and local_path from prior state --
-	// both are user intent and aren't reconstructible from the file
-	// contents on disk.
-	newState := modelFromImageFile(f, state.URL, state.LocalPath)
+	// Preserve the user's url block, local_path, and keep_on_destroy
+	// from prior state -- all three are user intent and aren't
+	// reconstructible from the file contents on disk. The bench has no
+	// concept of keep_on_destroy; the value lives only in Terraform
+	// state, so Read must round-trip what's already there.
+	newState := modelFromImageFile(f, state.URL, state.LocalPath, state.KeepOnDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -380,7 +382,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			resp.Diagnostics.AddError("Update hyperv_image_file failed (local_path mode)", err.Error())
 			return
 		}
-		newState := modelFromImageFile(f, nil, plan.LocalPath)
+		newState := modelFromImageFile(f, nil, plan.LocalPath, plan.KeepOnDestroy)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -459,7 +461,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals; we don't need to preserve
 // the user's prior representation here.
-func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig, localPath pathtype.Path) Model {
+func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig, localPath pathtype.Path, keepOnDestroy types.Bool) Model {
 	return Model{
 		ID:              pathtype.NewPathValue(f.Path),
 		DestinationPath: pathtype.NewPathValue(f.Path),
@@ -467,6 +469,7 @@ func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig, localPath pathtype.
 		LocalPath:       localPath,
 		Sha256:          types.StringValue(f.Sha256),
 		SizeBytes:       types.Int64Value(f.SizeBytes),
+		KeepOnDestroy:   keepOnDestroy,
 	}
 }
 

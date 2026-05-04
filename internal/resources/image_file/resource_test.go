@@ -279,7 +279,7 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 		Checksum: types.StringValue("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"),
 	}
 
-	got := modelFromImageFile(f, url, pathtype.NewPathNull())
+	got := modelFromImageFile(f, url, pathtype.NewPathNull(), types.BoolNull())
 
 	if got.ID.ValueString() != f.Path {
 		t.Errorf("ID = %q, want %q", got.ID.ValueString(), f.Path)
@@ -310,7 +310,7 @@ func TestModelFromImageFile_HostPathModePreservesNilURL(t *testing.T) {
 		Sha256:    "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
-	got := modelFromImageFile(f, nil, pathtype.NewPathNull())
+	got := modelFromImageFile(f, nil, pathtype.NewPathNull(), types.BoolNull())
 
 	if got.URL != nil {
 		t.Errorf("URL = %+v, want nil (host_path mode)", got.URL)
@@ -335,13 +335,40 @@ func TestModelFromImageFile_PreservesLocalPath(t *testing.T) {
 	}
 	localPath := pathtype.NewPathValue("/Users/me/dist/foo.iso")
 
-	got := modelFromImageFile(f, nil, localPath)
+	got := modelFromImageFile(f, nil, localPath, types.BoolNull())
 
 	if got.URL != nil {
 		t.Errorf("URL = %+v, want nil (local_path mode)", got.URL)
 	}
 	if got.LocalPath.ValueString() != "/Users/me/dist/foo.iso" {
 		t.Errorf("LocalPath = %q, want %q", got.LocalPath.ValueString(), "/Users/me/dist/foo.iso")
+	}
+}
+
+// TestModelFromImageFile_PreservesKeepOnDestroy round-trips the caller-
+// supplied keep_on_destroy through Read/Create/Update. The bench has
+// no concept of this flag (it's a Terraform-only destroy-behavior
+// switch), so modelFromImageFile must thread the caller's value into
+// the returned model. Without this, state holds null after every
+// Create, Delete reads null, ValueBool() returns false, the early-
+// return branch never fires, and the file is deleted regardless of
+// the user's config -- the entire feature is silently a no-op.
+func TestModelFromImageFile_PreservesKeepOnDestroy(t *testing.T) {
+	t.Parallel()
+
+	f := &hyperv.ImageFile{
+		Path:      "C:\\images\\cached.iso",
+		SizeBytes: 5044094976,
+		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+	}
+
+	got := modelFromImageFile(f, nil, pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.BoolValue(true))
+
+	if got.KeepOnDestroy.IsNull() {
+		t.Fatal("KeepOnDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
+	}
+	if !got.KeepOnDestroy.ValueBool() {
+		t.Errorf("KeepOnDestroy = false, want true (caller passed types.BoolValue(true))")
 	}
 }
 
