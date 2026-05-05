@@ -300,14 +300,18 @@ func NewClient(t *testing.T) *hyperv.Client {
 			port = pp
 		}
 		conn, err = connection.NewWinRM(connection.WinRMOptions{
-			Host:     os.Getenv("HYPERV_HOST"),
-			Port:     port,
-			Username: os.Getenv("HYPERV_USERNAME"),
-			Password: os.Getenv("HYPERV_PASSWORD"),
-			UseHTTPS: parseBoolEnvOr("HYPERV_WINRM_USE_HTTPS", true),
-			Insecure: parseBoolEnvOr("HYPERV_WINRM_INSECURE", false),
-			Auth:     os.Getenv("HYPERV_WINRM_AUTH"),
-			CACert:   os.Getenv("HYPERV_WINRM_CACERT"),
+			Host:          os.Getenv("HYPERV_HOST"),
+			Port:          port,
+			Username:      os.Getenv("HYPERV_USERNAME"),
+			Password:      os.Getenv("HYPERV_PASSWORD"),
+			UseHTTPS:      parseBoolEnvOr("HYPERV_WINRM_USE_HTTPS", true),
+			Insecure:      parseBoolEnvOr("HYPERV_WINRM_INSECURE", false),
+			Auth:          os.Getenv("HYPERV_WINRM_AUTH"),
+			CACert:        os.Getenv("HYPERV_WINRM_CACERT"),
+			KrbRealm:      os.Getenv("HYPERV_KRB5_REALM"),
+			KrbSpn:        os.Getenv("HYPERV_KRB5_SPN"),
+			KrbConfigPath: os.Getenv("HYPERV_KRB5_CONF_PATH"),
+			KrbCCachePath: os.Getenv("HYPERV_KRB5_CCACHE_PATH"),
 		})
 	default:
 		t.Fatalf("acctest.NewClient: unknown HYPERV_BACKEND=%q", backend)
