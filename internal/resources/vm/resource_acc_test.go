@@ -351,12 +351,13 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 //     detach + reattach; the plancheck asserts the action is
 //     classified as in-place Update, not destroy-and-recreate.
 //  3. Revert both attributes to dynamic / untagged via the explicit
-//     `attr = null` form. Because the schema marks both fields as
-//     Optional+Computed, simply removing the lines from config would
-//     leave the prior state values in place (framework "stickiness");
-//     `= null` is the only way to surface the revert as a planned
-//     change. State after this step asserts both fields are null
-//     again, matching what a never-set NIC looks like.
+//     `attr = null` form. Both schema attributes are Optional-only
+//     (no Computed), so the framework requires plan to track config
+//     exactly. Both `attr = null` and omitting the line entirely
+//     produce a null planned value that surfaces as a diff against
+//     the prior state; the test pins `= null` because it's the more
+//     explicit form. State after this step asserts both fields are
+//     null again, matching what a never-set NIC looks like.
 func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 	name := acctest.RandomName("vm-nic-vlan")
 	switchName := acctest.RandomName("nic-sw-vlan")

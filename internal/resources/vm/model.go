@@ -129,16 +129,19 @@ type HardDiskDriveModel struct {
 // within a single NIC is host-driven but the NIC selector itself
 // is keyed by the deterministic display Name).
 //
-// MacAddress is Optional+Computed. When the user sets it, the NIC
-// uses a static MAC of that value. When unset, Hyper-V auto-assigns
-// from its dynamic-MAC pool; in that case Read leaves the state
-// value null (we don't store the dynamically-assigned MAC -- that
+// MacAddress is Optional (not Computed). When the user sets it, the
+// NIC uses a static MAC of that value. When unset, Hyper-V auto-
+// assigns from its dynamic-MAC pool; Read writes null to state in
+// that case (we don't store the dynamically-assigned MAC -- that
 // would create a perpetual plan diff against the empty config).
+// Optional-only is deliberate: with Computed, the framework copies
+// state-value forward when config goes null, which masks intentional
+// reverts to dynamic-MAC mode (omitted-vs-explicit-null are
+// indistinguishable at the framework's config layer).
 //
-// VlanID is Optional+Computed. When set to 1-4094, the NIC is
-// tagged with that VLAN ID in Access mode. When unset (or set to 0,
-// which is rejected as untagged-by-explicit-config-is-the-same-as-
-// no-config), the NIC carries untagged frames. Read populates from
+// VlanID is Optional (not Computed) for the same reason. When set to
+// 1-4094, the NIC is tagged with that VLAN ID in Access mode. When
+// unset, the NIC carries untagged frames. Read populates from
 // Get-VMNetworkAdapterVlan.AccessVlanId; an untagged NIC produces
 // state value null (matching unset config to avoid perpetual diff).
 type NetworkAdapterModel struct {
