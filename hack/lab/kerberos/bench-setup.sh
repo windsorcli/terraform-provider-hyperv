@@ -163,12 +163,18 @@ if [ "$domain_joined" = "yes" ] && [ "$trust_ok" = "no" ]; then
     # codes mean "the DC rejected the unjoin" which is exactly the
     # scenario we're handling. Get-WmiObject is unavailable on PS 7;
     # CIM works on the 5.1 + 7.4 floor that CLAUDE.md mandates.
+    # || true: Restart-Computer can yank the WinRM TCP connection
+    # before bench-run sees a clean exit, returning non-zero from the
+    # transport layer. wait_for_reboot independently confirms the
+    # bench actually rebooted, so the script's exit code is noise.
+    # Real script failures still surface: bench-run prints stderr
+    # before exiting, and wait_for_reboot has its own loud timeout.
     bench_local '
         $cs = Get-CimInstance Win32_ComputerSystem
         Invoke-CimMethod -InputObject $cs -MethodName UnjoinDomainOrWorkgroup `
             -Arguments @{Password=$null;UserName=$null;FJoinOptions=[uint32]0} | Out-Null
         Restart-Computer -Force
-    '
+    ' || true
     wait_for_reboot
     domain_joined=no
 fi
@@ -179,13 +185,15 @@ fi
 # reboot; we poll WinRM until it answers again.
 if [ "$domain_joined" = "no" ]; then
     echo "==> domain-joining bench to $REALM (will reboot)"
+    # || true: see broken-trust block above for the rationale —
+    # Restart-Computer races the WinRM TCP teardown.
     bench_local '
         $pwPlain = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("'"$PW_B64"'"))
         $pw = ConvertTo-SecureString $pwPlain -AsPlainText -Force
         $cred = New-Object System.Management.Automation.PSCredential("HVLAB\Administrator", $pw)
         Add-Computer -DomainName "'"$REALM"'" -Server "'"$DC_FQDN"'" -Credential $cred -Force
         Restart-Computer -Force
-    '
+    ' || true
     wait_for_reboot
 else
     echo "==> bench already domain-joined to $REALM with valid secure channel"
