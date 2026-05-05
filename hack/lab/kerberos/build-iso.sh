@@ -45,11 +45,45 @@ substitute "$SRC_DIR/autounattend.xml.tpl" "$STAGE/autounattend.xml" \
 substitute "$SRC_DIR/FirstLogon.ps1.tpl"   "$STAGE/FirstLogon.ps1"   \
            DSRM_PASSWORD  HVLAB_DSRM_PASSWORD
 
-# -V: volume label (the FirstLogon.ps1 search loop in autounattend.xml
-#     doesn't actually use the label, but a known label is helpful for
-#     manual mount/inspect).
-# -J -r: Joliet + Rock Ridge so Windows installer reads filenames with
-#        case preserved.
-xorriso -as mkisofs -quiet -V HVLABUNATT -J -r -o "$OUT" "$STAGE"
+# Well-formedness check on the rendered autounattend. Setup's parser
+# is lenient enough that malformed XML (e.g. `--` inside comments,
+# which XML 1.0 forbids) deserializes "successfully" but silently
+# drops elements at the binding step — see docs/spikes/09 for the
+# trace from the original install. xmllint catches the structural
+# issues offline so we don't burn another full install cycle.
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$STAGE/autounattend.xml"
+else
+    echo 'xmllint not on PATH; skipping autounattend XML validation' >&2
+fi
+
+# Flag intent (load-bearing -- WinPE's early-stage CD filesystem driver
+# reads ISO9660 base names, not Joliet/Rock Ridge aliases, when scanning
+# attached optical drives for Autounattend.xml. A naive `-J -r` ISO has
+# the canonical name as `AUTOUNAT.XML;1` (8.3 truncation) and the
+# autounattend scan misses it, dropping Setup into interactive mode).
+#
+#   -iso-level 4               : long filenames + lowercase preserved at
+#                                the base ISO9660 level (no 8.3 truncation,
+#                                no `;1` version suffix on the canonical name).
+#   -rock                      : Rock Ridge POSIX metadata, kept for
+#                                Linux mount/inspect compatibility.
+#   -untranslated-filenames    : preserves exact case of every filename
+#                                (forces "Autounattend.xml" through to
+#                                the base level).
+#   -disable-deep-relocation   : keeps the namespace flat; avoids xorriso
+#                                relocating deep dirs into RR_MOVED/.
+#   -V "AUTOUNATTEND"          : volume label (some Setup builds gate
+#                                on it; matches community-tooling pattern).
+#
+# Working flag set verified against Win11/Server 2022 -- see
+# https://blog.linux-ng.de/2025/01/02/build-unattended-windows-iso/
+xorriso -as mkisofs -quiet \
+    -iso-level 4 \
+    -rock \
+    -untranslated-filenames \
+    -disable-deep-relocation \
+    -V "AUTOUNATTEND" \
+    -o "$OUT" "$STAGE"
 
 echo "built $OUT"

@@ -204,6 +204,42 @@ tasks:
     cmds:
       - bash hack/lab/kerberos/build-iso.sh
 
+  lab:bench-setup:
+    desc: Domain-join the Hyper-V bench and wire up Kerberos portproxy + SPNs
+    summary: |
+      One-shot Phase 2 setup -- configures the bench's lab vNIC,
+      domain-joins it to hv.lab, registers the HTTP/ SPNs that the
+      WinRM listener needs, and stands up the netsh portproxy + Windows
+      Firewall rules that bridge the Mac (home LAN) to the DC (lab
+      vSwitch). Idempotent; re-runs against an already-joined bench
+      no-op the steps that have already been applied.
+
+      Triggers a reboot of the bench host on the first run (Add-Computer
+      requires it). Waits up to ~5 minutes for WinRM to come back.
+
+      Prereqs: `task lab:build-iso` + `terraform apply` in
+      examples/lab/kerberos/ have stood up the DC, and Get-ADDomain
+      returns hv.lab from inside the guest. Reads HYPERV_* and
+      HVLAB_ADMIN_PASSWORD from .env.local.
+    cmds:
+      - bash hack/lab/kerberos/bench-setup.sh
+
+  lab:client-setup:
+    desc: Configure this macOS workstation as a Kerberos client for HV.LAB
+    summary: |
+      One-shot Phase 3 setup -- installs MIT krb5 from brew, renders
+      ~/.config/krb5.conf, adds HV.LAB FQDNs to /etc/hosts (sudo, only
+      on first run), and runs kinit + kvno against the lab to validate
+      the full client path. Reads HVLAB_ADMIN_PASSWORD from .env.local
+      so re-runs after TGT expiry stay non-interactive.
+
+      Prereqs: Phase 1 (DC up) and Phase 2 (bench domain-joined,
+      portproxy + SPNs registered) per
+      examples/lab/kerberos/README.md. macOS-only (uname check).
+      sudo prompts once on first run for /etc/hosts.
+    cmds:
+      - bash hack/lab/kerberos/client-setup.sh
+
   # ---------- Docs ----------
 
   generate:
