@@ -277,16 +277,16 @@ Required:
 
 Optional:
 
-- `mac_address` (String) Static MAC address for this NIC, in either colon-separated (`AA:BB:CC:DD:EE:FF`), hyphen-separated (`AA-BB-CC-DD-EE-FF`), or unsigned-12-hex (`AABBCCDDEEFF`) form -- Hyper-V accepts all three. The stored value preserves whatever form you wrote; semantic equality folds separator presence and case so a refresh against Hyper-V's canonical unsigned-12-hex echo doesn't surface a phantom diff. Setting this disables Hyper-V's dynamic-MAC pool for this NIC and pins the address; leave unset to let Hyper-V auto-assign (state stores `null` in that case so unset config matches unset state).
+- `mac_address` (String) Static MAC address for this NIC, in either colon-separated (`AA:BB:CC:DD:EE:FF`), hyphen-separated (`AA-BB-CC-DD-EE-FF`), or unsigned-12-hex (`AABBCCDDEEFF`) form -- Hyper-V accepts all three. The stored value preserves whatever form you wrote; semantic equality folds separator presence and case so a refresh against Hyper-V's canonical unsigned-12-hex echo doesn't surface a phantom diff. Setting this disables Hyper-V's dynamic-MAC pool for this NIC and pins the address; leave unset (or write `mac_address = null`) to let Hyper-V auto-assign. State stores `null` for auto-assigned NICs so unset config matches unset state.
 
 Changes to this field cause the NIC to be detached and re-attached (same shape as `switch_name` updates), which requires the VM to be `Off` for the cmdlet to apply.
 
-**Reverting to dynamic MAC:** because this attribute is `Optional+Computed`, simply removing the line from your config keeps the previously-assigned static MAC in state (the framework treats an absent attribute as "keep what you have"). To revert a NIC to Hyper-V's dynamic-MAC pool you must explicitly assign `mac_address = null`, which surfaces as a planned change and triggers the detach + reattach.
+**Reverting to dynamic MAC:** remove the line from your config (or write `mac_address = null`); both forms surface as a planned change and trigger the detach + reattach.
 - `vlan_id` (Number) Access-mode VLAN ID for this NIC. Valid range is 1-4094. Leave unset (the default) for an untagged NIC; state stores `null` for untagged NICs rather than the sentinel `0` Hyper-V uses internally, so unset config matches unset state.
 
 Trunk and isolation VLAN modes are not currently supported -- only Access mode. Changes to this field cause the NIC to be detached and re-attached, requiring the VM to be `Off`.
 
-**Reverting to untagged:** because this attribute is `Optional+Computed`, simply removing the line from your config keeps the previously-assigned VLAN in state. To revert a NIC to untagged you must explicitly assign `vlan_id = null`, which surfaces as a planned change and triggers the detach + reattach.
+**Reverting to untagged:** remove the line from your config (or write `vlan_id = null`); both forms surface as a planned change and trigger the detach + reattach.
 
 Read-Only:
 
