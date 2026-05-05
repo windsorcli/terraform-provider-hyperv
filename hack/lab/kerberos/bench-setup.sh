@@ -157,13 +157,16 @@ if [ "$domain_joined" = "yes" ] && [ "$trust_ok" = "no" ]; then
     echo "==> force-unjoining to WORKGROUP (will reboot)..."
     # Remove-Computer needs to talk to the DC even with -Force (the
     # cmdlet always tries a clean unjoin), so it fails on a dead trust.
-    # WMI's UnjoinDomainOrWorkgroup with no creds is the documented
-    # offline-unjoin path: it just clears local state. We unconditionally
-    # ignore its return value because some non-zero codes mean "the DC
-    # rejected the unjoin" which is exactly the scenario we're handling.
+    # CIM's UnjoinDomainOrWorkgroup method with no creds is the
+    # documented offline-unjoin path: it just clears local state. We
+    # unconditionally ignore its return value because some non-zero
+    # codes mean "the DC rejected the unjoin" which is exactly the
+    # scenario we're handling. Get-WmiObject is unavailable on PS 7;
+    # CIM works on the 5.1 + 7.4 floor that CLAUDE.md mandates.
     bench_local '
-        $cs = Get-WmiObject Win32_ComputerSystem -EnableAllPrivileges
-        $cs.UnjoinDomainOrWorkgroup($null, $null, 0) | Out-Null
+        $cs = Get-CimInstance Win32_ComputerSystem
+        Invoke-CimMethod -InputObject $cs -MethodName UnjoinDomainOrWorkgroup `
+            -Arguments @{Password=$null;UserName=$null;FJoinOptions=[uint32]0} | Out-Null
         Restart-Computer -Force
     '
     wait_for_reboot
