@@ -29,8 +29,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	username := "Administrator"
-	realm := "HV.LAB"
+	username := os.Getenv("HVLAB_ADMIN_USERNAME")
+	if username == "" {
+		username = "Administrator"
+	}
+	realm := os.Getenv("HVLAB_KRB5_REALM")
+	if realm == "" {
+		realm = "HV.LAB"
+	}
 	password := os.Getenv("HVLAB_ADMIN_PASSWORD")
 	if password == "" {
 		fmt.Fprintln(os.Stderr, "HVLAB_ADMIN_PASSWORD not set")
