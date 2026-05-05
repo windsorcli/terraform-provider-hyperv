@@ -9,13 +9,11 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/config"
-	"github.com/jcmturner/gokrb5/v8/messages"
 )
 
 func main() {
@@ -46,13 +44,13 @@ func main() {
 	cl := client.NewWithPassword(username, realm, password, cfg,
 		client.DisablePAFXFAST(true), client.AssumePreAuthentication(true))
 	if err := cl.Login(); err != nil {
+		// gokrb5 wraps KRBError in krberror.Krberror, which has its own
+		// Error() but doesn't implement Unwrap() — so errors.As can't
+		// reach the inner KRBError to read ErrorCode/EText/EData. The
+		// formatted error message already contains the numeric code,
+		// symbolic name, and e-text in human-readable form, which is
+		// what a maintainer eyeballs anyway.
 		fmt.Fprintln(os.Stderr, "Login:", err)
-		var ke messages.KRBError
-		if errors.As(err, &ke) {
-			fmt.Fprintf(os.Stderr, "  KRB-ERROR code: %d\n", ke.ErrorCode)
-			fmt.Fprintf(os.Stderr, "  e-text: %q\n", ke.EText)
-			fmt.Fprintf(os.Stderr, "  e-data length: %d bytes\n", len(ke.EData))
-		}
 		os.Exit(1)
 	}
 	fmt.Println("Login OK; client principal:", cl.Credentials.CName().PrincipalNameString())
