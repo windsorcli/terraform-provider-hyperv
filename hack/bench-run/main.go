@@ -46,17 +46,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Open:", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "Close:", err)
+		}
+	}()
 	res, err := conn.RunScript(ctx, os.Args[1], nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "RunScript:", err)
 		os.Exit(1)
 	}
 	if len(res.Stdout) > 0 {
-		os.Stdout.Write(res.Stdout)
+		_, _ = os.Stdout.Write(res.Stdout)
 	}
 	if len(res.Stderr) > 0 {
-		os.Stderr.Write(res.Stderr)
+		_, _ = os.Stderr.Write(res.Stderr)
 	}
-	os.Exit(int(res.ExitCode))
+	os.Exit(res.ExitCode)
 }
