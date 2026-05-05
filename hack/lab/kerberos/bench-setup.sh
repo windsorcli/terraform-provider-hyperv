@@ -244,7 +244,14 @@ bench_local '
 
 # 6. Firewall rules. Open the proxy ports inbound on the bench's
 # external interface so the Mac's krb5 traffic actually reaches the
-# portproxy listener.
+# portproxy listener. -RemoteAddress LocalSubnet restricts source IPs
+# to the bench's directly-attached subnets (per-NIC), so the rule
+# accepts the Mac on the home LAN but rejects anything routed in from
+# the WAN. Profile-based scoping (-Profile Domain,Private) would block
+# the Mac entirely: the bench's external NIC is classified Public
+# because it can't reach the DC for hv.lab (the DC sits behind an
+# internal-only switch), and that NIC is exactly where the Mac's
+# traffic arrives.
 echo "==> configuring firewall rules"
 bench_local '
     foreach ($port in @(88, 389)) {
@@ -252,7 +259,7 @@ bench_local '
         if (Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue) {
             "    $name already present"
         } else {
-            New-NetFirewallRule -DisplayName $name -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow | Out-Null
+            New-NetFirewallRule -DisplayName $name -Direction Inbound -Protocol TCP -LocalPort $port -RemoteAddress LocalSubnet -Action Allow | Out-Null
             "    added $name"
         }
     }

@@ -100,8 +100,12 @@ through to the DC:
 netsh interface portproxy add v4tov4 listenport=88  listenaddress=0.0.0.0 connectport=88  connectaddress=10.10.0.10
 netsh interface portproxy add v4tov4 listenport=389 listenaddress=0.0.0.0 connectport=389 connectaddress=10.10.0.10
 
-New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-88'  -Direction Inbound -Protocol TCP -LocalPort 88  -Action Allow
-New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-389' -Direction Inbound -Protocol TCP -LocalPort 389 -Action Allow
+# -RemoteAddress LocalSubnet keeps these rules from accepting WAN
+# traffic without breaking the Mac on the home LAN. -Profile would
+# misfire here: the external NIC is classified Public (can't reach
+# the lab DC), so Domain,Private would block the Mac too.
+New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-88'  -Direction Inbound -Protocol TCP -LocalPort 88  -RemoteAddress LocalSubnet -Action Allow
+New-NetFirewallRule -DisplayName 'Lab-Kerberos-Proxy-389' -Direction Inbound -Protocol TCP -LocalPort 389 -RemoteAddress LocalSubnet -Action Allow
 ```
 
 ## Phase 3: Configure the dev workstation (macOS, one-time)
