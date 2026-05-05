@@ -25,9 +25,6 @@ BENCH_FQDN="hv-bench-01.hv.lab"
 BENCH_IP="${HYPERV_HOST:-192.168.3.77}"
 KRB5_CONF="$HOME/.config/krb5.conf"
 CCACHE="FILE:/tmp/krb5cc_$(id -u)"
-KINIT="/opt/homebrew/opt/krb5/bin/kinit"
-KLIST="/opt/homebrew/opt/krb5/bin/klist"
-KVNO="/opt/homebrew/opt/krb5/bin/kvno"
 
 # 1. MIT krb5 from brew. macOS ships Heimdal at /usr/bin/kinit, but it
 # defaults to API: (Keychain) ccache which jcmturner/gokrb5 can't read.
@@ -43,6 +40,14 @@ if ! brew list --formula krb5 >/dev/null 2>&1; then
 else
     echo "==> krb5 already installed"
 fi
+
+# Resolve the brew prefix at runtime: Apple Silicon installs under
+# /opt/homebrew, Intel under /usr/local. Cached once so we shell out
+# to `brew` only once instead of three times.
+KRB5_PREFIX="$(brew --prefix krb5)"
+KINIT="$KRB5_PREFIX/bin/kinit"
+KLIST="$KRB5_PREFIX/bin/klist"
+KVNO="$KRB5_PREFIX/bin/kvno"
 
 # 2. krb5.conf. Overwrite each run -- it's small, deterministic, and
 # the source of truth lives here. udp_preference_limit=1 forces TCP
