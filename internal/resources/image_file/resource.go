@@ -331,7 +331,16 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	// reconstructible from the file contents on disk. The bench has no
 	// concept of keep_on_destroy; the value lives only in Terraform
 	// state, so Read must round-trip what's already there.
-	newState := modelFromImageFile(f, state.URL, state.LocalPath, state.KeepOnDestroy)
+	//
+	// Normalize keep_on_destroy null -> false (the schema default) so
+	// the Import path (which calls Read with only the ID populated)
+	// produces state consistent with what Apply writes. Without this,
+	// ImportStateVerify fails with "keep_on_destroy: false vs <missing>".
+	keepOnDestroy := state.KeepOnDestroy
+	if keepOnDestroy.IsNull() {
+		keepOnDestroy = types.BoolValue(false)
+	}
+	newState := modelFromImageFile(f, state.URL, state.LocalPath, keepOnDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
