@@ -408,7 +408,6 @@ func resourceSchema() schema.Schema {
 						"mac_address": schema.StringAttribute{
 							CustomType: mactype.Type,
 							Optional:   true,
-							Computed:   true,
 							MarkdownDescription: "Static MAC address for this NIC, in either " +
 								"colon-separated (`AA:BB:CC:DD:EE:FF`), hyphen-separated " +
 								"(`AA-BB-CC-DD-EE-FF`), or unsigned-12-hex (`AABBCCDDEEFF`) " +
@@ -418,19 +417,15 @@ func resourceSchema() schema.Schema {
 								"Hyper-V's canonical unsigned-12-hex echo doesn't surface " +
 								"a phantom diff. Setting this disables Hyper-V's dynamic-" +
 								"MAC pool for this NIC and pins the address; leave unset " +
-								"to let Hyper-V auto-assign (state stores `null` in that " +
-								"case so unset config matches unset state).\n\n" +
+								"(or write `mac_address = null`) to let Hyper-V auto-" +
+								"assign. State stores `null` for auto-assigned NICs so " +
+								"unset config matches unset state.\n\n" +
 								"Changes to this field cause the NIC to be detached and " +
 								"re-attached (same shape as `switch_name` updates), which " +
 								"requires the VM to be `Off` for the cmdlet to apply.\n\n" +
-								"**Reverting to dynamic MAC:** because this attribute is " +
-								"`Optional+Computed`, simply removing the line from your " +
-								"config keeps the previously-assigned static MAC in state " +
-								"(the framework treats an absent attribute as \"keep what " +
-								"you have\"). To revert a NIC to Hyper-V's dynamic-MAC pool " +
-								"you must explicitly assign `mac_address = null`, which " +
-								"surfaces as a planned change and triggers the detach + " +
-								"reattach.",
+								"**Reverting to dynamic MAC:** remove the line from your " +
+								"config (or write `mac_address = null`); both forms surface " +
+								"as a planned change and trigger the detach + reattach.",
 							Validators: []validator.String{
 								stringvalidator.RegexMatches(macAddressRegex, "must be a valid "+
 									"MAC address (e.g. `AA:BB:CC:DD:EE:FF`, `AA-BB-CC-DD-EE-FF`, "+
@@ -439,7 +434,6 @@ func resourceSchema() schema.Schema {
 						},
 						"vlan_id": schema.Int64Attribute{
 							Optional: true,
-							Computed: true,
 							MarkdownDescription: "Access-mode VLAN ID for this NIC. Valid " +
 								"range is 1-4094. Leave unset (the default) for an untagged " +
 								"NIC; state stores `null` for untagged NICs rather than the " +
@@ -448,12 +442,9 @@ func resourceSchema() schema.Schema {
 								"Trunk and isolation VLAN modes are not currently supported " +
 								"-- only Access mode. Changes to this field cause the NIC to " +
 								"be detached and re-attached, requiring the VM to be `Off`.\n\n" +
-								"**Reverting to untagged:** because this attribute is " +
-								"`Optional+Computed`, simply removing the line from your " +
-								"config keeps the previously-assigned VLAN in state. To " +
-								"revert a NIC to untagged you must explicitly assign " +
-								"`vlan_id = null`, which surfaces as a planned change and " +
-								"triggers the detach + reattach.",
+								"**Reverting to untagged:** remove the line from your config " +
+								"(or write `vlan_id = null`); both forms surface as a planned " +
+								"change and trigger the detach + reattach.",
 							Validators: []validator.Int64{
 								int64validator.Between(1, 4094),
 							},
