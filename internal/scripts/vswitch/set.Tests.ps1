@@ -63,6 +63,26 @@ Describe 'Set-HypervSwitch' {
             Should -Invoke Get-VMSwitch -Times 1 -Exactly
         }
 
+        It 'Internal + AllowManagementOS rejects (External-only flag, symmetric with new.ps1)' {
+            # Set-VMSwitch *would* accept -AllowManagementOS for an Internal
+            # switch at the cmdlet level (parameter set ChangeManagementOS
+            # matches), but setting it to $false on an Internal switch
+            # silently converts it to Private -- a switch-type change that
+            # would surface as state drift on the next refresh. Reject at
+            # the script layer to keep the contract symmetric with new.ps1
+            # ("AllowManagementOS is External-only") and to surface the
+            # mismatch with a clear attribute-anchored error rather than
+            # action-at-a-distance type churn.
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample -SwitchType 'Internal' }
+
+            { Set-HypervSwitch -Name 'int0' -SwitchType 'Internal' -AllowManagementOS $true } |
+                Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Internal''*'
+
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+            Should -Invoke Get-VMSwitch -Times 1 -Exactly
+        }
+
         It 'throws ObjectNotFound when the switch is missing (skips Set-VMSwitch, symmetric with remove.ps1)' {
             # Asserts on CategoryInfo.Category because that's what the Go side
             # maps to ErrNotFound. ErrorId drift wouldn't change behavior; a

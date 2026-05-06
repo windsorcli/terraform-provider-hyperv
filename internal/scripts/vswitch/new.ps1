@@ -39,15 +39,22 @@ function New-HypervSwitch {
     else {
         $newArgs.SwitchType = $SwitchType
     }
-    # AllowManagementOS is meaningful only for External/Internal -- New-VMSwitch
-    # rejects it on Private with "parameter is not applicable given the current
-    # switch type" which would surface as ErrPSExecution. Gate here so the
-    # contract violation produces a clear PS error instead.
-    if ($null -ne $AllowManagementOS -and $SwitchType -ne 'Private') {
+    # AllowManagementOS lives on New-VMSwitch's NetAdapterName /
+    # NetAdapterInterfaceDescription parameter sets (External-only). The
+    # SwitchType parameter set used for Internal/Private does NOT accept
+    # the flag -- forwarding it forces multi-set ambiguity and PowerShell
+    # errors with "Parameter set cannot be resolved using the specified
+    # named parameters." Internal switches always have a host vNIC
+    # implicitly (that's what makes them Internal vs Private), so there's
+    # nothing meaningful to set anyway. Gate the cmdlet param to External;
+    # throw a clear contract error if the caller passed it for any other
+    # type so the error attribute-anchors at the schema layer instead of
+    # surfacing the cmdlet's opaque diagnostic.
+    if ($null -ne $AllowManagementOS -and $SwitchType -eq 'External') {
         $newArgs.AllowManagementOS = [bool]$AllowManagementOS
     }
-    elseif ($null -ne $AllowManagementOS -and $SwitchType -eq 'Private') {
-        throw "allow_management_os is not valid for switch_type 'Private' (External/Internal only)"
+    elseif ($null -ne $AllowManagementOS) {
+        throw "allow_management_os is not valid for switch_type '$SwitchType' (External only)"
     }
     if ($PSBoundParameters.ContainsKey('Notes')) {
         $newArgs.Notes = $Notes

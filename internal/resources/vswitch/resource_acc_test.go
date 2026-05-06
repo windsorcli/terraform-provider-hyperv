@@ -128,3 +128,59 @@ resource "hyperv_virtual_switch" "test" {
 }
 `, name, notes)
 }
+
+// TestAcc_VirtualSwitch_internal exercises the Internal-switch create
+// path. Distinct from the Private scenario in TestAcc_VirtualSwitch_basic
+// because Internal switches go through a different New-VMSwitch
+// parameter set (one that does NOT accept -AllowManagementOS) -- a
+// regression that forwards AllowManagementOS to the cmdlet for Internal
+// switches surfaces here as a "Parameter set cannot be resolved" error
+// at apply time.
+//
+// Why this test didn't exist before: the original TestAcc_VirtualSwitch_basic
+// used Private only, and the Pester unit tests mock New-VMSwitch so the
+// parameter-set ambiguity is invisible at the script-test layer. The
+// bug only surfaces against a real cmdlet on a real host.
+//
+// Internal switches need no host NIC binding, so the test is independent
+// of bench network topology -- same property as the Private scenario.
+func TestAcc_VirtualSwitch_internal(t *testing.T) {
+	name := acctest.RandomName("vswitch-internal")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_virtual_switch", client.GetVMSwitch),
+		Steps: []resource.TestStep{
+			{
+				Config: vswitchInternalConfig(name),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("name"),
+						knownvalue.StringExact(name),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_virtual_switch.test",
+						tfjsonpath.New("switch_type"),
+						knownvalue.StringExact("Internal"),
+					),
+				},
+			},
+		},
+	})
+}
+
+// vswitchInternalConfig is the smallest valid HCL for an Internal switch.
+// allow_management_os is intentionally omitted -- the script-layer guard
+// rejects AllowManagementOS for non-External switches, and Internal
+// switches always have a host vNIC implicitly anyway.
+func vswitchInternalConfig(name string) string {
+	return fmt.Sprintf(`
+resource "hyperv_virtual_switch" "test" {
+  name        = %q
+  switch_type = "Internal"
+}
+`, name)
+}
