@@ -3,7 +3,12 @@
 package image_file //nolint:revive // underscore in package name mirrors the script directory it wraps.
 
 import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
@@ -38,7 +43,7 @@ import (
 type Model struct {
 	ID              pathtype.Path `tfsdk:"id"`
 	DestinationPath pathtype.Path `tfsdk:"destination_path"`
-	URL             *URLConfig    `tfsdk:"url"`
+	URL             types.Object  `tfsdk:"url"`
 	LocalPath       pathtype.Path `tfsdk:"local_path"`
 	Sha256          types.String  `tfsdk:"sha256"`
 	SizeBytes       types.Int64   `tfsdk:"size_bytes"`
@@ -48,7 +53,49 @@ type Model struct {
 // URLConfig is the user-supplied URL-mode source configuration. Both fields
 // are required when the block is present; the schema-layer Required flag
 // enforces this without a separate config validator.
+//
+// The Model carries `url` as types.Object rather than *URLConfig because
+// the framework's pointer-to-struct shape can represent null (nil) but
+// not unknown -- and unknown is exactly what the framework marshals
+// when the attribute is driven from a parent variable that hasn't
+// resolved yet (e.g. each.value.url before for_each materializes).
+// types.Object handles all three states (known/null/unknown), and the
+// helpers below give resource code typed access when the value is known.
 type URLConfig struct {
 	URL      types.String `tfsdk:"url"`
 	Checksum types.String `tfsdk:"checksum"`
+}
+
+// URLAttrTypes mirrors the SingleNestedAttribute "url" shape in
+// schema.go. Used by types.Object construction (ObjectValueFrom) and
+// decode (Object.As).
+var URLAttrTypes = map[string]attr.Type{
+	"url":      types.StringType,
+	"checksum": types.StringType,
+}
+
+// URLConfig returns the decoded user-supplied URL config, or nil if
+// the model's URL is null or unknown. Callers that need to distinguish
+// null from unknown should inspect m.URL directly via IsNull / IsUnknown.
+func (m *Model) URLConfig(ctx context.Context) (*URLConfig, diag.Diagnostics) {
+	if m.URL.IsNull() || m.URL.IsUnknown() {
+		return nil, nil
+	}
+	var u URLConfig
+	diags := m.URL.As(ctx, &u, basetypes.ObjectAsOptions{})
+	if diags.HasError() {
+		return nil, diags
+	}
+	return &u, nil
+}
+
+// URLObjectFromConfig builds a types.Object from a *URLConfig. A nil
+// pointer becomes a null Object (matching the "URL not set" semantics
+// of the previous *URLConfig field). Used by modelFromImageFile and
+// any test code that constructs a Model with a known URL block.
+func URLObjectFromConfig(ctx context.Context, u *URLConfig) (types.Object, diag.Diagnostics) {
+	if u == nil {
+		return types.ObjectNull(URLAttrTypes), nil
+	}
+	return types.ObjectValueFrom(ctx, URLAttrTypes, u)
 }

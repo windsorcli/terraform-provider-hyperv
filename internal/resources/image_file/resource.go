@@ -87,7 +87,7 @@ func (v urlAndLocalPathConflictValidator) ValidateResource(ctx context.Context, 
 // are set.
 func (v urlAndLocalPathConflictValidator) validate(data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
-	urlSet := data.URL != nil
+	urlSet := !data.URL.IsNull() && !data.URL.IsUnknown()
 	localPathSet := !data.LocalPath.IsNull() && !data.LocalPath.IsUnknown()
 	if urlSet && localPathSet {
 		diags.AddAttributeError(
@@ -212,22 +212,28 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 
 	dest := plan.DestinationPath.ValueString()
 
+	urlConfig, diags := plan.URLConfig(ctx)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	var (
 		f   *hyperv.ImageFile
 		err error
 	)
 	switch {
-	case plan.URL != nil:
+	case urlConfig != nil:
 		tflog.Debug(ctx, "creating hyperv_image_file (url mode)", map[string]any{
 			"destination_path": dest,
-			"url":              sanitizeURLForLog(plan.URL.URL.ValueString()),
+			"url":              sanitizeURLForLog(urlConfig.URL.ValueString()),
 		})
 		// The schema validator pins the "sha256:<hex>" form; strip the prefix
 		// here so the typed client receives the raw hex the wire contract expects.
 		f, err = r.client.NewImageFileFromURL(ctx, hyperv.NewImageFileFromURLInput{
 			DestinationPath: dest,
-			URL:             plan.URL.URL.ValueString(),
-			ExpectedSha256:  stripSha256Prefix(plan.URL.Checksum.ValueString()),
+			URL:             urlConfig.URL.ValueString(),
+			ExpectedSha256:  stripSha256Prefix(urlConfig.Checksum.ValueString()),
 		})
 		if err != nil {
 			if errors.Is(err, hyperv.ErrChecksumMismatch) {
@@ -391,7 +397,9 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			resp.Diagnostics.AddError("Update hyperv_image_file failed (local_path mode)", err.Error())
 			return
 		}
-		newState := modelFromImageFile(f, nil, plan.LocalPath, plan.KeepOnDestroy)
+		// In local_path mode plan.URL is null (mutually exclusive); pass
+		// it through unchanged so the round-trip preserves that nullness.
+		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.KeepOnDestroy)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -421,7 +429,7 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
-	hostPathMode := state.URL == nil && (state.LocalPath.IsNull() || state.LocalPath.IsUnknown())
+	hostPathMode := state.URL.IsNull() && (state.LocalPath.IsNull() || state.LocalPath.IsUnknown())
 	if hostPathMode {
 		tflog.Info(ctx, "host_path-mode hyperv_image_file; skipping host-side delete", map[string]any{
 			"destination_path": state.DestinationPath.ValueString(),
@@ -465,12 +473,17 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // and localPath are caller-supplied because both are user intent
 // (config/plan) and neither is reconstructible from the file on disk.
 //
+// URL is passed through as types.Object so the round-trip preserves
+// whatever state the caller holds (known/null/unknown). The Object
+// shape on the receiving Model mirrors what the framework expects
+// for the SingleNestedAttribute "url" declared in schema.go.
+//
 // Path-typed attributes (id, destination_path) wrap the cmdlet's
 // canonical-form return value verbatim. Slash-style and case
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals; we don't need to preserve
 // the user's prior representation here.
-func modelFromImageFile(f *hyperv.ImageFile, url *URLConfig, localPath pathtype.Path, keepOnDestroy types.Bool) Model {
+func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtype.Path, keepOnDestroy types.Bool) Model {
 	return Model{
 		ID:              pathtype.NewPathValue(f.Path),
 		DestinationPath: pathtype.NewPathValue(f.Path),
