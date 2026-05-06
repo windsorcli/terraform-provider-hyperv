@@ -227,6 +227,7 @@ To attach a debugger, build with `task build` and run the provider with `-debug`
 - **PowerShell startup latency.** Each operation pays the cost of a `pwsh`/`powershell.exe` invocation, dominated by module load. Terraform's default 10-way parallelism absorbs this for typical fleets; persistent-runspace mode is a stretch-goal for >100-resource deployments.
 - **Cancel-mid-cmdlet may leave partial state.** A `New-VM` interrupted after disk creation but before VM registration will require either a re-apply or a manual cleanup.
 - **Differencing parent paths surface errors at apply time, not plan time.** `New-VHD` validates the parent path; the provider maps the cmdlet error to an attribute-level diagnostic.
+- **WinRM + Kerberos: ccache mode only.** Password-mode (`auth = "kerberos"` with `password`) is blocked upstream — `masterzen/winrm` passes `client.AssumePreAuthentication(true)` to `gokrb5`, which makes the AS-REQ skip the PA-ETYPE-INFO2 probe and use a default salt that doesn't match what AD has registered for the account. The result is `KDC_ERR_PREAUTH_FAILED` on what would otherwise be a valid credential. Use ccache mode (`kerberos.ccache_path` / `HYPERV_KRB5_CCACHE_PATH`) pointing at a `kinit`-obtained TGT instead. See [`docs/contributing/kerberos.md`](docs/contributing/kerberos.md) for the diagnostic and upstream-issue tracking.
 
 ## Contributing
 
