@@ -62,16 +62,18 @@ function Set-HypervSwitch {
     }
 
     # Symmetric with new.ps1: AllowManagementOS is meaningful only for
-    # External switches. SwitchType is optional in the set contract; when
-    # the caller supplies it (e.g. populated from prior state by the
-    # Go-side Update), an invalid combination produces a clear error
-    # here instead of either a parameter-set ambiguity (Internal) or
-    # Set-VMSwitch's opaque "parameter is not applicable" message
-    # (Private). $SwitchType truthy means non-empty non-null; an
-    # absent SwitchType (the default-empty string) makes the guard
-    # no-op and the cmdlet error surfaces as before.
-    if ($null -ne $AllowManagementOS -and $SwitchType -and $SwitchType -ne 'External') {
-        throw "allow_management_os is not valid for switch_type '$SwitchType' (External only)"
+    # External switches. We read the host-side truth from $existing
+    # (populated by Get-VMSwitch above) rather than the caller-supplied
+    # $SwitchType so the guard fires unconditionally. If we trusted the
+    # caller hint, an Update payload that omits switch_type would
+    # short-circuit the check and pass -AllowManagementOS=$false through
+    # to Set-VMSwitch on a real Internal switch -- which silently
+    # converts it to Private (a type mutation with no error, surfacing
+    # only as state drift on the next refresh). $existing.SwitchType is
+    # an enum; ToString() matches the convention get.ps1 uses for the
+    # canonical projection.
+    if ($null -ne $AllowManagementOS -and $existing.SwitchType.ToString() -ne 'External') {
+        throw "allow_management_os is not valid for switch_type '$($existing.SwitchType)' (External only)"
     }
 
     $setArgs = @{
