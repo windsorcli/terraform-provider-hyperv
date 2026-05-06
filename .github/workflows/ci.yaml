@@ -62,6 +62,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # terraform CLI is needed by resource.UnitTest validate-time
+      # regression tests (e.g. TestValidate_URLDrivenByVariable). The
+      # framework spins up a real terraform process to drive the plan
+      # phase; without the CLI on PATH those tests fail at setup.
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_wrapper: false
       - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
@@ -86,6 +93,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # terraform CLI is needed by resource.UnitTest validate-time
+      # regression tests; same rationale as the Linux job above.
+      - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_wrapper: false
       - uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2.0.0
         with:
           version: 3.x
