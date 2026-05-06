@@ -1,6 +1,7 @@
 package image_file
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +13,22 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
+
+// mustURLObject builds a known types.Object for the URL nested attribute
+// from raw url + checksum strings. Test fixture helper -- panics via t.Fatal
+// on a diag, since URL construction with two known strings can't fail in
+// practice, but we surface the error to keep the test honest.
+func mustURLObject(t *testing.T, url, checksum string) types.Object {
+	t.Helper()
+	obj, diags := URLObjectFromConfig(context.Background(), &URLConfig{
+		URL:      types.StringValue(url),
+		Checksum: types.StringValue(checksum),
+	})
+	if diags.HasError() {
+		t.Fatalf("URLObjectFromConfig(%q, %q): %v", url, checksum, diags)
+	}
+	return obj
+}
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
 // package-qualified name contains `keyword`. Same helper shape as the
@@ -274,12 +291,15 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 		SizeBytes: 5368709120,
 		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	}
-	url := &URLConfig{
+	urlObj, diags := URLObjectFromConfig(context.Background(), &URLConfig{
 		URL:      types.StringValue("https://example.com/foo.vhdx"),
 		Checksum: types.StringValue("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"),
+	})
+	if diags.HasError() {
+		t.Fatalf("URLObjectFromConfig: %v", diags)
 	}
 
-	got := modelFromImageFile(f, url, pathtype.NewPathNull(), types.BoolNull())
+	got := modelFromImageFile(f, urlObj, pathtype.NewPathNull(), types.BoolNull())
 
 	if got.ID.ValueString() != f.Path {
 		t.Errorf("ID = %q, want %q", got.ID.ValueString(), f.Path)
@@ -293,11 +313,15 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 	if got.SizeBytes.ValueInt64() != f.SizeBytes {
 		t.Errorf("SizeBytes = %d, want %d", got.SizeBytes.ValueInt64(), f.SizeBytes)
 	}
-	if got.URL == nil {
-		t.Fatal("URL = nil; caller-supplied url block must be preserved")
+	gotURL, diags := got.URLConfig(context.Background())
+	if diags.HasError() {
+		t.Fatalf("got.URLConfig: %v", diags)
 	}
-	if got.URL.URL.ValueString() != "https://example.com/foo.vhdx" {
-		t.Errorf("URL.URL = %q, want passthrough", got.URL.URL.ValueString())
+	if gotURL == nil {
+		t.Fatal("URLConfig() = nil; caller-supplied url block must be preserved")
+	}
+	if gotURL.URL.ValueString() != "https://example.com/foo.vhdx" {
+		t.Errorf("URLConfig().URL = %q, want passthrough", gotURL.URL.ValueString())
 	}
 }
 
@@ -310,10 +334,10 @@ func TestModelFromImageFile_HostPathModePreservesNilURL(t *testing.T) {
 		Sha256:    "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
-	got := modelFromImageFile(f, nil, pathtype.NewPathNull(), types.BoolNull())
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathNull(), types.BoolNull())
 
-	if got.URL != nil {
-		t.Errorf("URL = %+v, want nil (host_path mode)", got.URL)
+	if !got.URL.IsNull() {
+		t.Errorf("URL = %+v, want null Object (host_path mode)", got.URL)
 	}
 	if !got.LocalPath.IsNull() {
 		t.Errorf("LocalPath = %v, want null (host_path mode)", got.LocalPath)
@@ -335,10 +359,10 @@ func TestModelFromImageFile_PreservesLocalPath(t *testing.T) {
 	}
 	localPath := pathtype.NewPathValue("/Users/me/dist/foo.iso")
 
-	got := modelFromImageFile(f, nil, localPath, types.BoolNull())
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), localPath, types.BoolNull())
 
-	if got.URL != nil {
-		t.Errorf("URL = %+v, want nil (local_path mode)", got.URL)
+	if !got.URL.IsNull() {
+		t.Errorf("URL = %+v, want null Object (local_path mode)", got.URL)
 	}
 	if got.LocalPath.ValueString() != "/Users/me/dist/foo.iso" {
 		t.Errorf("LocalPath = %q, want %q", got.LocalPath.ValueString(), "/Users/me/dist/foo.iso")
@@ -362,7 +386,7 @@ func TestModelFromImageFile_PreservesKeepOnDestroy(t *testing.T) {
 		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	}
 
-	got := modelFromImageFile(f, nil, pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.BoolValue(true))
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.BoolValue(true))
 
 	if got.KeepOnDestroy.IsNull() {
 		t.Fatal("KeepOnDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
@@ -461,10 +485,7 @@ func TestUrlAndLocalPathConflictValidator(t *testing.T) {
 		{
 			name: "both url and local_path set rejects",
 			model: Model{
-				URL: &URLConfig{
-					URL:      types.StringValue("https://example.com/foo.iso"),
-					Checksum: types.StringValue("sha256:abc"),
-				},
+				URL:       mustURLObject(t, "https://example.com/foo.iso", "sha256:abc"),
 				LocalPath: pathtype.NewPathValue("/tmp/foo.iso"),
 			},
 			wantError: true,
@@ -472,10 +493,7 @@ func TestUrlAndLocalPathConflictValidator(t *testing.T) {
 		{
 			name: "only url set allows",
 			model: Model{
-				URL: &URLConfig{
-					URL:      types.StringValue("https://example.com/foo.iso"),
-					Checksum: types.StringValue("sha256:abc"),
-				},
+				URL:       mustURLObject(t, "https://example.com/foo.iso", "sha256:abc"),
 				LocalPath: pathtype.NewPathNull(),
 			},
 			wantError: false,
@@ -483,7 +501,7 @@ func TestUrlAndLocalPathConflictValidator(t *testing.T) {
 		{
 			name: "only local_path set allows",
 			model: Model{
-				URL:       nil,
+				URL:       types.ObjectNull(URLAttrTypes),
 				LocalPath: pathtype.NewPathValue("/tmp/foo.iso"),
 			},
 			wantError: false,
@@ -491,7 +509,7 @@ func TestUrlAndLocalPathConflictValidator(t *testing.T) {
 		{
 			name: "neither set allows (host_path mode)",
 			model: Model{
-				URL:       nil,
+				URL:       types.ObjectNull(URLAttrTypes),
 				LocalPath: pathtype.NewPathNull(),
 			},
 			wantError: false,
@@ -499,11 +517,16 @@ func TestUrlAndLocalPathConflictValidator(t *testing.T) {
 		{
 			name: "unknown local_path treated as unset (deferred dependency)",
 			model: Model{
-				URL: &URLConfig{
-					URL:      types.StringValue("https://example.com/foo.iso"),
-					Checksum: types.StringValue("sha256:abc"),
-				},
+				URL:       mustURLObject(t, "https://example.com/foo.iso", "sha256:abc"),
 				LocalPath: pathtype.NewPathUnknown(),
+			},
+			wantError: false,
+		},
+		{
+			name: "unknown url treated as unset (deferred dependency)",
+			model: Model{
+				URL:       types.ObjectUnknown(URLAttrTypes),
+				LocalPath: pathtype.NewPathValue("/tmp/foo.iso"),
 			},
 			wantError: false,
 		},
