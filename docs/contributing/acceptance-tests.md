@@ -57,18 +57,25 @@ A typical run looks like this. Override at the shell rather than editing `.env.l
 #    lifetime is). The lab's task lab:client-setup automates this.
 kinit Administrator@HV.LAB
 
-# 2. Run the bar with the Kerberos overrides.
+# 2. Run the bar with the Kerberos overrides. The HYPERV_* prefixes
+#    here become a single command-prefix env block for `go test`; do
+#    NOT add inline `# comments` after the trailing backslashes --
+#    bash needs the backslash immediately before the newline for the
+#    continuation to chain. Comments belong on their own `#` lines.
 set -a; source .env.local; set +a
-unset HYPERV_PASSWORD                                # mutually exclusive with ccache
+# Mutually exclusive with HYPERV_KRB5_CCACHE_PATH; unset before adding the kerberos overrides.
+unset HYPERV_PASSWORD
+# HYPERV_HOST must be the FQDN, not the IP -- SPN is HTTP/<host>.
+# HYPERV_WINRM_INSECURE skips TLS verify; needed when the bench has a self-signed cert.
 HYPERV_BACKEND=winrm \
-HYPERV_HOST=hv-bench-01.hv.lab \                     # FQDN, not IP -- SPN is HTTP/<host>
-HYPERV_PORT=5986 \
-HYPERV_WINRM_INSECURE=true \                         # if the bench has a self-signed cert
-HYPERV_WINRM_AUTH=kerberos \
-HYPERV_KRB5_REALM=HV.LAB \
-HYPERV_KRB5_CCACHE_PATH=/tmp/krb5cc_$(id -u) \
-KRB5_CONFIG=$HOME/.config/krb5.conf \
-TF_ACC=1 go test -v -timeout 120m -run '^TestAcc' ./...
+    HYPERV_HOST=hv-bench-01.hv.lab \
+    HYPERV_PORT=5986 \
+    HYPERV_WINRM_INSECURE=true \
+    HYPERV_WINRM_AUTH=kerberos \
+    HYPERV_KRB5_REALM=HV.LAB \
+    HYPERV_KRB5_CCACHE_PATH=/tmp/krb5cc_$(id -u) \
+    KRB5_CONFIG=$HOME/.config/krb5.conf \
+    TF_ACC=1 go test -v -timeout 120m -run '^TestAcc' ./...
 ```
 
 The TGT must remain valid for the duration of the run; `task test:acc` defaults to a 120-minute timeout, so a freshly-issued ticket with the typical 10-hour AD lifetime is plenty. If your KDC's lifetime is shorter, run `kinit` again before kicking off the bar.
