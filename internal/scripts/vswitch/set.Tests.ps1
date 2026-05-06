@@ -100,6 +100,12 @@ Describe 'Set-HypervSwitch' {
                 Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Internal''*'
 
             Should -Invoke Set-VMSwitch -Times 0 -Exactly
+            # Pin that Get-VMSwitch was actually called -- the throw must
+            # fire BECAUSE $existing.SwitchType was read, not from an
+            # earlier parameter validator. Without this, a regression
+            # that rejects up-front would still pass the test while
+            # silently breaking the "host-side truth wins" invariant.
+            Should -Invoke Get-VMSwitch -Times 1 -Exactly
         }
 
         It 'throws ObjectNotFound when the switch is missing (skips Set-VMSwitch, symmetric with remove.ps1)' {
