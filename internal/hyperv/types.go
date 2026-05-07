@@ -109,6 +109,25 @@ type NewImageFileFromLocalPathInput struct {
 	LocalPath       string `json:"-"`
 }
 
+// IsoVolume is the canonical read shape for an ISO9660 volume the provider
+// has placed on the host. Identical to ImageFile in shape; the alias exists
+// so callers can talk in the resource's vocabulary without leaking the
+// shared script-result struct outward.
+type IsoVolume = ImageFile
+
+// NewIsoVolumeInput is the public input shape for the iso_volume create /
+// update flow. The resource layer assembles the deterministic ISO bytes
+// via internal/resources/iso_volume.BuildISO and passes them in via Body;
+// the typed client hashes, writes to a runner-side tmpfile, streams to a
+// sibling .part of DestinationPath, and dispatches image_file/new.ps1 in
+// local_path mode for the verify-and-rename. Body never crosses the wire
+// as JSON -- only the staged tmpfile bytes do, identically to the URL-
+// compression flow's runner-pipelined path.
+type NewIsoVolumeInput struct {
+	DestinationPath string
+	Body            []byte
+}
+
 // VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.
 // SizeBytes is the declared logical size; FileSizeBytes is the actual
 // on-disk size (smaller than SizeBytes for dynamic and differencing).
