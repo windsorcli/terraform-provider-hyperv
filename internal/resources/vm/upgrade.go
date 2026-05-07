@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -75,7 +76,7 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				if resp.Diagnostics.HasError() {
 					return
 				}
-				upgraded := upgradeV0ToV1(prior)
+				upgraded := upgradeV0ToV1(ctx, prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -87,7 +88,7 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				if resp.Diagnostics.HasError() {
 					return
 				}
-				upgraded := upgradeV1ToV2(prior)
+				upgraded := upgradeV1ToV2(ctx, prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -99,7 +100,7 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				if resp.Diagnostics.HasError() {
 					return
 				}
-				upgraded := upgradeV2ToV3(prior)
+				upgraded := upgradeV2ToV3(ctx, prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -111,7 +112,7 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				if resp.Diagnostics.HasError() {
 					return
 				}
-				upgraded := upgradeV3ToV5(prior)
+				upgraded := upgradeV3ToV5(ctx, prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -123,7 +124,7 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				if resp.Diagnostics.HasError() {
 					return
 				}
-				upgraded := upgradeV4ToV5(prior)
+				upgraded := upgradeV4ToV5(ctx, prior)
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
@@ -618,7 +619,7 @@ func priorSchemaV4() schema.Schema {
 // migrates with both fields null. The next refresh populates them
 // from the host (mac_address only when the NIC has DynamicMacAddressEnabled
 // false; vlan_id only when AccessVlanId > 0).
-func upgradeV4ToV5(prior priorModelV4) Model {
+func upgradeV4ToV5(ctx context.Context, prior priorModelV4) Model {
 	return Model{
 		ID:              prior.ID,
 		Name:            prior.Name,
@@ -627,8 +628,8 @@ func upgradeV4ToV5(prior priorModelV4) Model {
 		Memory:          prior.Memory,
 		HardDiskDrives:  prior.HardDiskDrives,
 		NetworkAdapters: expandPriorNICsV4(prior.NetworkAdapters),
-		DvdDrives:       prior.DvdDrives,
-		BootOrder:       prior.BootOrder,
+		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
+		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
 		Notes:           prior.Notes,
 		State:           prior.State,
@@ -637,13 +638,35 @@ func upgradeV4ToV5(prior priorModelV4) Model {
 	}
 }
 
+// mustDvdDriveListFromPrior wraps DvdDriveListFromSlice for the
+// upgrade path. List building can fail only on a programming-error
+// type mismatch; panic rather than threading diags through every
+// upgrader signature for a contract guarantee that holds statically.
+func mustDvdDriveListFromPrior(ctx context.Context, prior []DvdDriveModel) types.List {
+	list, diags := DvdDriveListFromSlice(ctx, prior)
+	if diags.HasError() {
+		panic(fmt.Sprintf("DvdDriveListFromSlice (upgrade): %v", diags))
+	}
+	return list
+}
+
+// mustBootOrderListFromPrior is the BootOrder twin of
+// mustDvdDriveListFromPrior.
+func mustBootOrderListFromPrior(ctx context.Context, prior []BootOrderEntryModel) types.List {
+	list, diags := BootOrderListFromSlice(ctx, prior)
+	if diags.HasError() {
+		panic(fmt.Sprintf("BootOrderListFromSlice (upgrade): %v", diags))
+	}
+	return list
+}
+
 // upgradeV3ToV5 maps a v3 state struct into the current Model. The
 // shape changes layered in are network_adapter[].ip_addresses (v4)
 // plus network_adapter[].mac_address and .vlan_id (v5). v3 state
 // files don't carry any of those, so each NIC migrates with an empty
 // ip_addresses list and null mac_address / vlan_id; the next refresh
 // populates from the host. Pure function for direct unit testing.
-func upgradeV3ToV5(prior priorModelV3) Model {
+func upgradeV3ToV5(ctx context.Context, prior priorModelV3) Model {
 	return Model{
 		ID:              prior.ID,
 		Name:            prior.Name,
@@ -652,8 +675,8 @@ func upgradeV3ToV5(prior priorModelV3) Model {
 		Memory:          prior.Memory,
 		HardDiskDrives:  prior.HardDiskDrives,
 		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
-		DvdDrives:       prior.DvdDrives,
-		BootOrder:       prior.BootOrder,
+		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
+		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
 		Notes:           prior.Notes,
 		State:           prior.State,
@@ -671,7 +694,7 @@ func upgradeV3ToV5(prior priorModelV3) Model {
 // without storing a phantom value the user never chose. The user
 // opts into "graceful" by editing the config. Pure function for
 // direct unit testing.
-func upgradeV1ToV2(prior priorModelV1) Model {
+func upgradeV1ToV2(ctx context.Context, prior priorModelV1) Model {
 	var state *StateModel
 	if prior.State != nil {
 		state = &StateModel{
@@ -688,8 +711,8 @@ func upgradeV1ToV2(prior priorModelV1) Model {
 		Memory:          expandPriorMemoryV1V2(prior.Memory),
 		HardDiskDrives:  prior.HardDiskDrives,
 		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
-		DvdDrives:       prior.DvdDrives,
-		BootOrder:       prior.BootOrder,
+		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
+		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
 		Notes:           prior.Notes,
 		State:           state,
@@ -756,7 +779,7 @@ func expandPriorMemoryV1V2(prior *priorMemoryModelV1V2) *MemoryModel {
 // v2 state values migrate with the new fields null because v2 users
 // never had a chance to choose values, and absent dynamic_memory on
 // the wire is the same on-host behavior as v2.
-func upgradeV2ToV3(prior priorModelV2) Model {
+func upgradeV2ToV3(ctx context.Context, prior priorModelV2) Model {
 	return Model{
 		ID:              prior.ID,
 		Name:            prior.Name,
@@ -765,8 +788,8 @@ func upgradeV2ToV3(prior priorModelV2) Model {
 		Memory:          expandPriorMemoryV1V2(prior.Memory),
 		HardDiskDrives:  prior.HardDiskDrives,
 		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
-		DvdDrives:       prior.DvdDrives,
-		BootOrder:       prior.BootOrder,
+		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
+		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
 		Notes:           prior.Notes,
 		State:           prior.State,
@@ -779,7 +802,7 @@ func upgradeV2ToV3(prior priorModelV2) Model {
 // pure function so the conversion logic is unit-testable without
 // constructing tfsdk.State and tftypes raw values just to exercise the
 // rename mappings.
-func upgradeV0ToV1(prior priorModelV0) Model {
+func upgradeV0ToV1(_ context.Context, prior priorModelV0) Model {
 	return Model{
 		ID:         prior.ID,
 		Name:       prior.Name,
@@ -796,8 +819,8 @@ func upgradeV0ToV1(prior priorModelV0) Model {
 		// v1 schema.
 		HardDiskDrives:  []HardDiskDriveModel{},
 		NetworkAdapters: []NetworkAdapterModel{},
-		DvdDrives:       []DvdDriveModel{},
-		BootOrder:       []BootOrderEntryModel{},
+		DvdDrives:       types.ListValueMust(DvdDriveListElementType, []attr.Value{}),
+		BootOrder:       types.ListValueMust(BootOrderEntryListElementType, []attr.Value{}),
 		IPAddresses:     types.ListNull(types.StringType),
 
 		// v0 state was a flat Computed StringAttribute -- users had

@@ -345,7 +345,14 @@ func (v bootOrderRejectedForGen1Validator) validate(data Model) diag.Diagnostics
 	if data.Generation.ValueInt64() == 2 {
 		return diags
 	}
-	if len(data.BootOrder) == 0 {
+	// Skip validation when boot_order is null or unknown (no entries to
+	// reject) and when the list is known-empty (Default applied or user
+	// explicitly set []). Only a non-empty boot_order on gen 1 trips
+	// the rule.
+	if data.BootOrder.IsNull() || data.BootOrder.IsUnknown() {
+		return diags
+	}
+	if len(data.BootOrder.Elements()) == 0 {
 		return diags
 	}
 	diags.AddAttributeError(
@@ -441,11 +448,22 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
+	// Decode the plan's typed list-shaped attributes once at this
+	// boundary so the attachment/order loops below stay slice-shaped
+	// and don't repeat the ElementsAs ceremony.
+	planDvds, dvdDiags := plan.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdDiags...)
+	planBoot, bootDiags := plan.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Attach DVDs. Order rationale (NICs first, DVDs after): pure
 	// convenience; Hyper-V doesn't care which order attachments
 	// happen in. Keeping the order stable keeps tflog output
 	// predictable.
-	for _, d := range plan.DvdDrives {
+	for _, d := range planDvds {
 		if err := r.client.AttachDvdDrive(ctx, attachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
 			resp.Diagnostics.AddError("Attach DVD drive failed", fmt.Sprintf(
 				"VM %s, slot %s/%d/%d, iso_path %s: %s",
@@ -464,8 +482,8 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	// boot_order (Default empty list applied; we treat empty as "do
 	// not manage") -- the VM keeps Hyper-V's default order in that
 	// case.
-	if shouldApplyBootOrder(plan.BootOrder) {
-		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), plan.BootOrder)); err != nil {
+	if shouldApplyBootOrder(planBoot) {
+		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), planBoot)); err != nil {
 			resp.Diagnostics.AddError("Set boot order failed", fmt.Sprintf(
 				"VM %s: %s", plan.Name.ValueString(), err))
 			return
@@ -503,8 +521,8 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	state := modelFromVM(v)
-	state.BootOrder = reconcileBootOrderState(plan.BootOrder, state.BootOrder)
+	state := modelFromVM(ctx, v)
+	resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &state, plan.BootOrder)...)
 	state.State = reconcileStateBlock(plan.State, state.State)
 	state.Memory = reconcileMemoryBlock(plan.Memory, state.Memory)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -541,8 +559,8 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	newState := modelFromVM(v)
-	newState.BootOrder = reconcileBootOrderState(state.BootOrder, newState.BootOrder)
+	newState := modelFromVM(ctx, v)
+	resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &newState, state.BootOrder)...)
 	newState.State = reconcileStateBlock(state.State, newState.State)
 	newState.Memory = reconcileMemoryBlock(state.Memory, newState.Memory)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
@@ -629,13 +647,28 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
+	// Decode plan and state list-shaped attributes once. Same shape
+	// as Create's decode-at-the-boundary pattern; the Update body
+	// references both plan and state slices in several places.
+	planDvds, dvdPlanDiags := plan.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdPlanDiags...)
+	stateDvds, dvdStateDiags := state.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdStateDiags...)
+	planBoot, bootPlanDiags := plan.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootPlanDiags...)
+	stateBoot, bootStateDiags := state.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootStateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// DVD reconciliation: same slot-tuple shape as HDD. ISO swap at
 	// the same slot resolves as detach + attach (Hyper-V has a Set-
 	// VMDvdDrive cmdlet for in-place swap but the detach+attach path
 	// is uniform with HDD reconciliation and works equally well
 	// when the VM is Off, which it generally must be for scalar
 	// updates anyway).
-	dvdAttach, dvdDetach := diffDvdDrives(plan.DvdDrives, state.DvdDrives)
+	dvdAttach, dvdDetach := diffDvdDrives(planDvds, stateDvds)
 	for _, d := range dvdDetach {
 		if err := r.client.DetachDvdDrive(ctx, detachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
 			if errors.Is(err, hyperv.ErrNotFound) {
@@ -672,10 +705,10 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	// Order matters: boot_order follows attachment reconciliation so
 	// every device a planned entry references is guaranteed to
 	// exist on the host before we resolve it.
-	bootOrderChanged := shouldApplyBootOrder(plan.BootOrder) &&
-		!bootOrderSemanticEquals(plan.BootOrder, state.BootOrder)
+	bootOrderChanged := shouldApplyBootOrder(planBoot) &&
+		!bootOrderSemanticEquals(planBoot, stateBoot)
 	if bootOrderChanged {
-		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), plan.BootOrder)); err != nil {
+		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), planBoot)); err != nil {
 			resp.Diagnostics.AddError("Set boot order failed", fmt.Sprintf(
 				"VM %s: %s", plan.Name.ValueString(), err))
 			return
@@ -722,8 +755,8 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 				return
 			}
 		}
-		newState := modelFromVM(v)
-		newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
+		newState := modelFromVM(ctx, v)
+		resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &newState, plan.BootOrder)...)
 		newState.State = reconcileStateBlock(plan.State, newState.State)
 		newState.Memory = reconcileMemoryBlock(plan.Memory, newState.Memory)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
@@ -752,8 +785,8 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
-	newState := modelFromVM(v)
-	newState.BootOrder = reconcileBootOrderState(plan.BootOrder, newState.BootOrder)
+	newState := modelFromVM(ctx, v)
+	resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &newState, plan.BootOrder)...)
 	newState.State = reconcileStateBlock(plan.State, newState.State)
 	newState.Memory = reconcileMemoryBlock(plan.Memory, newState.Memory)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
@@ -953,7 +986,7 @@ func memoryModelFromVM(v *hyperv.VM) *MemoryModel {
 // storing. A user who writes disks in slot-tuple order in HCL will
 // see no diff against state; a user who doesn't will see a one-time
 // rewrite to canonical order on first apply.
-func modelFromVM(v *hyperv.VM) Model {
+func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 	secureBoot := types.BoolNull()
 	if v.SecureBootEnabled != nil {
 		secureBoot = types.BoolValue(*v.SecureBootEnabled)
@@ -1092,6 +1125,23 @@ func modelFromVM(v *hyperv.VM) Model {
 		bootOrder = append(bootOrder, entry)
 	}
 
+	// DvdDrives and BootOrder are types.List on the schema side -- the
+	// framework's reflect path can't represent "the whole list is
+	// unknown" in a Go []Struct, so the Model fields are typed as
+	// types.List and the wire shape is rebuilt here from the
+	// canonical-sorted slices. ListValueFrom can fail only on element-
+	// type mismatch (a programming error, not a runtime fault); panic
+	// rather than threading diags through the modelFromVM signature
+	// since callers can't recover from a static-type bug at runtime.
+	dvdList, dvdDiags := DvdDriveListFromSlice(ctx, dvds)
+	if dvdDiags.HasError() {
+		panic(fmt.Sprintf("DvdDriveListFromSlice: %v", dvdDiags))
+	}
+	bootList, bootDiags := BootOrderListFromSlice(ctx, bootOrder)
+	if bootDiags.HasError() {
+		panic(fmt.Sprintf("BootOrderListFromSlice: %v", bootDiags))
+	}
+
 	return Model{
 		ID:                 types.StringValue(v.Name),
 		Name:               types.StringValue(v.Name),
@@ -1100,8 +1150,8 @@ func modelFromVM(v *hyperv.VM) Model {
 		Memory:             memoryModelFromVM(v),
 		HardDiskDrives:     hdds,
 		NetworkAdapters:    nics,
-		DvdDrives:          dvds,
-		BootOrder:          bootOrder,
+		DvdDrives:          dvdList,
+		BootOrder:          bootList,
 		SecureBoot:         secureBoot,
 		SecureBootTemplate: secureBootTemplate,
 		Notes:              notes,
@@ -1109,6 +1159,41 @@ func modelFromVM(v *hyperv.VM) Model {
 		IPAddresses:        typeflatten.IPAddresses(v.NetworkAdapters),
 		Path:               types.StringValue(v.Path),
 	}
+}
+
+// reconcileBootOrderInState wraps reconcileBootOrderState with the
+// types.List <-> []BootOrderEntryModel boilerplate so each Create/
+// Read/Update site can keep one line of plumbing. Decodes the prior
+// list (caller-supplied) and the just-built model's BootOrder, hands
+// the two slices to reconcileBootOrderState, and re-encodes the
+// reconciled slice back into m.BootOrder.
+//
+// Returns whatever decode/encode diags fire so callers append to
+// resp.Diagnostics. Programming errors aside, decode of a known list
+// of objects with matching attr-types doesn't fail; the diag plumbing
+// is for completeness rather than expected-failure paths.
+func reconcileBootOrderInState(ctx context.Context, m *Model, prior types.List) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	var priorEntries []BootOrderEntryModel
+	if !prior.IsNull() && !prior.IsUnknown() {
+		diags.Append(prior.ElementsAs(ctx, &priorEntries, false)...)
+	}
+	var stateEntries []BootOrderEntryModel
+	if !m.BootOrder.IsNull() && !m.BootOrder.IsUnknown() {
+		diags.Append(m.BootOrder.ElementsAs(ctx, &stateEntries, false)...)
+	}
+	if diags.HasError() {
+		return diags
+	}
+
+	reconciled := reconcileBootOrderState(priorEntries, stateEntries)
+	list, listDiags := BootOrderListFromSlice(ctx, reconciled)
+	diags.Append(listDiags...)
+	if !listDiags.HasError() {
+		m.BootOrder = list
+	}
+	return diags
 }
 
 // hddSlotKey identifies a slot tuple. The diff is keyed on this so a
