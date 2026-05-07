@@ -22,7 +22,7 @@ func TestUpgradeV0ToV1(t *testing.T) {
 		Path:        types.StringValue("C:/ProgramData/Microsoft/Windows/Hyper-V"),
 	}
 
-	got := upgradeV0ToV1(prior)
+	got := upgradeV0ToV1(t.Context(), prior)
 
 	// Carried-through scalars.
 	if got.ID.ValueString() != "node01" {
@@ -74,11 +74,14 @@ func TestUpgradeV0ToV1(t *testing.T) {
 	if got.NetworkAdapters == nil || len(got.NetworkAdapters) != 0 {
 		t.Errorf("NetworkAdapters: got %+v, want empty", got.NetworkAdapters)
 	}
-	if got.DvdDrives == nil || len(got.DvdDrives) != 0 {
-		t.Errorf("DvdDrives: got %+v, want empty", got.DvdDrives)
+	// DvdDrives and BootOrder are types.List on the latest schema.
+	// Upgraders return a known empty list so the post-upgrade state
+	// shape matches the schema's Default empty-list value.
+	if got.DvdDrives.IsNull() || got.DvdDrives.IsUnknown() || len(got.DvdDrives.Elements()) != 0 {
+		t.Errorf("DvdDrives: got %+v, want known empty list", got.DvdDrives)
 	}
-	if got.BootOrder == nil || len(got.BootOrder) != 0 {
-		t.Errorf("BootOrder: got %+v, want empty", got.BootOrder)
+	if got.BootOrder.IsNull() || got.BootOrder.IsUnknown() || len(got.BootOrder.Elements()) != 0 {
+		t.Errorf("BootOrder: got %+v, want known empty list", got.BootOrder)
 	}
 
 	// IPAddresses left null (Computed; next refresh fills from host).
@@ -104,7 +107,7 @@ func TestUpgradeV0ToV1_NullOptionals(t *testing.T) {
 		Path:        types.StringValue("C:/ProgramData/Microsoft/Windows/Hyper-V"),
 	}
 
-	got := upgradeV0ToV1(prior)
+	got := upgradeV0ToV1(t.Context(), prior)
 
 	if !got.SecureBoot.IsNull() {
 		t.Errorf("SecureBoot: got %+v, want null", got.SecureBoot)
@@ -165,7 +168,7 @@ func TestUpgradeV1ToV2_LeavesShutdownModeNull(t *testing.T) {
 		},
 	}
 
-	got := upgradeV1ToV2(prior)
+	got := upgradeV1ToV2(t.Context(), prior)
 
 	if got.State == nil {
 		t.Fatal("State: got nil, want populated v2 block")
@@ -199,7 +202,7 @@ func TestUpgradeV1ToV2_PreservesNullState(t *testing.T) {
 		State:      nil,
 	}
 
-	got := upgradeV1ToV2(prior)
+	got := upgradeV1ToV2(t.Context(), prior)
 
 	if got.State != nil {
 		t.Errorf("State: got %+v, want nil (user never opted into power-state management)", got.State)
@@ -247,7 +250,7 @@ func TestUpgradeV2ToV3_AddsDynamicMemoryNullFields(t *testing.T) {
 		},
 	}
 
-	got := upgradeV2ToV3(prior)
+	got := upgradeV2ToV3(t.Context(), prior)
 
 	if got.Memory == nil {
 		t.Fatal("Memory: got nil, want populated v3 block")
@@ -310,7 +313,7 @@ func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 		Path:       types.StringValue("C:/foo"),
 	}
 
-	got := upgradeV3ToV5(prior)
+	got := upgradeV3ToV5(t.Context(), prior)
 
 	if len(got.NetworkAdapters) != 2 {
 		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
@@ -394,7 +397,7 @@ func TestUpgradeV4ToV5_PopulatesNullMacAndVlan(t *testing.T) {
 		Path:       types.StringValue("C:/foo"),
 	}
 
-	got := upgradeV4ToV5(prior)
+	got := upgradeV4ToV5(t.Context(), prior)
 
 	if len(got.NetworkAdapters) != 2 {
 		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))

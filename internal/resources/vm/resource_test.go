@@ -585,7 +585,7 @@ func TestModelFromVM_Gen2HasSecureBoot(t *testing.T) {
 	t.Parallel()
 
 	secureBoot := true
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:               "vm01",
 		Generation:         2,
 		ProcessorCount:     2,
@@ -608,7 +608,7 @@ func TestModelFromVM_Gen2HasSecureBoot(t *testing.T) {
 func TestModelFromVM_Gen1SecureBootIsNull(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:              "legacy-vm",
 		Generation:        1,
 		SecureBootEnabled: nil,
@@ -625,7 +625,7 @@ func TestModelFromVM_Gen1SecureBootIsNull(t *testing.T) {
 func TestModelFromVM_EmptyNotesBecomesNull(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:  "vm01",
 		Notes: "",
 	})
@@ -639,7 +639,7 @@ func TestModelFromVM_EmptyNotesBecomesNull(t *testing.T) {
 func TestModelFromVM_NonEmptyNotesPreserved(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:  "vm01",
 		Notes: "production cluster",
 	})
@@ -715,7 +715,7 @@ func TestSetInputHasChanges(t *testing.T) {
 func TestModelFromVM_PreservesInt64MemoryAndProcessorCount(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:               "vm01",
 		ProcessorCount:     16,
 		MemoryStartupBytes: 68719476736, // 64 GiB
@@ -864,7 +864,7 @@ func TestDetachInputFor_OmitsPath(t *testing.T) {
 func TestModelFromVM_PopulatesHardDiskDrives(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:       "vm01",
 		Generation: 2,
 		HardDiskDrives: []hyperv.HardDiskDrive{
@@ -891,7 +891,7 @@ func TestModelFromVM_PopulatesHardDiskDrives(t *testing.T) {
 func TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:           "vm01",
 		Generation:     2,
 		HardDiskDrives: []hyperv.HardDiskDrive{},
@@ -1019,7 +1019,7 @@ func TestDiffNetworkAdapters(t *testing.T) {
 func TestModelFromVM_PopulatesNetworkAdapters(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:       "vm01",
 		Generation: 2,
 		NetworkAdapters: []hyperv.NetworkAdapter{
@@ -1166,7 +1166,7 @@ func TestAttachDvdInputFor_SetIsoPath(t *testing.T) {
 func TestModelFromVM_DvdDrivesEmptyPathBecomesNull(t *testing.T) {
 	t.Parallel()
 
-	got := modelFromVM(&hyperv.VM{
+	got := modelFromVM(t.Context(), &hyperv.VM{
 		Name:       "vm01",
 		Generation: 2,
 		DvdDrives: []hyperv.DvdDrive{
@@ -1174,13 +1174,17 @@ func TestModelFromVM_DvdDrivesEmptyPathBecomesNull(t *testing.T) {
 			{Path: `C:\boot.iso`, ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 2},
 		},
 	})
-	if len(got.DvdDrives) != 2 {
-		t.Fatalf("got %d DVDs, want 2", len(got.DvdDrives))
+	dvds, diags := got.DvdDriveModels(t.Context())
+	if diags.HasError() {
+		t.Fatalf("DvdDriveModels: %v", diags)
 	}
-	if !got.DvdDrives[0].IsoPath.IsNull() {
-		t.Errorf("first DVD IsoPath = %v, want null (empty drive)", got.DvdDrives[0].IsoPath)
+	if len(dvds) != 2 {
+		t.Fatalf("got %d DVDs, want 2", len(dvds))
 	}
-	if got.DvdDrives[1].IsoPath.ValueString() != `C:\boot.iso` {
-		t.Errorf("second DVD IsoPath = %q, want C:\\boot.iso", got.DvdDrives[1].IsoPath.ValueString())
+	if !dvds[0].IsoPath.IsNull() {
+		t.Errorf("first DVD IsoPath = %v, want null (empty drive)", dvds[0].IsoPath)
+	}
+	if dvds[1].IsoPath.ValueString() != `C:\boot.iso` {
+		t.Errorf("second DVD IsoPath = %q, want C:\\boot.iso", dvds[1].IsoPath.ValueString())
 	}
 }

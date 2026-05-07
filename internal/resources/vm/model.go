@@ -20,6 +20,10 @@
 package vm
 
 import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
@@ -53,21 +57,31 @@ import (
 // ordering matches canonical state on subsequent applies) with a
 // simpler decode.
 type Model struct {
-	ID                 types.String          `tfsdk:"id"`
-	Name               types.String          `tfsdk:"name"`
-	Generation         types.Int64           `tfsdk:"generation"`
-	CPU                *CPUModel             `tfsdk:"cpu"`
-	Memory             *MemoryModel          `tfsdk:"memory"`
-	HardDiskDrives     []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
-	NetworkAdapters    []NetworkAdapterModel `tfsdk:"network_adapter"`
-	DvdDrives          []DvdDriveModel       `tfsdk:"dvd_drive"`
-	BootOrder          []BootOrderEntryModel `tfsdk:"boot_order"`
-	SecureBoot         types.Bool            `tfsdk:"secure_boot"`
-	SecureBootTemplate types.String          `tfsdk:"secure_boot_template"`
-	Notes              types.String          `tfsdk:"notes"`
-	State              *StateModel           `tfsdk:"state"`
-	IPAddresses        types.List            `tfsdk:"ip_addresses"`
-	Path               types.String          `tfsdk:"path"`
+	ID              types.String          `tfsdk:"id"`
+	Name            types.String          `tfsdk:"name"`
+	Generation      types.Int64           `tfsdk:"generation"`
+	CPU             *CPUModel             `tfsdk:"cpu"`
+	Memory          *MemoryModel          `tfsdk:"memory"`
+	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
+	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
+	// DvdDrives and BootOrder are types.List rather than []Struct so the
+	// framework can represent unknown values cleanly. The framework's
+	// reflect path can't fit "the whole list is unknown" into a Go slice
+	// (no representation for it), and emits "Value Conversion Error /
+	// Suggested Type: basetypes.ListValue" when a config drives the
+	// attribute from a for_each variable that hasn't materialized at
+	// validate time. Same fix shape PR #70 applied to URLConfig on
+	// hyperv_image_file. Helpers below give resource code typed access
+	// to the underlying []DvdDriveModel / []BootOrderEntryModel slice
+	// when the value is known.
+	DvdDrives          types.List   `tfsdk:"dvd_drive"`
+	BootOrder          types.List   `tfsdk:"boot_order"`
+	SecureBoot         types.Bool   `tfsdk:"secure_boot"`
+	SecureBootTemplate types.String `tfsdk:"secure_boot_template"`
+	Notes              types.String `tfsdk:"notes"`
+	State              *StateModel  `tfsdk:"state"`
+	IPAddresses        types.List   `tfsdk:"ip_addresses"`
+	Path               types.String `tfsdk:"path"`
 }
 
 // CPUModel is the nested `cpu` block. Static count only in this slice;
@@ -179,6 +193,82 @@ type BootOrderEntryModel struct {
 	ControllerNumber   types.Int64  `tfsdk:"controller_number"`
 	ControllerLocation types.Int64  `tfsdk:"controller_location"`
 	Name               types.String `tfsdk:"name"`
+}
+
+// DvdDriveAttrTypes mirrors DvdDriveModel's tfsdk-tagged fields.
+// Used by the Object element type that backs the dvd_drive list, by
+// the helpers below for ListValueFrom / ElementsAs round-trips, and by
+// schema.go's Default empty-list value.
+var DvdDriveAttrTypes = map[string]attr.Type{
+	"iso_path":            pathtype.Type,
+	"controller_type":     types.StringType,
+	"controller_number":   types.Int64Type,
+	"controller_location": types.Int64Type,
+}
+
+// DvdDriveListElementType is the Object element type the dvd_drive
+// list holds. Computed once so all helpers share the same instance.
+var DvdDriveListElementType = types.ObjectType{AttrTypes: DvdDriveAttrTypes}
+
+// BootOrderEntryAttrTypes mirrors BootOrderEntryModel's tfsdk-tagged
+// fields. Same role as DvdDriveAttrTypes for the boot_order list.
+var BootOrderEntryAttrTypes = map[string]attr.Type{
+	"type":                types.StringType,
+	"controller_type":     types.StringType,
+	"controller_number":   types.Int64Type,
+	"controller_location": types.Int64Type,
+	"name":                types.StringType,
+}
+
+// BootOrderEntryListElementType is the Object element type the
+// boot_order list holds.
+var BootOrderEntryListElementType = types.ObjectType{AttrTypes: BootOrderEntryAttrTypes}
+
+// DvdDriveModels returns the typed slice underlying m.DvdDrives, or
+// nil if the list is null or unknown. Resource code that needs to
+// distinguish "user explicitly set []" from "user did not set the
+// attribute" should inspect m.DvdDrives directly via IsNull /
+// IsUnknown -- a known-empty list returns an empty (but non-nil)
+// slice here.
+func (m *Model) DvdDriveModels(ctx context.Context) ([]DvdDriveModel, diag.Diagnostics) {
+	if m.DvdDrives.IsNull() || m.DvdDrives.IsUnknown() {
+		return nil, nil
+	}
+	out := make([]DvdDriveModel, 0, len(m.DvdDrives.Elements()))
+	diags := m.DvdDrives.ElementsAs(ctx, &out, false)
+	return out, diags
+}
+
+// DvdDriveListFromSlice builds a types.List from a typed slice. A nil
+// slice becomes a null list (matching the "DvdDrives not managed"
+// semantics on a fresh VM); an empty slice becomes an empty list
+// (the schema's Default value when the user omits the attribute).
+func DvdDriveListFromSlice(ctx context.Context, slice []DvdDriveModel) (types.List, diag.Diagnostics) {
+	if slice == nil {
+		return types.ListNull(DvdDriveListElementType), nil
+	}
+	return types.ListValueFrom(ctx, DvdDriveListElementType, slice)
+}
+
+// BootOrderEntries returns the typed slice underlying m.BootOrder, or
+// nil if null/unknown. Same null-vs-empty rationale as DvdDriveModels.
+func (m *Model) BootOrderEntries(ctx context.Context) ([]BootOrderEntryModel, diag.Diagnostics) {
+	if m.BootOrder.IsNull() || m.BootOrder.IsUnknown() {
+		return nil, nil
+	}
+	out := make([]BootOrderEntryModel, 0, len(m.BootOrder.Elements()))
+	diags := m.BootOrder.ElementsAs(ctx, &out, false)
+	return out, diags
+}
+
+// BootOrderListFromSlice builds a types.List from a typed slice.
+// Nil slice -> null list; empty slice -> empty list. Same rationale
+// as DvdDriveListFromSlice.
+func BootOrderListFromSlice(ctx context.Context, slice []BootOrderEntryModel) (types.List, diag.Diagnostics) {
+	if slice == nil {
+		return types.ListNull(BootOrderEntryListElementType), nil
+	}
+	return types.ListValueFrom(ctx, BootOrderEntryListElementType, slice)
 }
 
 // StateModel is the nested `state` block on hyperv_vm. Pointer-typed
