@@ -325,13 +325,28 @@ func isDecompressionStreamError(codec string, err error) bool {
 	case "gz":
 		return errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader)
 	case "xz":
-		// ulikunitz/xz fails eagerly at NewReader for header-magic
-		// problems, which already gets remapped at the construction
-		// boundary. Mid-stream errors are rare and don't have stable
-		// typed sentinels we can match here, so leave them as
-		// transport-shaped -- the user will see the raw error and
-		// can debug from there.
-		return false
+		// ulikunitz/xz exposes no exported error sentinels and emits
+		// failures from three different internal packages with
+		// inconsistent prefixes:
+		//
+		//   - "xz: ..."         (top-level package: header/footer/index)
+		//   - "lzma: ..."       (lzma sub-package: chunk/state errors)
+		//   - "writeMatch: ..." (decoder dictionary: distance/length OOB)
+		//
+		// Network and ctx errors carry none of these markers (the
+		// underlying Reader passes them through verbatim), so the
+		// prefix set cleanly separates "publisher served corrupt xz"
+		// from "link dropped mid-pull." This heuristic is brittle to
+		// upstream message renames; the xz mid-stream regression test
+		// pins enough of the surface that a drift surfaces loudly
+		// rather than silently degrading.
+		if err == nil {
+			return false
+		}
+		s := err.Error()
+		return strings.HasPrefix(s, "xz: ") ||
+			strings.HasPrefix(s, "lzma: ") ||
+			strings.HasPrefix(s, "writeMatch:")
 	case "zst":
 		// klauspost/compress/zstd defers magic-header validation to
 		// the first Read rather than NewReader, so ErrMagicMismatch

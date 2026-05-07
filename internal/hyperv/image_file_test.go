@@ -698,6 +698,56 @@ func TestClient_NewImageFileFromURL_XzDecompressionFailed(t *testing.T) {
 	runCodecDecompressionFailed(t, "xz")
 }
 
+// xz mid-stream corruption (valid header, broken block) must also
+// surface as ErrDecompressionFailed. This is the gap PR2's reviewer
+// flagged: the eager-fail path at NewReader doesn't cover bytes that
+// pass the header check then fail at block decode. ulikunitz/xz has
+// no exported error sentinels, so isDecompressionStreamError relies
+// on the package's "xz: " message prefix; this test pins that
+// contract by corrupting a byte well past the header and asserting
+// the typed sentinel still flows through.
+func TestClient_NewImageFileFromURL_XzMidStreamCorruption(t *testing.T) {
+	t.Parallel()
+
+	// Plaintext is large enough to land bytes well past the xz header
+	// and into block payload, so a single-byte flip in the middle
+	// guarantees a block-decode error rather than a header-decode one.
+	plain := bytes.Repeat([]byte("xz mid-stream regression "), 200)
+	compressed := xzBytes(t, plain)
+	if len(compressed) < 64 {
+		t.Fatalf("xz fixture too small for mid-stream test: %d bytes", len(compressed))
+	}
+	// Flip a byte deep enough into the stream that the xz header has
+	// already been consumed and the reader is mid-block. The header is
+	// 12 bytes; len/2 lands well past it.
+	corrupted := make([]byte, len(compressed))
+	copy(corrupted, compressed)
+	corrupted[len(corrupted)/2] ^= 0xFF
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(corrupted)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/payload.xz",
+		ExpectedSha256:  hexSum(corrupted),
+		Compression:     "xz",
+	})
+	if !errors.Is(err, ErrDecompressionFailed) {
+		t.Errorf("err = %v, want ErrDecompressionFailed (mid-stream xz corruption must remap)", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (mid-stream corruption must short-circuit)",
+			len(fr.StreamCalls()))
+	}
+}
+
 // zst (canonical) and zstd (alias) both dispatch to the runner-pipelined
 // flow. Two test functions rather than one parameterized run because
 // the alias-normalization assertion belongs in its own t.Run, not
