@@ -76,10 +76,23 @@ type ImageFile struct {
 // mode of image_file/new.ps1. The discriminator field (source_mode) is
 // not on the public struct -- the typed-client method sets it internally
 // so callers can't pass the wrong value for the method they invoke.
+//
+// Compression is a canonical decompressor identifier (currently "gz"
+// only; "" means no compression). When set, the typed client switches
+// from the host-direct fetch flow to a runner-pipelined flow:
+// download via the runner's net/http stack, decompress in-process,
+// stream the decompressed bytes to a sibling .part of DestinationPath
+// via Connection.StreamFile, and dispatch new.ps1 in local_path mode.
+// ExpectedSha256 is always the hash of the *compressed* bytes the
+// publisher signs (this is what users copy from a SHA256SUMS file).
+// The runner-computed *decompressed* SHA is what the host script
+// receives for staging-bytes verification; the wire shape stays
+// identical to the existing local_path mode.
 type NewImageFileFromURLInput struct {
 	DestinationPath string `json:"destination_path"`
 	URL             string `json:"url"`
 	ExpectedSha256  string `json:"expected_sha256"`
+	Compression     string `json:"-"`
 }
 
 // NewImageFileFromLocalPathInput is the public input shape for the

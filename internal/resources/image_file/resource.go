@@ -227,13 +227,17 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		tflog.Debug(ctx, "creating hyperv_image_file (url mode)", map[string]any{
 			"destination_path": dest,
 			"url":              sanitizeURLForLog(urlConfig.URL.ValueString()),
+			"compression":      urlConfig.Compression.ValueString(),
 		})
 		// The schema validator pins the "sha256:<hex>" form; strip the prefix
 		// here so the typed client receives the raw hex the wire contract expects.
+		// Compression is null when omitted -- ValueString folds that to "" which
+		// the typed client treats as "no compression, host fetches directly."
 		f, err = r.client.NewImageFileFromURL(ctx, hyperv.NewImageFileFromURLInput{
 			DestinationPath: dest,
 			URL:             urlConfig.URL.ValueString(),
 			ExpectedSha256:  stripSha256Prefix(urlConfig.Checksum.ValueString()),
+			Compression:     urlConfig.Compression.ValueString(),
 		})
 		if err != nil {
 			if errors.Is(err, hyperv.ErrChecksumMismatch) {
@@ -241,6 +245,21 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 					path.Root("url").AtName("checksum"),
 					"Image file checksum mismatch",
 					err.Error(),
+				)
+				return
+			}
+			if errors.Is(err, hyperv.ErrDecompressionFailed) {
+				// Anchor on `compression` rather than `checksum` -- a
+				// gzip-corruption error means the publisher's bytes
+				// aren't a valid stream of the declared codec, which is
+				// what the user controls via this attribute.
+				resp.Diagnostics.AddAttributeError(
+					path.Root("url").AtName("compression"),
+					"Image file decompression failed",
+					"The bytes downloaded from the URL could not be decompressed with the "+
+						"declared codec. This usually means either the URL is serving an "+
+						"unexpected payload (e.g. an HTML error page) or the publisher's "+
+						"file does not match the codec you specified.\n\n"+err.Error(),
 				)
 				return
 			}
