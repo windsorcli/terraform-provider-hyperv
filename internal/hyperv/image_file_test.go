@@ -699,11 +699,11 @@ func TestClient_NewImageFileFromURL_XzDecompressionFailed(t *testing.T) {
 }
 
 // xz mid-stream corruption (valid header, broken block) must also
-// surface as ErrDecompressionFailed. This is the gap PR2's reviewer
-// flagged: the eager-fail path at NewReader doesn't cover bytes that
-// pass the header check then fail at block decode. ulikunitz/xz has
-// no exported error sentinels, so isDecompressionStreamError relies
-// on the package's "xz: " message prefix; this test pins that
+// surface as ErrDecompressionFailed. The eager-fail path at NewReader
+// doesn't cover bytes that pass the header check then fail at block
+// decode; ulikunitz/xz has no exported error sentinels, so
+// isDecompressionStreamError matches on the package's message-prefix
+// markers ("xz:", "lzma:", "writeMatch:"). This test pins that
 // contract by corrupting a byte well past the header and asserting
 // the typed sentinel still flows through.
 func TestClient_NewImageFileFromURL_XzMidStreamCorruption(t *testing.T) {
