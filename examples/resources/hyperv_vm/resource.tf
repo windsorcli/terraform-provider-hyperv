@@ -161,3 +161,38 @@ resource "hyperv_vm" "talos_controlplane" {
     desired = "Running"
   }
 }
+
+# Apply-2 (run) shape of the same VM, shown commented-out so readers can
+# see the post-install diff without reconstructing it from inline notes.
+# After Talos has installed itself to the VHDX (Apply 1) and the VM is
+# Off, replace the apply-1 block above with the contents of this block --
+# same `name`, same VHDX, same NIC; only `dvd_drive` (now empty) and
+# `boot_order` (HDD-only) change. The reconciliation detaches the DVD
+# slot in place (no VM replace), the boot-order reorder fires
+# `Set-VMFirmware -BootOrder`, and the VM boots from the installed disk.
+#
+# resource "hyperv_vm" "talos_controlplane" {
+#   name        = "talos-cp-01"
+#   generation  = 2
+#   cpu         = { count = 4 }
+#   memory      = { startup_bytes = 4294967296 }
+#   secure_boot = false
+#   notes       = "Talos control plane node 1"
+#
+#   network_adapter = [
+#     { name = "primary", switch_name = "lab" },
+#   ]
+#   hard_disk_drive = [
+#     { path = "C:/hyperv/vhds/talos-cp-01.vhdx", controller_number = 0, controller_location = 0 },
+#   ]
+#
+#   # ---- Apply 2 (run): DVD detached, HDD-only boot ----
+#   dvd_drive  = []
+#   boot_order = [
+#     { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
+#   ]
+#
+#   state = {
+#     desired = "Running"
+#   }
+# }
