@@ -1160,6 +1160,90 @@ func TestAttachDvdInputFor_SetIsoPath(t *testing.T) {
 	}
 }
 
+// TestModelFromVM_BootOrderRoundTrip pins the BootOrder path through
+// modelFromVM's BootOrderListFromSlice -> types.List -> BootOrderEntries
+// reconstruction. Two roles:
+//
+//  1. **Drift detection.** Adding a field to BootOrderEntryModel without
+//     also extending BootOrderEntryAttrTypes would compile, but
+//     types.ListValueFrom would surface the mismatch as a panic at
+//     resource.go's modelFromVM call. This test fires that panic at
+//     unit-test time instead of the first live `terraform apply` against
+//     a VM with a configured boot order. Mirrors the role
+//     TestModelFromVM_DvdDrivesEmptyPathBecomesNull plays for the
+//     DvdDriveListFromSlice path.
+//  2. **Type-discriminator coverage.** modelFromVM's per-entry switch
+//     on Type populates either the controller-tuple fields (for
+//     `hard_disk_drive` and `dvd_drive` entries) or the Name field
+//     (for `network_adapter` entries) and leaves the other half null.
+//     Exercising all three discriminators in one test catches a
+//     regression that would surface otherwise only on VMs whose boot
+//     order happens to mix entry types.
+func TestModelFromVM_BootOrderRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(t.Context(), &hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		BootOrder: []hyperv.BootOrderEntry{
+			{Type: "hard_disk_drive", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 0},
+			{Type: "dvd_drive", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 1},
+			{Type: "network_adapter", Name: "Network Adapter"},
+		},
+	})
+
+	entries, diags := got.BootOrderEntries(t.Context())
+	if diags.HasError() {
+		t.Fatalf("BootOrderEntries: %v", diags)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("got %d entries, want 3", len(entries))
+	}
+
+	// Entry 0: hard_disk_drive — controller tuple set, Name null.
+	if entries[0].Type.ValueString() != "hard_disk_drive" {
+		t.Errorf("entries[0].Type = %q, want hard_disk_drive", entries[0].Type.ValueString())
+	}
+	if entries[0].ControllerType.ValueString() != "SCSI" {
+		t.Errorf("entries[0].ControllerType = %q, want SCSI", entries[0].ControllerType.ValueString())
+	}
+	if entries[0].ControllerNumber.ValueInt64() != 0 || entries[0].ControllerLocation.ValueInt64() != 0 {
+		t.Errorf("entries[0] slot = %d/%d, want 0/0",
+			entries[0].ControllerNumber.ValueInt64(), entries[0].ControllerLocation.ValueInt64())
+	}
+	if !entries[0].Name.IsNull() {
+		t.Errorf("entries[0].Name = %v, want null for hard_disk_drive type", entries[0].Name)
+	}
+
+	// Entry 1: dvd_drive — same shape as hard_disk_drive on the slot
+	// fields; the discriminator just steers how Hyper-V resolves the
+	// device. Slot tuple set, Name null.
+	if entries[1].Type.ValueString() != "dvd_drive" {
+		t.Errorf("entries[1].Type = %q, want dvd_drive", entries[1].Type.ValueString())
+	}
+	if entries[1].ControllerLocation.ValueInt64() != 1 {
+		t.Errorf("entries[1].ControllerLocation = %d, want 1", entries[1].ControllerLocation.ValueInt64())
+	}
+	if !entries[1].Name.IsNull() {
+		t.Errorf("entries[1].Name = %v, want null for dvd_drive type", entries[1].Name)
+	}
+
+	// Entry 2: network_adapter — Name set, slot tuple null. The Go-side
+	// switch in modelFromVM (resource.go:1084-1091) is the only place
+	// that distinguishes these two field-population paths; without
+	// network_adapter coverage here a future change that flattens the
+	// switch would not be caught.
+	if entries[2].Type.ValueString() != "network_adapter" {
+		t.Errorf("entries[2].Type = %q, want network_adapter", entries[2].Type.ValueString())
+	}
+	if entries[2].Name.ValueString() != "Network Adapter" {
+		t.Errorf("entries[2].Name = %q, want Network Adapter", entries[2].Name.ValueString())
+	}
+	if !entries[2].ControllerType.IsNull() || !entries[2].ControllerNumber.IsNull() || !entries[2].ControllerLocation.IsNull() {
+		t.Errorf("entries[2] slot fields not null for network_adapter type: %+v", entries[2])
+	}
+}
+
 // TestModelFromVM_DvdDrivesEmptyPathBecomesNull: cmdlet's "" Path on a
 // drive with no medium loaded collapses to schema-null IsoPath, so a
 // user's plan that omits iso_path matches state cleanly.
