@@ -22,6 +22,8 @@ package image_file_test
 // stages a test fixture file at a stable path.
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -222,6 +224,89 @@ func TestAcc_ImageFile_url(t *testing.T) {
 						"hyperv_image_file.test",
 						tfjsonpath.New("size_bytes"),
 						knownvalue.Int64Exact(int64(len(fixture))),
+					),
+				},
+			},
+		},
+	})
+}
+
+// TestAcc_ImageFile_urlGzip exercises url-mode with `compression = "gz"`
+// end-to-end: the runner downloads a gzip-encoded fixture from the
+// in-test httptest.Server, decompresses it in-process, streams the
+// decompressed bytes to a `.part` sibling on the bench, and the host
+// script verifies the runner-computed decompressed SHA before atomic-
+// renaming into place.
+//
+// The user-supplied `checksum` here is the SHA of the *compressed* bytes
+// (publisher-shaped), per the schema documentation. The on-disk
+// `sha256` Computed attribute reflects the *decompressed* payload --
+// asserting both confirms the two-SHA contract holds end-to-end (a
+// regression that compared the wrong hash on either side would surface
+// as an apply-time mismatch or an unexpected state value).
+//
+// Hermetic in the same shape as TestAcc_ImageFile_url: in-test fixture,
+// in-test server, no external dependency. Adds gzip encoding on top of
+// the existing fixture-byte plumbing.
+func TestAcc_ImageFile_urlGzip(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	runnerIP, err := acctest.RunnerIPForBench(os.Getenv("HYPERV_HOST"))
+	if err != nil {
+		t.Skipf("can't determine runner IP routable to bench (%v); skipping url+gzip test", err)
+	}
+
+	decompressed := []byte("tfacc url+gzip mode fixture v1\n")
+	var compressedBuf bytes.Buffer
+	gw := gzip.NewWriter(&compressedBuf)
+	if _, err := gw.Write(decompressed); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	compressed := compressedBuf.Bytes()
+
+	compressedSum := sha256.Sum256(compressed)
+	decompressedSum := sha256.Sum256(decompressed)
+	compressedHex := hex.EncodeToString(compressedSum[:])
+	decompressedHex := hex.EncodeToString(decompressedSum[:])
+
+	srv := acctest.ServeFixture(t, runnerIP, compressed)
+	url := srv.URL + "/fixture.bin.gz"
+	checksum := "sha256:" + compressedHex
+
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-gz")+".bin"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// url-mode with compression: provider streamed the file on
+		// Create, so destroy must remove it. Same shape as plain url-mode.
+		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileURLGzipConfig(dest, url, checksum),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("destination_path"),
+						knownvalue.StringExact(dest),
+					),
+					// On-disk sha256 must equal the *decompressed* hash,
+					// not the user-supplied compressed checksum. A regression
+					// that wrote the compressed hash into state (or compared
+					// it on the host) would fail this exactly.
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(decompressedHex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(decompressed))),
 					),
 				},
 			},
@@ -538,6 +623,24 @@ resource "hyperv_image_file" "test" {
   url = {
     url      = %q
     checksum = %q
+  }
+}
+`, destPath, url, checksum)
+}
+
+// imageFileURLGzipConfig drives the runner-pipelined gzip flow: download,
+// decompress in-process on the runner, stream decompressed bytes to a
+// .part sibling on the bench, verify-and-rename. checksum is the SHA of
+// the *compressed* bytes the publisher signs (matches what users copy
+// from a SHA256SUMS file next to a `.gz` artifact).
+func imageFileURLGzipConfig(destPath, url, checksum string) string {
+	return fmt.Sprintf(`
+resource "hyperv_image_file" "test" {
+  destination_path = %q
+  url = {
+    url         = %q
+    checksum    = %q
+    compression = "gz"
   }
 }
 `, destPath, url, checksum)

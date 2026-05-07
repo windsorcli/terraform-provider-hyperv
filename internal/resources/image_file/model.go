@@ -50,9 +50,13 @@ type Model struct {
 	KeepOnDestroy   types.Bool    `tfsdk:"keep_on_destroy"`
 }
 
-// URLConfig is the user-supplied URL-mode source configuration. Both fields
-// are required when the block is present; the schema-layer Required flag
-// enforces this without a separate config validator.
+// URLConfig is the user-supplied URL-mode source configuration.
+// `url` and `checksum` are required when the block is present; the
+// schema-layer Required flag enforces this without a separate config
+// validator. `compression` is optional -- absence means "no
+// decompression, host fetches directly"; presence flips the typed
+// client to a runner-pipelined fetch (download + decompress on the
+// runner, then stream decompressed bytes to the host).
 //
 // The Model carries `url` as types.Object rather than *URLConfig because
 // the framework's pointer-to-struct shape can represent null (nil) but
@@ -62,16 +66,18 @@ type Model struct {
 // types.Object handles all three states (known/null/unknown), and the
 // helpers below give resource code typed access when the value is known.
 type URLConfig struct {
-	URL      types.String `tfsdk:"url"`
-	Checksum types.String `tfsdk:"checksum"`
+	URL         types.String `tfsdk:"url"`
+	Checksum    types.String `tfsdk:"checksum"`
+	Compression types.String `tfsdk:"compression"`
 }
 
 // URLAttrTypes mirrors the SingleNestedAttribute "url" shape in
 // schema.go. Used by types.Object construction (ObjectValueFrom) and
 // decode (Object.As).
 var URLAttrTypes = map[string]attr.Type{
-	"url":      types.StringType,
-	"checksum": types.StringType,
+	"url":         types.StringType,
+	"checksum":    types.StringType,
+	"compression": types.StringType,
 }
 
 // URLConfig returns the decoded user-supplied URL config, or nil if

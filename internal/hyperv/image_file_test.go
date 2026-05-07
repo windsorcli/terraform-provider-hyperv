@@ -1,10 +1,14 @@
 package hyperv
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -365,6 +369,289 @@ func TestClient_NewImageFileFromLocalPath_StreamFailureSurfacesAndSkipsRunScript
 	}
 	if len(fr.Calls()) != 0 {
 		t.Errorf("RunScript Calls = %d, want 0 (stream failure must short-circuit)", len(fr.Calls()))
+	}
+}
+
+// gzipBytes returns the gzip-encoded form of payload using the stdlib
+// default compression level. Used by the runner-pipelined fetch tests
+// to stand up an httptest.Server that serves a publisher-shaped
+// `.gz` body.
+func gzipBytes(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write(payload); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// hexSum returns the lowercase-hex SHA-256 of b. Tiny helper so the
+// gzip-pipeline assertions stay readable.
+func hexSum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// NewImageFileFromURL with Compression="gz" exercises the runner-pipelined
+// flow: the runner fetches the URL, decompresses on the fly, streams the
+// decompressed bytes to a host-side .part sibling of destination_path,
+// and dispatches new.ps1 in local_path mode for verify-and-rename. This
+// test pins the shape on every wire boundary the pipeline crosses --
+// StreamFile destination, RunScript stdin (source_mode, expected_sha256
+// = decompressed hash, staging_path matching StreamFile destination, and
+// destination_path round-trip).
+func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
+	t.Parallel()
+
+	decompressed := []byte("hyperv-image-file gzip pipeline fixture\n")
+	compressed := gzipBytes(t, decompressed)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(compressed)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/talos.vhdx",
+		URL:             srv.URL + "/talos.vhd.gz",
+		ExpectedSha256:  hexSum(compressed),
+		Compression:     "gz",
+	}
+	if _, err := c.NewImageFileFromURL(t.Context(), in); err != nil {
+		t.Fatalf("NewImageFileFromURL: %v", err)
+	}
+
+	// StreamFile must have been called exactly once with a `.part-`
+	// sibling of destination_path on the host side. The runner-side
+	// LocalPath is a tmpfile we don't predict, but it must be set.
+	streams := fr.StreamCalls()
+	if len(streams) != 1 {
+		t.Fatalf("StreamCalls = %d, want 1", len(streams))
+	}
+	if streams[0].LocalPath == "" {
+		t.Errorf("stream.LocalPath is empty; want a runner-side tmpfile path")
+	}
+	if !strings.HasPrefix(streams[0].RemotePath, "C:/hyperv/images/talos.vhdx.part-") {
+		t.Errorf("stream.RemotePath = %q, want a `<destination>.part-*` sibling",
+			streams[0].RemotePath)
+	}
+
+	// RunScript must have been called exactly once with the local_path
+	// wire shape. expected_sha256 is the *decompressed* SHA -- the
+	// runner publisher-side checksum check has already been done in
+	// process before the script runs.
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls = %d, want 1", len(calls))
+	}
+	stdin := string(calls[0].StdinJSON)
+	for _, want := range []string{
+		`"destination_path":"C:/hyperv/images/talos.vhdx"`,
+		`"source_mode":"local_path"`,
+		`"expected_sha256":"` + hexSum(decompressed) + `"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+	// staging_path on the wire must equal the path StreamFile wrote to
+	// -- the host script's Test-Path keys on it for the verify step.
+	var got struct {
+		StagingPath string `json:"staging_path"`
+	}
+	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.StagingPath != streams[0].RemotePath {
+		t.Errorf("stdin.staging_path = %q, want %q (must match StreamFile destination)",
+			got.StagingPath, streams[0].RemotePath)
+	}
+	// The user-facing URL field must NOT leak into the local_path-mode
+	// wire shape -- new.ps1 doesn't accept `url` outside url-mode and
+	// would either ignore it (forward-compatible noise) or reject it
+	// (strict-mode trip). Either way, omitting is the contract.
+	if strings.Contains(stdin, `"url"`) {
+		t.Errorf("stdin should omit 'url' for local_path-mode dispatch; got: %s", stdin)
+	}
+}
+
+// "gzip" is a valid alias for "gz" -- publishers in the wild label the
+// codec inconsistently. Both must dispatch to the runner-pipelined flow,
+// not silently fall through to the host-direct path.
+func TestClient_NewImageFileFromURL_GzipAliasNormalizes(t *testing.T) {
+	t.Parallel()
+
+	decompressed := []byte("alias-normalize fixture\n")
+	compressed := gzipBytes(t, decompressed)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(compressed)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/x.vhd.gz",
+		ExpectedSha256:  hexSum(compressed),
+		Compression:     "gzip", // alias
+	}); err != nil {
+		t.Fatalf("NewImageFileFromURL: %v", err)
+	}
+	if len(fr.StreamCalls()) != 1 {
+		t.Errorf("StreamCalls = %d, want 1 (alias should dispatch to runner-pipelined flow)",
+			len(fr.StreamCalls()))
+	}
+}
+
+// Compressed-bytes SHA mismatch surfaces as ErrChecksumMismatch *before*
+// any StreamFile or RunScript call. The runner-side pipeline reads the
+// whole body to compute the hash, so the assertion is "host stays
+// untouched on a publisher-checksum drift".
+func TestClient_NewImageFileFromURL_GzipCompressedChecksumMismatch(t *testing.T) {
+	t.Parallel()
+
+	decompressed := []byte("compressed-checksum-mismatch fixture\n")
+	compressed := gzipBytes(t, decompressed)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(compressed)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/x.vhd.gz",
+		// Wrong SHA -- 64 zeroes never matches any real payload.
+		ExpectedSha256: strings.Repeat("0", 64),
+		Compression:    "gz",
+	})
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("err = %v, want ErrChecksumMismatch", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (compressed-checksum mismatch must short-circuit)",
+			len(fr.StreamCalls()))
+	}
+	if len(fr.Calls()) != 0 {
+		t.Errorf("RunScript Calls = %d, want 0 (compressed-checksum mismatch must short-circuit)",
+			len(fr.Calls()))
+	}
+}
+
+// Garbage in place of a valid gzip stream surfaces as
+// ErrDecompressionFailed before any host-side call. gzip.NewReader fails
+// eagerly on header magic; the test pins that the typed sentinel
+// reaches the resource layer rather than a generic transport error.
+func TestClient_NewImageFileFromURL_GzipDecompressionFailed(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("this is not a gzip stream"))
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/x.vhd.gz",
+		ExpectedSha256:  strings.Repeat("a", 64),
+		Compression:     "gz",
+	})
+	if !errors.Is(err, ErrDecompressionFailed) {
+		t.Errorf("err = %v, want ErrDecompressionFailed", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (decompression failure must short-circuit)",
+			len(fr.StreamCalls()))
+	}
+	if len(fr.Calls()) != 0 {
+		t.Errorf("RunScript Calls = %d, want 0 (decompression failure must short-circuit)",
+			len(fr.Calls()))
+	}
+}
+
+// Non-2xx HTTP from the URL surfaces before any decompression or host-
+// side call. The Go-side mapping is intentionally generic
+// (ErrPSExecution-wrapped) -- callers will surface the resulting
+// diagnostic on the `url` attribute regardless of category.
+func TestClient_NewImageFileFromURL_GzipHTTPNon2xx(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/missing.vhd.gz",
+		ExpectedSha256:  strings.Repeat("a", 64),
+		Compression:     "gz",
+	})
+	if err == nil {
+		t.Fatal("expected error for non-2xx HTTP response")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("err = %v, want substring '404'", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (non-2xx must short-circuit)", len(fr.StreamCalls()))
+	}
+}
+
+// Compression="" preserves the existing host-direct fetch flow byte-for-
+// byte: the typed client must dispatch to new.ps1's url-mode entry
+// point, not the runner-pipelined one. A regression that flipped the
+// dispatch on a "" check would silently change the wire shape for every
+// existing user.
+func TestClient_NewImageFileFromURL_NoCompressionUsesHostDirectFlow(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromUrl").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             "https://example.com/x.vhdx",
+		ExpectedSha256:  strings.Repeat("a", 64),
+		// Compression intentionally left empty.
+	}
+	if _, err := c.NewImageFileFromURL(t.Context(), in); err != nil {
+		t.Fatalf("NewImageFileFromURL: %v", err)
+	}
+
+	// Host-direct flow: no StreamFile, source_mode=url on stdin.
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 for host-direct flow", len(fr.StreamCalls()))
+	}
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if !strings.Contains(stdin, `"source_mode":"url"`) {
+		t.Errorf("stdin missing source_mode=url; got: %s", stdin)
 	}
 }
 

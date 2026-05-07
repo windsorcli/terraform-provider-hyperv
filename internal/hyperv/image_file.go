@@ -1,14 +1,18 @@
 package hyperv
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
 )
@@ -36,13 +40,26 @@ func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, err
 	return &f, nil
 }
 
-// NewImageFileFromURL downloads via Start-BitsTransfer to a sibling .part
-// file in the destination directory, verifies the SHA-256 against
-// in.ExpectedSha256, and atomic-renames into place. Returns
-// ErrChecksumMismatch when the downloaded bytes don't hash to the expected
-// value (the .part is cleaned up; no half-baked file lingers at the
-// canonical destination).
+// NewImageFileFromURL fetches a file by URL. With Compression="" the
+// host-side new.ps1 url-mode path runs: HttpClient streams to a sibling
+// .part file in the destination directory, the host verifies the SHA-256
+// against in.ExpectedSha256, and Move-Item atomic-renames into place.
+// With Compression set (currently only "gz"/"gzip"), the call delegates
+// to the runner-pipelined flow in newImageFileFromCompressedURL --
+// fetching and decompressing happen on the runner because PS 5.1 has no
+// built-in xz/zst/bz2 decompressors and shipping host-side third-party
+// modules defeats the §5 PS 5.1 floor that exists so Hyper-V hosts need
+// no extra installs.
+//
+// Returns ErrChecksumMismatch when the downloaded bytes don't hash to
+// the expected value (the .part is cleaned up; no half-baked file
+// lingers at the canonical destination). Returns ErrDecompressionFailed
+// from the runner-pipelined path when the gzip stream is corrupt.
 func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
+	if normalizeCompression(in.Compression) != "" {
+		return c.newImageFileFromCompressedURL(ctx, in)
+	}
+
 	body, err := scripts.ImageFileScript("new")
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
@@ -64,6 +81,194 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 		return nil, err
 	}
 	return &f, nil
+}
+
+// newImageFileFromCompressedURL implements the runner-pipelined fetch:
+// the runner does the HTTP download and decompression in-process, then
+// streams the decompressed bytes to the host via Connection.StreamFile
+// and dispatches new.ps1 in local_path mode for the verify-and-rename.
+//
+// The wire shape on the host stays identical to local_path mode --
+// new.ps1 doesn't know whether the staged bytes came from the runner's
+// filesystem or from a runner-side decompression of an HTTP body. That
+// keeps the §5 PS 5.1 contract unchanged and means no Pester churn.
+//
+// Pipeline (single read of the HTTP body, no buffering):
+//
+//	HTTP body
+//	  -> tee(compressed sha)        // verify against in.ExpectedSha256
+//	  -> gzip.NewReader (decompressor)
+//	  -> tee(decompressed sha)      // sent to new.ps1 as expected_sha256
+//	  -> os.File (runner tmpfile, decompressed)
+//
+// The verify ordering is deliberate: read+decompress to completion before
+// checking the compressed-bytes hash. A truncated body that decompresses
+// "successfully" through some prefix would still fail the SHA check --
+// that's what we want. ErrDecompressionFailed only fires for bytes that
+// are not valid gzip (header magic missing, CRC mismatch on the trailer);
+// ErrChecksumMismatch fires when the bytes are valid gzip but don't
+// match the publisher-signed compressed hash.
+func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
+	codec := normalizeCompression(in.Compression)
+	if codec != "gz" {
+		return nil, fmt.Errorf("%w: unsupported compression %q (PR1: gz only)", ErrPSExecution, in.Compression)
+	}
+
+	tmpFile, err := os.CreateTemp("", "hyperv-image-*.bin")
+	if err != nil {
+		return nil, fmt.Errorf("create runner tmpfile for decompressed image: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	// Cleanup is best-effort and must run on every exit path -- even
+	// after a successful StreamFile, the runner-side tmpfile is no
+	// longer needed (the bytes live on the host).
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	compressedSHA, decompressedSHA, err := pipeCompressedHTTPToFile(ctx, in.URL, codec, tmpFile)
+	if err != nil {
+		return nil, err
+	}
+
+	expectedCompressed := strings.ToLower(in.ExpectedSha256)
+	if compressedSHA != expectedCompressed {
+		return nil, fmt.Errorf("%w: expected sha256=%s of compressed bytes from %s, got sha256=%s",
+			ErrChecksumMismatch, expectedCompressed, in.URL, compressedSHA)
+	}
+
+	// Close the file before StreamFile reads it from the same path -- on
+	// Windows-runner setups an open writer would block readers, on
+	// POSIX it works either way but explicit close is cheaper than
+	// hoping the OS handles overlap.
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("close runner tmpfile %s: %w", tmpPath, err)
+	}
+
+	stagingPath, err := pickStagingPath(in.DestinationPath)
+	if err != nil {
+		return nil, fmt.Errorf("pick staging path: %w", err)
+	}
+
+	if err := c.runner.StreamFile(ctx, tmpPath, stagingPath); err != nil {
+		return nil, fmt.Errorf("stream decompressed %s to %s: %w", tmpPath, stagingPath, err)
+	}
+
+	body, err := scripts.ImageFileScript("new")
+	if err != nil {
+		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
+	}
+	// Wire shape matches local_path mode exactly -- new.ps1 dispatches
+	// New-HypervImageFileFromLocalPath, which Test-Paths the staging
+	// file, Get-FileHashes it against expected_sha256 (the runner-
+	// computed *decompressed* SHA), and Move-Items into place.
+	stdin, err := json.Marshal(struct {
+		DestinationPath string `json:"destination_path"`
+		StagingPath     string `json:"staging_path"`
+		ExpectedSha256  string `json:"expected_sha256"`
+		SourceMode      string `json:"source_mode"`
+	}{
+		DestinationPath: in.DestinationPath,
+		StagingPath:     stagingPath,
+		ExpectedSha256:  decompressedSHA,
+		SourceMode:      "local_path",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
+	}
+
+	var f ImageFile
+	if err := c.runScript(ctx, string(body), stdin, &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// pipeCompressedHTTPToFile drives the HTTP body through the
+// double-tee+decompressor pipeline and writes decompressed bytes to dst.
+// Returns hex-encoded compressed and decompressed SHA-256 hashes for the
+// caller to verify and forward to the host script.
+//
+// Errors are mapped to typed sentinels at the boundaries that distinguish
+// transport from content from corruption: a non-2xx HTTP status surfaces
+// as ErrPSExecution-wrapped (treating the runner-side fetch as a single
+// "powershell-equivalent" external call from the resource's POV); a gzip
+// header or CRC failure surfaces as ErrDecompressionFailed; an io.Copy
+// failure mid-stream is wrapped without remap so transient transport
+// errors keep their original cause chain.
+func pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec string, dst io.Writer) (compressedSHA, decompressedSHA string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("build GET %s: %w", rawURL, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("%w: GET %s: status %d", ErrPSExecution, rawURL, resp.StatusCode)
+	}
+
+	compressedHasher := sha256.New()
+	teeBody := io.TeeReader(resp.Body, compressedHasher)
+
+	decompressor, err := newDecompressor(codec, teeBody)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %s: %w", ErrDecompressionFailed, codec, err)
+	}
+	defer func() { _ = decompressor.Close() }()
+
+	decompressedHasher := sha256.New()
+	teeDecompressed := io.TeeReader(decompressor, decompressedHasher)
+
+	if _, err := io.Copy(dst, teeDecompressed); err != nil {
+		// gzip.Reader returns gzip.ErrChecksum / gzip.ErrHeader for
+		// truncated or corrupt streams during Read; remap those to the
+		// decompression sentinel. Other errors (e.g. net.OpError on a
+		// dropped connection, ctx.Err on cancellation) bubble up with
+		// their original cause for the caller to interpret.
+		if errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader) {
+			return "", "", fmt.Errorf("%w: %s mid-stream: %w", ErrDecompressionFailed, codec, err)
+		}
+		return "", "", fmt.Errorf("read+decompress GET %s: %w", rawURL, err)
+	}
+
+	return hex.EncodeToString(compressedHasher.Sum(nil)),
+		hex.EncodeToString(decompressedHasher.Sum(nil)),
+		nil
+}
+
+// newDecompressor returns an io.ReadCloser that wraps src and emits
+// decompressed bytes. PR1 supports "gz" only; future codecs (xz, zst,
+// bz2) plug in here behind the same interface.
+func newDecompressor(codec string, src io.Reader) (io.ReadCloser, error) {
+	switch codec {
+	case "gz":
+		return gzip.NewReader(src)
+	default:
+		return nil, fmt.Errorf("unsupported codec %q", codec)
+	}
+}
+
+// normalizeCompression folds publisher-style aliases ("gzip" -> "gz")
+// and case to the canonical codec identifier the dispatch table keys on.
+// Empty in, empty out (no compression).
+func normalizeCompression(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "none":
+		return ""
+	case "gz", "gzip":
+		return "gz"
+	default:
+		// Unknown codecs flow through verbatim so the dispatch table
+		// can produce a clean "unsupported compression" error pinned
+		// to the user-supplied value rather than silently treating
+		// e.g. "xz" as "no compression."
+		return strings.ToLower(strings.TrimSpace(s))
+	}
 }
 
 // NewImageFileFromLocalPath streams the runner-local file at LocalPath to

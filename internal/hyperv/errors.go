@@ -19,12 +19,13 @@ import (
 // vmms stopped, cluster node fenced, transport blip) and the resource MUST
 // surface a transient error rather than dropping the resource from state.
 var (
-	ErrNotFound          = errors.New("hyperv: resource not found")
-	ErrUnavailable       = errors.New("hyperv: resource temporarily unavailable")
-	ErrUnauthorized      = errors.New("hyperv: permission denied")
-	ErrInvalidParentPath = errors.New("hyperv: invalid parent path")
-	ErrChecksumMismatch  = errors.New("hyperv: image file checksum mismatch")
-	ErrPSExecution       = errors.New("hyperv: powershell execution failed")
+	ErrNotFound            = errors.New("hyperv: resource not found")
+	ErrUnavailable         = errors.New("hyperv: resource temporarily unavailable")
+	ErrUnauthorized        = errors.New("hyperv: permission denied")
+	ErrInvalidParentPath   = errors.New("hyperv: invalid parent path")
+	ErrChecksumMismatch    = errors.New("hyperv: image file checksum mismatch")
+	ErrDecompressionFailed = errors.New("hyperv: image file decompression failed")
+	ErrPSExecution         = errors.New("hyperv: powershell execution failed")
 )
 
 // errorEnvelope mirrors the JSON Write-HypervError emits to stderr.

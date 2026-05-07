@@ -162,6 +162,41 @@ func TestResource_Schema_URLSubAttributesRequired(t *testing.T) {
 	}
 }
 
+// `compression` is the new optional codec selector under the url block.
+// It must be Optional (not Required -- absence is "no compression, host
+// fetches directly"), and it must carry a OneOf validator so a typo like
+// "tar.gz" surfaces at plan time, not as a typed-client unsupported-
+// codec error at apply.
+func TestResource_Schema_URLCompressionOptional(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	url, ok := resp.Schema.Attributes["url"].(schema.SingleNestedAttribute)
+	if !ok {
+		t.Fatalf("url is not a SingleNestedAttribute (got %T)", resp.Schema.Attributes["url"])
+	}
+	raw, ok := url.Attributes["compression"]
+	if !ok {
+		t.Fatal("url block missing 'compression' sub-attribute")
+	}
+	strAttr, ok := raw.(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("url.compression is not a StringAttribute (got %T)", raw)
+	}
+	if !strAttr.Optional {
+		t.Error("url.compression must be Optional (absence == no compression)")
+	}
+	if strAttr.Required {
+		t.Error("url.compression must NOT be Required")
+	}
+	if len(strAttr.Validators) == 0 {
+		t.Error("url.compression must carry a validator (OneOf gz/gzip)")
+	}
+}
+
 // Metadata pins the resource's TF type name. Any change here is a
 // user-visible breaking rename.
 func TestResource_Metadata(t *testing.T) {
