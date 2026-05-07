@@ -109,8 +109,22 @@ Forward and back slashes are accepted equivalently. The path is resolved relativ
 
 Required:
 
-- `checksum` (String) Expected `sha256:<64-hex>` checksum. The downloaded bytes are verified against this value before the atomic rename; mismatch fails the apply with a clean diagnostic and the partial file is removed.
+- `checksum` (String) Expected `sha256:<64-hex>` checksum. When `compression` is unset the host downloads directly and verifies the on-the-wire bytes against this value before the atomic rename; mismatch fails the apply with a clean diagnostic and the partial file is removed.
+
+When `compression` is set this is the SHA-256 of the **compressed** bytes (the form publishers ship in `SHA256SUMS` next to a `.gz` / `.xz` artifact). The provider verifies against the bytes the runner downloads, then decompresses; the on-disk sha256 you read back from `sha256` reflects the decompressed payload, not this value.
 - `url` (String) HTTP or HTTPS URL of the file. The download streams to disk, so multi-GB images don't buffer in memory.
+
+Optional:
+
+- `compression` (String) Optional decompressor. When set, the provider switches `url`-mode from a host-direct fetch to a runner-pipelined fetch: the Terraform runner downloads the URL, decompresses in-process, and streams the decompressed bytes to the Hyper-V host via the active connection backend (SSH or WinRM). The host then verifies the streamed bytes' SHA-256 and atomic-renames into place.
+
+**Why runner-side?** PowerShell 5.1 (the host floor) ships only `gzip` and `zip` decompressors via `System.IO.Compression`. Doing decompression on the runner instead lets every supported codec land without requiring third-party PowerShell modules on the Hyper-V host.
+
+**Tradeoff:** the runner-pipelined flow streams the full decompressed image runner -> host (bandwidth measured at the runner's NIC, throttled by the connection backend; WinRM is ~10x slower than SSH for the same payload). The default host-direct flow (when `compression` is unset) lets the host pull the URL itself, which is faster for self-hosted artifacts on the same LAN as the bench.
+
+**`destination_path` is the decompressed file's path.** Specify e.g. `talos.vhdx`, **not** `talos.vhdx.xz` -- the on-disk file after decompression is the Hyper-V-consumable artifact.
+
+**Supported values (PR1):** `gz` (alias: `gzip`). Future codecs (`xz`, `zst`, `bz2`) are reserved and will be added without a breaking schema change. Forces replacement when changed; cannot be flipped in place because the on-disk bytes change wholesale.
 
 ## Import
 
