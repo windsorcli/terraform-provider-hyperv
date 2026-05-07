@@ -193,7 +193,7 @@ func TestResource_Schema_URLCompressionOptional(t *testing.T) {
 		t.Error("url.compression must NOT be Required")
 	}
 	if len(strAttr.Validators) == 0 {
-		t.Error("url.compression must carry a validator (OneOf gz/gzip)")
+		t.Error("url.compression must carry a validator (OneOf gz/gzip/xz/zst/zstd/bz2/bzip2)")
 	}
 }
 

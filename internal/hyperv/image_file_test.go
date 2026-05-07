@@ -7,12 +7,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
@@ -436,6 +440,76 @@ func gzipBytes(t *testing.T, payload []byte) []byte {
 	return buf.Bytes()
 }
 
+// xzBytes returns the xz-encoded form of payload. Talos's `.vhd.xz` is
+// the headline use case for the runner-pipelined flow; the encoder
+// here is the same library the production decoder uses
+// (github.com/ulikunitz/xz), so the round-trip stays self-consistent.
+func xzBytes(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := xz.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("xz NewWriter: %v", err)
+	}
+	if _, err := w.Write(payload); err != nil {
+		t.Fatalf("xz write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("xz close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// zstdBytes returns the zstd-encoded form of payload. Same library
+// (klauspost/compress/zstd) drives both encode and decode so the
+// round-trip is hermetic.
+func zstdBytes(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd NewWriter: %v", err)
+	}
+	if _, err := w.Write(payload); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// bz2FixturePlaintext / bz2FixtureCompressed are a precomputed bzip2
+// round-trip pair. The Go stdlib (`compress/bzip2`) ships only a
+// reader; rather than pulling in a third-party encoder just for a
+// test fixture, the compressed bytes are a single inline literal.
+//
+// Generation (one-time, on a machine with bzip2 in PATH):
+//
+//	printf 'tfhyperv bz2 fixture\n' | bzip2 -9 | xxd -p -c 200
+//
+// If the plaintext is changed, the compressed bytes must be
+// regenerated. The decompression-roundtrip assertion in the bz2
+// happy-path test catches a mismatch immediately.
+var (
+	bz2FixturePlaintext  = []byte("tfhyperv bz2 fixture\n")
+	bz2FixtureCompressed = mustHexDecode(
+		"425a6839314159265359b4c029af0000075980001040001000136057702000314c0013428320da47ea8d2c3a5388a1e846b807c5dc914e14242d300a6bc0",
+	)
+)
+
+// mustHexDecode wraps hex.DecodeString for use in package-level vars
+// where an error return is awkward. Panics on bad input -- only fed
+// from compile-time string literals, so a panic means the literal is
+// malformed and the package is genuinely broken.
+func mustHexDecode(s string) []byte {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		panic(fmt.Sprintf("mustHexDecode(%q): %v", s, err))
+	}
+	return b
+}
+
 // hexSum returns the lowercase-hex SHA-256 of b. Tiny helper so the
 // gzip-pipeline assertions stay readable.
 func hexSum(b []byte) string {
@@ -528,6 +602,170 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 	// (strict-mode trip). Either way, omitting is the contract.
 	if strings.Contains(stdin, `"url"`) {
 		t.Errorf("stdin should omit 'url' for local_path-mode dispatch; got: %s", stdin)
+	}
+}
+
+// runCodecHappyPath is the per-codec smoke check that drives the runner-
+// pipelined fetch end-to-end and asserts the load-bearing wire shape:
+// the host receives source_mode=local_path with expected_sha256 set to
+// the *decompressed* hash, and StreamFile lands on a destination .part
+// sibling. The gzip-specific test above does the full StreamCall +
+// stdin assertion suite; codec coverage tests use this slim form to
+// avoid duplicating that boilerplate four times.
+func runCodecHappyPath(t *testing.T, codec string, decompressed, compressed []byte) {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(compressed)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	dest := "C:/hyperv/images/codec-" + codec + ".vhdx"
+	if _, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: dest,
+		URL:             srv.URL + "/payload",
+		ExpectedSha256:  hexSum(compressed),
+		Compression:     codec,
+	}); err != nil {
+		t.Fatalf("NewImageFileFromURL(%s): %v", codec, err)
+	}
+
+	if len(fr.StreamCalls()) != 1 {
+		t.Fatalf("StreamCalls = %d, want 1", len(fr.StreamCalls()))
+	}
+	if !strings.HasPrefix(fr.StreamCalls()[0].RemotePath, dest+".part-") {
+		t.Errorf("stream.RemotePath = %q, want prefix %q.part-",
+			fr.StreamCalls()[0].RemotePath, dest)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	wantSha := `"expected_sha256":"` + hexSum(decompressed) + `"`
+	if !strings.Contains(stdin, wantSha) {
+		t.Errorf("stdin missing decompressed sha %q\nfull stdin: %s", wantSha, stdin)
+	}
+	if !strings.Contains(stdin, `"source_mode":"local_path"`) {
+		t.Errorf("stdin missing source_mode=local_path; got: %s", stdin)
+	}
+}
+
+// runCodecDecompressionFailed feeds garbage to the named codec and asserts
+// the typed sentinel reaches the resource layer. Together with the
+// happy path above, this nails the dispatch table's two failure modes
+// per codec: bad bytes -> ErrDecompressionFailed, wire-shape mismatch
+// would be caught by the gzip-specific tests already.
+func runCodecDecompressionFailed(t *testing.T, codec string) {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("definitely not a " + codec + " stream"))
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/payload",
+		ExpectedSha256:  strings.Repeat("a", 64),
+		Compression:     codec,
+	})
+	if !errors.Is(err, ErrDecompressionFailed) {
+		t.Errorf("err = %v, want ErrDecompressionFailed", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (decompression failure must short-circuit)",
+			len(fr.StreamCalls()))
+	}
+}
+
+// xz is the headline codec for the runner-pipelined flow -- Talos's
+// `.vhd.xz` artifact is exactly what motivated PR2.
+func TestClient_NewImageFileFromURL_XzRunnerPipeline(t *testing.T) {
+	t.Parallel()
+	plain := []byte("hyperv-image-file xz pipeline fixture\n")
+	runCodecHappyPath(t, "xz", plain, xzBytes(t, plain))
+}
+
+// xz garbage surfaces as ErrDecompressionFailed before any host call.
+func TestClient_NewImageFileFromURL_XzDecompressionFailed(t *testing.T) {
+	t.Parallel()
+	runCodecDecompressionFailed(t, "xz")
+}
+
+// zst (canonical) and zstd (alias) both dispatch to the runner-pipelined
+// flow. Two test functions rather than one parameterized run because
+// the alias-normalization assertion belongs in its own t.Run, not
+// shoehorned into the happy-path helper.
+func TestClient_NewImageFileFromURL_ZstdRunnerPipeline(t *testing.T) {
+	t.Parallel()
+	plain := []byte("hyperv-image-file zstd pipeline fixture\n")
+	runCodecHappyPath(t, "zst", plain, zstdBytes(t, plain))
+}
+
+// "zstd" alias normalizes to "zst" and dispatches to the same flow.
+func TestClient_NewImageFileFromURL_ZstdAliasNormalizes(t *testing.T) {
+	t.Parallel()
+	plain := []byte("zstd alias normalize fixture\n")
+	runCodecHappyPath(t, "zstd", plain, zstdBytes(t, plain))
+}
+
+// zstd garbage surfaces as ErrDecompressionFailed.
+func TestClient_NewImageFileFromURL_ZstdDecompressionFailed(t *testing.T) {
+	t.Parallel()
+	runCodecDecompressionFailed(t, "zst")
+}
+
+// bz2 round-trips the precomputed fixture (see bz2FixtureCompressed
+// docs for regen instructions). This test fails-fast if the inline
+// fixture's plaintext or compressed bytes drift -- the decompressed
+// hash assertion in runCodecHappyPath catches a mismatch immediately.
+func TestClient_NewImageFileFromURL_Bz2RunnerPipeline(t *testing.T) {
+	t.Parallel()
+	runCodecHappyPath(t, "bz2", bz2FixturePlaintext, bz2FixtureCompressed)
+}
+
+// "bzip2" alias normalizes to "bz2".
+func TestClient_NewImageFileFromURL_Bz2AliasNormalizes(t *testing.T) {
+	t.Parallel()
+	runCodecHappyPath(t, "bzip2", bz2FixturePlaintext, bz2FixtureCompressed)
+}
+
+// bz2 garbage surfaces as ErrDecompressionFailed. The stdlib
+// `compress/bzip2` package fails on the first read past the magic
+// bytes (it doesn't pre-check the header), so this also pins the
+// "decompressor fails on first Read, not at construction" path --
+// distinct from gzip / xz / zstd which fail eagerly on NewReader.
+func TestClient_NewImageFileFromURL_Bz2DecompressionFailed(t *testing.T) {
+	t.Parallel()
+	runCodecDecompressionFailed(t, "bz2")
+}
+
+// isSupportedCodec is the second-line defense between schema validation
+// and the dispatch table -- a bypass that bypasses validation (raw
+// client use, future ephemeral attribute, etc.) still gets a clean
+// ErrPSExecution-wrapped error rather than a confusing
+// "unsupported codec" string from inside newDecompressor.
+func TestIsSupportedCodec(t *testing.T) {
+	t.Parallel()
+
+	for _, codec := range []string{"gz", "xz", "zst", "bz2"} {
+		if !isSupportedCodec(codec) {
+			t.Errorf("isSupportedCodec(%q) = false, want true", codec)
+		}
+	}
+	for _, codec := range []string{"", "gzip", "tar", "tar.gz", "zstd", "bzip2", "lz4"} {
+		// Aliases ("gzip", "zstd", "bzip2") must NOT be supported by
+		// the post-normalization lookup -- the table keys are canonical.
+		// normalizeCompression is the seam that folds aliases.
+		if isSupportedCodec(codec) {
+			t.Errorf("isSupportedCodec(%q) = true, want false (raw, pre-normalize)", codec)
+		}
 	}
 }
 

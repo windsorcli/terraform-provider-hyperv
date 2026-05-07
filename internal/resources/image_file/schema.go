@@ -136,12 +136,20 @@ func resourceSchema() schema.Schema {
 							"**`destination_path` is the decompressed file's path.** Specify " +
 							"e.g. `talos.vhdx`, **not** `talos.vhdx.xz` -- the on-disk file " +
 							"after decompression is the Hyper-V-consumable artifact.\n\n" +
-							"**Supported values (PR1):** `gz` (alias: `gzip`). Future codecs " +
-							"(`xz`, `zst`, `bz2`) are reserved and will be added without a " +
-							"breaking schema change. Forces replacement when changed; cannot " +
-							"be flipped in place because the on-disk bytes change wholesale.",
+							"**Supported values:**\n\n" +
+							"  * `gz` (alias: `gzip`) -- universal; stdlib decoder.\n" +
+							"  * `xz` -- the Talos publisher format; pure-Go decoder via " +
+							"`github.com/ulikunitz/xz`.\n" +
+							"  * `zst` (alias: `zstd`) -- increasingly common (Arch, Fedora " +
+							"variants); pure-Go decoder via `github.com/klauspost/compress/zstd`.\n" +
+							"  * `bz2` (alias: `bzip2`) -- legacy; stdlib decoder.\n\n" +
+							"Container archives (`tar`, `tar.gz`, `zip`) are deliberately " +
+							"unsupported -- they require `path_in_archive` semantics that " +
+							"the single-file streaming flow doesn't model. Forces replacement " +
+							"when changed; cannot be flipped in place because the on-disk " +
+							"bytes change wholesale.",
 						Validators: []validator.String{
-							stringvalidator.OneOf("gz", "gzip"),
+							stringvalidator.OneOf("gz", "gzip", "xz", "zst", "zstd", "bz2", "bzip2"),
 						},
 					},
 				},

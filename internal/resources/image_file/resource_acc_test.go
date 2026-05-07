@@ -40,6 +40,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
 )
@@ -298,6 +300,135 @@ func TestAcc_ImageFile_urlGzip(t *testing.T) {
 					// not the user-supplied compressed checksum. A regression
 					// that wrote the compressed hash into state (or compared
 					// it on the host) would fail this exactly.
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(decompressedHex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(decompressed))),
+					),
+				},
+			},
+		},
+	})
+}
+
+// TestAcc_ImageFile_urlXz exercises url-mode with `compression = "xz"`
+// end-to-end. xz is the Talos publisher format -- the runner-pipelined
+// flow's headline use case. Same hermetic setup as TestAcc_ImageFile_urlGzip
+// (in-test fixture, in-test server, decompressed sha asserted against
+// the on-disk hash) so the bench-side machinery stays identical and the
+// only thing that varies is the codec.
+func TestAcc_ImageFile_urlXz(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	runnerIP, err := acctest.RunnerIPForBench(os.Getenv("HYPERV_HOST"))
+	if err != nil {
+		t.Skipf("can't determine runner IP routable to bench (%v); skipping url+xz test", err)
+	}
+
+	decompressed := []byte("tfacc url+xz mode fixture v1\n")
+	var compressedBuf bytes.Buffer
+	xw, err := xz.NewWriter(&compressedBuf)
+	if err != nil {
+		t.Fatalf("xz NewWriter: %v", err)
+	}
+	if _, err := xw.Write(decompressed); err != nil {
+		t.Fatalf("xz write: %v", err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatalf("xz close: %v", err)
+	}
+	compressed := compressedBuf.Bytes()
+
+	compressedSum := sha256.Sum256(compressed)
+	decompressedSum := sha256.Sum256(decompressed)
+	compressedHex := hex.EncodeToString(compressedSum[:])
+	decompressedHex := hex.EncodeToString(decompressedSum[:])
+
+	srv := acctest.ServeFixture(t, runnerIP, compressed)
+	url := srv.URL + "/fixture.bin.xz"
+	checksum := "sha256:" + compressedHex
+
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-xz")+".bin"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileURLCompressionConfig(dest, url, checksum, "xz"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("destination_path"),
+						knownvalue.StringExact(dest),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(decompressedHex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(decompressed))),
+					),
+				},
+			},
+		},
+	})
+}
+
+// TestAcc_ImageFile_urlZstd is the codec parity test for zst: same
+// architecture as the xz / gzip tests, only the codec varies.
+func TestAcc_ImageFile_urlZstd(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	runnerIP, err := acctest.RunnerIPForBench(os.Getenv("HYPERV_HOST"))
+	if err != nil {
+		t.Skipf("can't determine runner IP routable to bench (%v); skipping url+zstd test", err)
+	}
+
+	decompressed := []byte("tfacc url+zstd mode fixture v1\n")
+	var compressedBuf bytes.Buffer
+	zw, err := zstd.NewWriter(&compressedBuf)
+	if err != nil {
+		t.Fatalf("zstd NewWriter: %v", err)
+	}
+	if _, err := zw.Write(decompressed); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	compressed := compressedBuf.Bytes()
+
+	compressedSum := sha256.Sum256(compressed)
+	decompressedSum := sha256.Sum256(decompressed)
+	compressedHex := hex.EncodeToString(compressedSum[:])
+	decompressedHex := hex.EncodeToString(decompressedSum[:])
+
+	srv := acctest.ServeFixture(t, runnerIP, compressed)
+	url := srv.URL + "/fixture.bin.zst"
+	checksum := "sha256:" + compressedHex
+
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-zst")+".bin"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileURLCompressionConfig(dest, url, checksum, "zst"),
+				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_image_file.test",
 						tfjsonpath.New("sha256"),
@@ -634,16 +765,23 @@ resource "hyperv_image_file" "test" {
 // the *compressed* bytes the publisher signs (matches what users copy
 // from a SHA256SUMS file next to a `.gz` artifact).
 func imageFileURLGzipConfig(destPath, url, checksum string) string {
+	return imageFileURLCompressionConfig(destPath, url, checksum, "gz")
+}
+
+// imageFileURLCompressionConfig is the parameterized form -- callers
+// pass any codec the schema's OneOf accepts. checksum has the same
+// "publisher-signed compressed-bytes hash" meaning regardless of codec.
+func imageFileURLCompressionConfig(destPath, url, checksum, compression string) string {
 	return fmt.Sprintf(`
 resource "hyperv_image_file" "test" {
   destination_path = %q
   url = {
     url         = %q
     checksum    = %q
-    compression = "gz"
+    compression = %q
   }
 }
-`, destPath, url, checksum)
+`, destPath, url, checksum, compression)
 }
 
 // joinHostPath concatenates a Windows-style directory and filename. We

@@ -124,7 +124,14 @@ Optional:
 
 **`destination_path` is the decompressed file's path.** Specify e.g. `talos.vhdx`, **not** `talos.vhdx.xz` -- the on-disk file after decompression is the Hyper-V-consumable artifact.
 
-**Supported values (PR1):** `gz` (alias: `gzip`). Future codecs (`xz`, `zst`, `bz2`) are reserved and will be added without a breaking schema change. Forces replacement when changed; cannot be flipped in place because the on-disk bytes change wholesale.
+**Supported values:**
+
+  * `gz` (alias: `gzip`) -- universal; stdlib decoder.
+  * `xz` -- the Talos publisher format; pure-Go decoder via `github.com/ulikunitz/xz`.
+  * `zst` (alias: `zstd`) -- increasingly common (Arch, Fedora variants); pure-Go decoder via `github.com/klauspost/compress/zstd`.
+  * `bz2` (alias: `bzip2`) -- legacy; stdlib decoder.
+
+Container archives (`tar`, `tar.gz`, `zip`) are deliberately unsupported -- they require `path_in_archive` semantics that the single-file streaming flow doesn't model. Forces replacement when changed; cannot be flipped in place because the on-disk bytes change wholesale.
 
 ## Import
 
