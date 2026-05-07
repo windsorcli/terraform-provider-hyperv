@@ -63,6 +63,51 @@ Describe 'Set-HypervSwitch' {
             Should -Invoke Get-VMSwitch -Times 1 -Exactly
         }
 
+        It 'Internal + AllowManagementOS rejects (External-only flag, symmetric with new.ps1)' {
+            # Set-VMSwitch *would* accept -AllowManagementOS for an Internal
+            # switch at the cmdlet level (parameter set ChangeManagementOS
+            # matches), but setting it to $false on an Internal switch
+            # silently converts it to Private -- a switch-type change that
+            # would surface as state drift on the next refresh. Reject at
+            # the script layer to keep the contract symmetric with new.ps1
+            # ("AllowManagementOS is External-only") and to surface the
+            # mismatch with a clear attribute-anchored error rather than
+            # action-at-a-distance type churn.
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample -SwitchType 'Internal' }
+
+            { Set-HypervSwitch -Name 'int0' -SwitchType 'Internal' -AllowManagementOS $true } |
+                Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Internal''*'
+
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+            Should -Invoke Get-VMSwitch -Times 1 -Exactly
+        }
+
+        It 'Internal + AllowManagementOS rejects even when caller omits -SwitchType (host-side truth wins)' {
+            # Regression: an earlier draft of the guard read $SwitchType
+            # (the caller-supplied parameter) rather than $existing.SwitchType
+            # (the host-side value populated by Get-VMSwitch). When the
+            # Go-side Update omitted switch_type from its payload, the
+            # guard short-circuited to false and AllowManagementOS=$false
+            # got forwarded to Set-VMSwitch on a real Internal switch --
+            # which silently converts it to Private. This test pins the
+            # tightening: even with no caller hint, the guard reads the
+            # actual switch type and rejects.
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch { New-HypervSwitchSample -SwitchType 'Internal' }
+
+            { Set-HypervSwitch -Name 'int0' -AllowManagementOS $false } |
+                Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Internal''*'
+
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+            # Pin that Get-VMSwitch was actually called -- the throw must
+            # fire BECAUSE $existing.SwitchType was read, not from an
+            # earlier parameter validator. Without this, a regression
+            # that rejects up-front would still pass the test while
+            # silently breaking the "host-side truth wins" invariant.
+            Should -Invoke Get-VMSwitch -Times 1 -Exactly
+        }
+
         It 'throws ObjectNotFound when the switch is missing (skips Set-VMSwitch, symmetric with remove.ps1)' {
             # Asserts on CategoryInfo.Category because that's what the Go side
             # maps to ErrNotFound. ErrorId drift wouldn't change behavior; a

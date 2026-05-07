@@ -66,6 +66,21 @@ Describe 'New-HypervSwitch' {
 
             Should -Invoke New-VMSwitch -Times 0 -Exactly
         }
+
+        It 'Internal + AllowManagementOS rejects (External-only flag; lives only on New-VMSwitch''s NetAdapter parameter sets)' {
+            # Regression: prior to the fix the gate was `$SwitchType -ne 'Private'`,
+            # which let Internal through and forwarded -AllowManagementOS to the
+            # SwitchType parameter set -- ambiguous, so PowerShell errored with
+            # "Parameter set cannot be resolved using the specified named
+            # parameters." Pester didn't catch it because New-VMSwitch is mocked
+            # here; the bug only surfaced live on the bench.
+            Mock New-VMSwitch { New-HypervSwitchSample -SwitchType 'Internal' }
+
+            { New-HypervSwitch -Name 'int0' -SwitchType 'Internal' -AllowManagementOS $true } |
+                Should -Throw -ExpectedMessage '*allow_management_os is not valid for switch_type ''Internal''*'
+
+            Should -Invoke New-VMSwitch -Times 0 -Exactly
+        }
     }
 
     Context 'optional parameters' {
