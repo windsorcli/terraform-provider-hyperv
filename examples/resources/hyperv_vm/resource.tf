@@ -94,3 +94,113 @@ resource "hyperv_vm" "elastic" {
 }
 
 # Storage, NICs, and DVD drives attach inline on the resource itself.
+
+# ---- Appliance-OS install flow (Talos shape) -----------------------------
+#
+# Boot-from-ISO appliance OSes install themselves to a blank VHDX and then
+# expect the install media to be ejected so subsequent boots come off disk.
+# Talos's canonical Hyper-V install is the headline shape: there is no
+# prebuilt Talos VHDX, only a `metal-amd64.iso` from Image Factory. The
+# pattern is two applies:
+#
+#   * Apply 1 (install): VM boots DVD-first off the install ISO. Talos
+#     copies itself to the VHDX, then self-powers-off when its install
+#     phase finishes.
+#   * Apply 2 (run): the DVD entry is removed (drive detached, install
+#     media ejected) and `boot_order` is reordered to HDD-only. The VM
+#     boots from the now-installed VHDX and Talos comes up.
+#
+# Because `Set-VMFirmware -BootOrder` requires the VM to be `Off`, the
+# transition between the two applies needs the VM stopped before the
+# second apply runs. Two ways to drive that:
+#
+#   * Let the appliance self-stop. Talos powers off after install; the
+#     operator just waits, then runs `terraform apply` with the apply-2
+#     config below.
+#   * Force a stop via Terraform. Insert a third intermediate apply with
+#     `state.desired = "Off"` between the two applies. Mechanical but
+#     adds a third plan/apply round-trip.
+#
+# The block below is the apply-1 (install) shape. Switch the marked
+# attributes to the apply-2 (run) shape after the install finishes; the
+# resource's reconciliation detaches the DVD slot in place (no VM replace).
+#
+# `network_adapter[]` and `hard_disk_drive[]` stay constant across both
+# applies; only `dvd_drive` and `boot_order` change. Provision the blank
+# install target VHDX in the same Terraform run -- a 20 GiB dynamic disk
+# is plenty for Talos itself plus etcd state. The VM resource references
+# the `hyperv_vhd` resource's path so apply ordering is implicit (the
+# disk is created before the VM that attaches it).
+resource "hyperv_vhd" "talos_cp_01" {
+  path       = "C:/hyperv/vhds/talos-cp-01.vhdx"
+  vhd_type   = "dynamic"
+  size_bytes = 21474836480 # 20 GiB
+}
+
+resource "hyperv_vm" "talos_controlplane" {
+  name        = "talos-cp-01"
+  generation  = 2
+  cpu         = { count = 4 }
+  memory      = { startup_bytes = 4294967296 } # 4 GiB
+  secure_boot = false                          # Talos does not ship a Microsoft-signed shim
+  notes       = "Talos control plane node 1"
+
+  network_adapter = [
+    { name = "primary", switch_name = "lab" },
+  ]
+  hard_disk_drive = [
+    { path = hyperv_vhd.talos_cp_01.path, controller_number = 0, controller_location = 0 },
+  ]
+
+  # ---- Apply 1 (install): DVD attached, DVD-first boot ----
+  # On apply 2: switch `dvd_drive` to `[]` to detach the install media.
+  dvd_drive = [
+    { iso_path = "C:/hyperv/iso/metal-amd64.iso", controller_number = 0, controller_location = 1 },
+  ]
+  # On apply 2: drop the dvd_drive entry from this list and keep only
+  # the hard_disk_drive entry. The reorder triggers
+  # `Set-VMFirmware -BootOrder`, which requires the VM to be Off.
+  boot_order = [
+    { type = "dvd_drive", controller_number = 0, controller_location = 1 },
+    { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
+  ]
+
+  state = {
+    desired = "Running"
+  }
+}
+
+# Apply-2 (run) shape of the same VM, shown commented-out so readers can
+# see the post-install diff without reconstructing it from inline notes.
+# After Talos has installed itself to the VHDX (Apply 1) and the VM is
+# Off, replace the apply-1 block above with the contents of this block --
+# same `name`, same VHDX, same NIC; only `dvd_drive` (now empty) and
+# `boot_order` (HDD-only) change. The reconciliation detaches the DVD
+# slot in place (no VM replace), the boot-order reorder fires
+# `Set-VMFirmware -BootOrder`, and the VM boots from the installed disk.
+#
+# resource "hyperv_vm" "talos_controlplane" {
+#   name        = "talos-cp-01"
+#   generation  = 2
+#   cpu         = { count = 4 }
+#   memory      = { startup_bytes = 4294967296 }
+#   secure_boot = false
+#   notes       = "Talos control plane node 1"
+#
+#   network_adapter = [
+#     { name = "primary", switch_name = "lab" },
+#   ]
+#   hard_disk_drive = [
+#     { path = hyperv_vhd.talos_cp_01.path, controller_number = 0, controller_location = 0 },
+#   ]
+#
+#   # ---- Apply 2 (run): DVD detached, HDD-only boot ----
+#   dvd_drive  = []
+#   boot_order = [
+#     { type = "hard_disk_drive", controller_number = 0, controller_location = 0 },
+#   ]
+#
+#   state = {
+#     desired = "Running"
+#   }
+# }
