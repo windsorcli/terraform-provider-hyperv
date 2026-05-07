@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"compress/bzip2"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -13,6 +14,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
 )
@@ -110,8 +114,8 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 // match the publisher-signed compressed hash.
 func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
 	codec := normalizeCompression(in.Compression)
-	if codec != "gz" {
-		return nil, fmt.Errorf("%w: unsupported compression %q (PR1: gz only)", ErrPSExecution, in.Compression)
+	if !isSupportedCodec(codec) {
+		return nil, fmt.Errorf("%w: unsupported compression %q", ErrPSExecution, in.Compression)
 	}
 
 	tmpFile, err := os.CreateTemp("", "hyperv-image-*.bin")
@@ -232,12 +236,14 @@ func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec str
 	teeDecompressed := io.TeeReader(decompressor, decompressedHasher)
 
 	if _, err := io.Copy(dst, teeDecompressed); err != nil {
-		// gzip.Reader returns gzip.ErrChecksum / gzip.ErrHeader for
-		// truncated or corrupt streams during Read; remap those to the
-		// decompression sentinel. Other errors (e.g. net.OpError on a
-		// dropped connection, ctx.Err on cancellation) bubble up with
-		// their original cause for the caller to interpret.
-		if errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader) {
+		// Codec-specific corruption errors that surface from inside the
+		// decompressor pipeline (truncated stream, magic mismatch on
+		// first Read, structural data error) get remapped to the
+		// decompression sentinel. Transport errors (net.OpError on a
+		// dropped connection, ctx cancellation) bubble up unmapped so
+		// the caller can distinguish "publisher served bad bytes" from
+		// "the link dropped mid-pull."
+		if isDecompressionStreamError(codec, err) {
 			return "", "", fmt.Errorf("%w: %s mid-stream: %w", ErrDecompressionFailed, codec, err)
 		}
 		return "", "", fmt.Errorf("read+decompress GET %s: %w", rawURL, err)
@@ -249,31 +255,160 @@ func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec str
 }
 
 // newDecompressor returns an io.ReadCloser that wraps src and emits
-// decompressed bytes. PR1 supports "gz" only; future codecs (xz, zst,
-// bz2) plug in here behind the same interface.
+// decompressed bytes. Supports the four single-file streaming codecs
+// publishers actually ship Hyper-V images in.
+//
+// Adapter notes per codec:
+//
+//   - gz: gzip.NewReader returns *gzip.Reader, already an io.ReadCloser.
+//   - xz: ulikunitz/xz returns *xz.Reader (Reader-only) -- wrap with
+//     io.NopCloser. The package allocates only Go memory, no goroutines
+//     or finalizers, so a real Close is unnecessary.
+//   - zst: klauspost zstd.NewReader returns *zstd.Decoder whose Close()
+//     returns no value (signature is Close()), so it doesn't satisfy
+//     io.Closer directly. zstdReadCloser shims it. The Decoder spawns
+//     goroutines for parallel block decoding; calling Close releases
+//     them rather than letting them sit until GC.
+//   - bz2: stdlib bzip2.NewReader returns io.Reader -- wrap with
+//     io.NopCloser. Pure Go, no resources to release.
 func newDecompressor(codec string, src io.Reader) (io.ReadCloser, error) {
 	switch codec {
 	case "gz":
 		return gzip.NewReader(src)
+	case "xz":
+		r, err := xz.NewReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return io.NopCloser(r), nil
+	case "zst":
+		d, err := zstd.NewReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return zstdReadCloser{Decoder: d}, nil
+	case "bz2":
+		return io.NopCloser(bzip2.NewReader(src)), nil
 	default:
 		return nil, fmt.Errorf("unsupported codec %q", codec)
 	}
 }
 
-// normalizeCompression folds publisher-style aliases ("gzip" -> "gz")
-// and case to the canonical codec identifier the dispatch table keys on.
-// Empty in, empty out (no compression).
+// zstdReadCloser adapts *zstd.Decoder to io.ReadCloser. The decoder's
+// own Close() takes no argument and returns no error -- this shim
+// satisfies the interface signature defer needs without losing the
+// goroutine-pool teardown the underlying Close performs.
+type zstdReadCloser struct {
+	*zstd.Decoder
+}
+
+// Close implements io.Closer for zstdReadCloser. Always returns nil --
+// the wrapped Decoder.Close has no failure mode.
+func (z zstdReadCloser) Close() error {
+	z.Decoder.Close()
+	return nil
+}
+
+// isDecompressionStreamError reports whether err -- surfaced from
+// io.Copy through the codec's Reader -- is data corruption rather than
+// a transport-level fault. Per-codec because each library exposes its
+// own typed sentinels (or, in xz's case, doesn't expose stable typed
+// sentinels at all and relies on its eager-fail-on-NewReader path).
+//
+// Returning false on transport-shaped errors is load-bearing: the
+// callers anchor ErrDecompressionFailed on `url.compression` in the
+// resource diagnostic, while transport faults stay generic. A flap
+// during a multi-GB Talos pull should not surface as a "decompression
+// failed" message that points the operator at the wrong attribute.
+func isDecompressionStreamError(codec string, err error) bool {
+	switch codec {
+	case "gz":
+		return errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader)
+	case "xz":
+		// ulikunitz/xz exposes no exported error sentinels and emits
+		// failures from three different internal packages with
+		// inconsistent prefixes:
+		//
+		//   - "xz: ..."         (top-level package: header/footer/index)
+		//   - "lzma: ..."       (lzma sub-package: chunk/state errors)
+		//   - "writeMatch: ..." (decoder dictionary: distance/length OOB)
+		//
+		// Network and ctx errors carry none of these markers (the
+		// underlying Reader passes them through verbatim), so the
+		// prefix set cleanly separates "publisher served corrupt xz"
+		// from "link dropped mid-pull." This heuristic is brittle to
+		// upstream message renames; the xz mid-stream regression test
+		// pins enough of the surface that a drift surfaces loudly
+		// rather than silently degrading.
+		if err == nil {
+			return false
+		}
+		s := err.Error()
+		return strings.HasPrefix(s, "xz: ") ||
+			strings.HasPrefix(s, "lzma: ") ||
+			strings.HasPrefix(s, "writeMatch:")
+	case "zst":
+		// klauspost/compress/zstd defers magic-header validation to
+		// the first Read rather than NewReader, so ErrMagicMismatch
+		// is the most common decompression-failure signal we'll see
+		// here. The other Err* sentinels cover late-stream corruption
+		// (CRC) and dictionary mismatches.
+		return errors.Is(err, zstd.ErrMagicMismatch) ||
+			errors.Is(err, zstd.ErrCRCMismatch) ||
+			errors.Is(err, zstd.ErrUnknownDictionary)
+	case "bz2":
+		// stdlib compress/bzip2 also defers all validation to Read.
+		// StructuralError is the package's blanket "data malformed"
+		// type; matching via errors.As covers every variant
+		// ("bad magic value", "non-bzip2 bytes", truncated frames).
+		var se bzip2.StructuralError
+		return errors.As(err, &se)
+	}
+	return false
+}
+
+// supportedCodecs is the lookup table for canonical codec identifiers
+// the runner-pipelined fetch knows how to decode. Same set as the
+// schema-layer OneOf validator allows post-normalization.
+var supportedCodecs = map[string]struct{}{
+	"gz":  {},
+	"xz":  {},
+	"zst": {},
+	"bz2": {},
+}
+
+// isSupportedCodec reports whether codec (already normalized via
+// normalizeCompression) is in the dispatch table. Defense-in-depth
+// against a schema/typed-client drift -- the schema validator should
+// have already rejected unknowns at plan time, but a configuration
+// path that bypasses validation (e.g. raw client use from another
+// package, or a future ephemeral attribute) still gets a clean error.
+func isSupportedCodec(codec string) bool {
+	_, ok := supportedCodecs[codec]
+	return ok
+}
+
+// normalizeCompression folds publisher-style aliases ("gzip" -> "gz",
+// "zstd" -> "zst", "bzip2" -> "bz2") and case to the canonical codec
+// identifier the dispatch table keys on. Empty in, empty out (no
+// compression).
 func normalizeCompression(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "none":
 		return ""
 	case "gz", "gzip":
 		return "gz"
+	case "xz":
+		return "xz"
+	case "zst", "zstd":
+		return "zst"
+	case "bz2", "bzip2":
+		return "bz2"
 	default:
 		// Unknown codecs flow through verbatim so the dispatch table
 		// can produce a clean "unsupported compression" error pinned
 		// to the user-supplied value rather than silently treating
-		// e.g. "xz" as "no compression."
+		// e.g. "tar.gz" as "no compression."
 		return strings.ToLower(strings.TrimSpace(s))
 	}
 }
