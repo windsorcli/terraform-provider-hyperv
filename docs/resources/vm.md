@@ -149,10 +149,18 @@ resource "hyperv_vm" "elastic" {
 # attributes to the apply-2 (run) shape after the install finishes; the
 # resource's reconciliation detaches the DVD slot in place (no VM replace).
 #
-# `network_adapter[]` and `hard_disk_drive[]` (with the actual
-# `hyperv_virtual_switch.lab` and `hyperv_vhd.talos_root` references)
-# stay constant across both applies; only `dvd_drive` and `boot_order`
-# change.
+# `network_adapter[]` and `hard_disk_drive[]` stay constant across both
+# applies; only `dvd_drive` and `boot_order` change. Provision the blank
+# install target VHDX in the same Terraform run -- a 20 GiB dynamic disk
+# is plenty for Talos itself plus etcd state. The VM resource references
+# the `hyperv_vhd` resource's path so apply ordering is implicit (the
+# disk is created before the VM that attaches it).
+resource "hyperv_vhd" "talos_cp_01" {
+  path       = "C:/hyperv/vhds/talos-cp-01.vhdx"
+  vhd_type   = "dynamic"
+  size_bytes = 21474836480 # 20 GiB
+}
+
 resource "hyperv_vm" "talos_controlplane" {
   name        = "talos-cp-01"
   generation  = 2
@@ -165,7 +173,7 @@ resource "hyperv_vm" "talos_controlplane" {
     { name = "primary", switch_name = "lab" },
   ]
   hard_disk_drive = [
-    { path = "C:/hyperv/vhds/talos-cp-01.vhdx", controller_number = 0, controller_location = 0 },
+    { path = hyperv_vhd.talos_cp_01.path, controller_number = 0, controller_location = 0 },
   ]
 
   # ---- Apply 1 (install): DVD attached, DVD-first boot ----
@@ -207,7 +215,7 @@ resource "hyperv_vm" "talos_controlplane" {
 #     { name = "primary", switch_name = "lab" },
 #   ]
 #   hard_disk_drive = [
-#     { path = "C:/hyperv/vhds/talos-cp-01.vhdx", controller_number = 0, controller_location = 0 },
+#     { path = hyperv_vhd.talos_cp_01.path, controller_number = 0, controller_location = 0 },
 #   ]
 #
 #   # ---- Apply 2 (run): DVD detached, HDD-only boot ----
