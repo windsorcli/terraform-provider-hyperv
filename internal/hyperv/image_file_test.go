@@ -372,6 +372,53 @@ func TestClient_NewImageFileFromLocalPath_StreamFailureSurfacesAndSkipsRunScript
 	}
 }
 
+// NewClient defaults the http.Client to one with a non-zero
+// ResponseHeaderTimeout so a server that completes the TCP handshake but
+// stalls before flushing headers fails fast instead of consuming
+// goroutine until Terraform's apply-level deadline. The actual numeric
+// value (60s) is intentionally not asserted -- only that the bound
+// exists -- so tightening or loosening the default later doesn't
+// require a test edit.
+func TestNewClient_DefaultHTTPClientHasResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := NewClient(testutil.NewFakeRunner())
+	if c.httpClient == nil {
+		t.Fatal("NewClient must initialize httpClient (default *http.Client)")
+	}
+	transport, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("httpClient.Transport = %T, want *http.Transport", c.httpClient.Transport)
+	}
+	if transport.ResponseHeaderTimeout == 0 {
+		t.Error("ResponseHeaderTimeout = 0; default client must bound stuck-at-headers servers")
+	}
+}
+
+// WithHTTPClient overrides the default. Validates the option-pattern
+// seam tests can use without re-rolling the constructor.
+func TestNewClient_WithHTTPClientOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	custom := &http.Client{Transport: &http.Transport{}}
+	c := NewClient(testutil.NewFakeRunner(), WithHTTPClient(custom))
+	if c.httpClient != custom {
+		t.Errorf("WithHTTPClient did not install the custom client; got %p, want %p", c.httpClient, custom)
+	}
+}
+
+// WithHTTPClient(nil) is a no-op (preserves the default). Exists to
+// guard against a regression that would let a maybe-nil caller-supplied
+// value clobber the default and panic at first request.Do.
+func TestNewClient_WithHTTPClientNilIsNoop(t *testing.T) {
+	t.Parallel()
+
+	c := NewClient(testutil.NewFakeRunner(), WithHTTPClient(nil))
+	if c.httpClient == nil {
+		t.Fatal("WithHTTPClient(nil) must not clobber the default")
+	}
+}
+
 // gzipBytes returns the gzip-encoded form of payload using the stdlib
 // default compression level. Used by the runner-pipelined fetch tests
 // to stand up an httptest.Server that serves a publisher-shaped

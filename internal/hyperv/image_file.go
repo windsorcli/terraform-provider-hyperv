@@ -127,7 +127,7 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 		_ = os.Remove(tmpPath)
 	}()
 
-	compressedSHA, decompressedSHA, err := pipeCompressedHTTPToFile(ctx, in.URL, codec, tmpFile)
+	compressedSHA, decompressedSHA, err := c.pipeCompressedHTTPToFile(ctx, in.URL, codec, tmpFile)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +190,13 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 // Returns hex-encoded compressed and decompressed SHA-256 hashes for the
 // caller to verify and forward to the host script.
 //
+// Method (not free function) so the request rides c.httpClient -- which
+// carries a ResponseHeaderTimeout the http.DefaultClient does not.
+// http.DefaultClient leaves a stuck-at-headers server bounded only by
+// the caller's ctx, which for url-mode is Terraform's apply-level
+// deadline (typically tens of minutes); the shared client closes that
+// gap without affecting legitimate large-payload downloads.
+//
 // Errors are mapped to typed sentinels at the boundaries that distinguish
 // transport from content from corruption: a non-2xx HTTP status surfaces
 // as ErrPSExecution-wrapped (treating the runner-side fetch as a single
@@ -197,12 +204,12 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 // header or CRC failure surfaces as ErrDecompressionFailed; an io.Copy
 // failure mid-stream is wrapped without remap so transient transport
 // errors keep their original cause chain.
-func pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec string, dst io.Writer) (compressedSHA, decompressedSHA string, err error) {
+func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec string, dst io.Writer) (compressedSHA, decompressedSHA string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("build GET %s: %w", rawURL, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("GET %s: %w", rawURL, err)
 	}
