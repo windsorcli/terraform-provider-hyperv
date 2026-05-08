@@ -11,6 +11,7 @@ require (
 	github.com/hashicorp/terraform-plugin-log v0.10.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/jcmturner/gokrb5/v8 v8.4.4
+	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/compress v1.18.6
 	github.com/masterzen/winrm v0.0.0-20260407182533-5570be7f80cf
 	github.com/ulikunitz/xz v0.5.15
@@ -55,7 +56,6 @@ require (
 	github.com/jcmturner/gofork v1.7.6 // indirect
 	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
-	github.com/kdomanski/iso9660 v0.4.0 // indirect
 	github.com/masterzen/simplexml v0.0.0-20190410153822-31eea3082786 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

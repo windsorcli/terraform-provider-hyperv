@@ -267,4 +267,3 @@ func validateFiles(files []File) error {
 	}
 	return nil
 }
-
