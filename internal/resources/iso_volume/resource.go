@@ -84,11 +84,14 @@ func (v filesTotalSizeValidator) ValidateResource(ctx context.Context, req resou
 
 // validate sums the value lengths in data.Files and adds an attribute-
 // anchored diagnostic on `files` when the cap is exceeded. Returns a
-// nil/empty diag set when files is null/unknown -- the SizeAtLeast(1)
-// schema validator handles "missing" cases.
+// nil/empty diag set when files is null or any element value is unknown
+// -- the SizeAtLeast(1) schema validator handles "missing", and the
+// byte-cap can't be evaluated on a partially-unknown map (a for_each-
+// driven config where each.value.user_data hasn't materialized yet).
+// The framework re-runs validators once concrete values land.
 func (v filesTotalSizeValidator) validate(ctx context.Context, data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
-	if data.Files.IsNull() || data.Files.IsUnknown() {
+	if data.Files.IsNull() || !filesMapWhollyKnown(data.Files) {
 		return diags
 	}
 	files, fdiags := decodeFilesMap(ctx, data.Files)
@@ -148,10 +151,10 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		return
 	}
 
-	if plan.VolumeLabel.IsUnknown() || plan.Files.IsUnknown() {
+	if plan.VolumeLabel.IsUnknown() || plan.VolumeLabel.IsNull() {
 		return
 	}
-	if plan.VolumeLabel.IsNull() || plan.Files.IsNull() {
+	if plan.Files.IsNull() || !filesMapWhollyKnown(plan.Files) {
 		return
 	}
 
@@ -417,8 +420,15 @@ func sha256HexOfBytes(b []byte) string {
 }
 
 // decodeFilesMap converts a tfsdk types.Map of (string -> string) into a
-// native Go map. Returns nil + diags on decode failure or when the map
-// is null/unknown.
+// native Go map. Returns nil + empty diags on null/unknown or any
+// partial-unknown shape -- the caller is responsible for gating with
+// filesMapWhollyKnown before relying on the returned values.
+//
+// The internal IsNull / IsUnknown short-circuit covers the "whole map
+// not present" case for callers that haven't gated upstream; the
+// ElementsAs path otherwise rejects unknown element values with a
+// reflect-time error, which is what Bug #4 surfaced when a for_each-
+// driven map carried unknown values at validate time.
 func decodeFilesMap(ctx context.Context, m types.Map) (map[string]string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	if m.IsNull() || m.IsUnknown() {
@@ -428,6 +438,34 @@ func decodeFilesMap(ctx context.Context, m types.Map) (map[string]string, diag.D
 	d := m.ElementsAs(ctx, &out, false)
 	diags.Append(d...)
 	return out, diags
+}
+
+// filesMapWhollyKnown reports whether every element of m is a known
+// concrete value. Returns false for null/unknown maps and for known-
+// structure maps with at least one unknown element value (the for_each
+// + each.value pattern at validate time).
+//
+// Bug #4 fix: validators and ModifyPlan must defer when this returns
+// false -- ElementsAs(false) reflects unknown element values into a
+// Go string target and raises "Value Conversion Error / Suggested
+// Type: basetypes.StringValue", which surfaces to the user as a
+// confusing internal error during `terraform validate` against an
+// empty default. Deferring lets the framework re-run the same check
+// once the parent variables resolve.
+//
+// Equivalent to terraform-plugin-framework's IsWhollyKnown method
+// (added on attr.Value in 1.20+); inlined here so the provider can
+// stay on 1.19 until the rest of the ecosystem moves.
+func filesMapWhollyKnown(m types.Map) bool {
+	if m.IsNull() || m.IsUnknown() {
+		return false
+	}
+	for _, v := range m.Elements() {
+		if v.IsUnknown() {
+			return false
+		}
+	}
+	return true
 }
 
 // modelFromIsoVolume hydrates a Model from a typed IsoVolume DTO. label /

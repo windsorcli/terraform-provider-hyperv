@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -287,6 +288,95 @@ func TestFilesTotalSizeValidator_NullOrUnknownNoOps(t *testing.T) {
 	}
 	if diags := v.validate(context.Background(), Model{Files: types.MapUnknown(types.StringType)}); diags.HasError() {
 		t.Errorf("unknown files: %v", diags)
+	}
+}
+
+// TestFilesTotalSizeValidator_PartialUnknownDefers is the Bug #4
+// regression: a for_each-driven config where each.value carries unknown
+// values produces a Map whose structure is known but whose element
+// values are not -- IsUnknown() returns false on the outer Map. Without
+// the wholly-known gate the validator falls through into ElementsAs,
+// which rejects unknown StringValue elements with a confusing reflect-
+// time conversion error during `terraform validate`. The validator must
+// defer until the parent variables resolve.
+func TestFilesTotalSizeValidator_PartialUnknownDefers(t *testing.T) {
+	t.Parallel()
+
+	partial, d := types.MapValue(types.StringType, map[string]attr.Value{
+		"meta-data": types.StringValue("instance-id: foo\n"),
+		"user-data": types.StringUnknown(),
+	})
+	if d.HasError() {
+		t.Fatalf("MapValue: %v", d)
+	}
+
+	v := filesTotalSizeValidator{}
+	if diags := v.validate(context.Background(), Model{Files: partial}); diags.HasError() {
+		t.Errorf("partial-unknown files must defer (no error); got: %v", diags)
+	}
+}
+
+// TestFilesMapWhollyKnown is the helper-level regression matching the
+// validator-level test above. Pinned separately because ModifyPlan
+// also keys on this helper -- a regression that broke wholly-known
+// detection would surface in apply (ModifyPlan crash on unknown
+// element) before it surfaced in validate.
+func TestFilesMapWhollyKnown(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		m    types.Map
+		want bool
+	}{
+		{
+			name: "null map",
+			m:    types.MapNull(types.StringType),
+			want: false,
+		},
+		{
+			name: "wholly unknown map",
+			m:    types.MapUnknown(types.StringType),
+			want: false,
+		},
+		{
+			name: "known map with all known string values",
+			m: func() types.Map {
+				m, _ := types.MapValue(types.StringType, map[string]attr.Value{
+					"meta-data": types.StringValue("a"),
+					"user-data": types.StringValue("b"),
+				})
+				return m
+			}(),
+			want: true,
+		},
+		{
+			name: "known map with one unknown value (Bug #4 case)",
+			m: func() types.Map {
+				m, _ := types.MapValue(types.StringType, map[string]attr.Value{
+					"meta-data": types.StringValue("a"),
+					"user-data": types.StringUnknown(),
+				})
+				return m
+			}(),
+			want: false,
+		},
+		{
+			name: "empty known map",
+			m: func() types.Map {
+				m, _ := types.MapValue(types.StringType, map[string]attr.Value{})
+				return m
+			}(),
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := filesMapWhollyKnown(tc.m); got != tc.want {
+				t.Errorf("filesMapWhollyKnown(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
 	}
 }
 
