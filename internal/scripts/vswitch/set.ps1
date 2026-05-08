@@ -81,7 +81,16 @@ function Set-HypervSwitch {
         ErrorAction = 'Stop'
     }
     if ($PSBoundParameters.ContainsKey('NetAdapterNames')) {
-        $setArgs.NetAdapterName = $NetAdapterNames
+        # Set-VMSwitch -NetAdapterName is typed [string] (single NIC), unlike
+        # New-VMSwitch which auto-unwraps a one-element [string[]]. Index
+        # explicitly so the binder gets a string. NIC teaming is configured
+        # outside the switch resource via Set-VMSwitchTeam; the schema's
+        # list shape is preserved for symmetry, but only the first entry
+        # binds the switch.
+        if ($NetAdapterNames.Count -eq 0) {
+            throw "net_adapter_names must contain at least one adapter"
+        }
+        $setArgs.NetAdapterName = $NetAdapterNames[0]
     }
     if ($null -ne $AllowManagementOS) {
         $setArgs.AllowManagementOS = [bool]$AllowManagementOS
