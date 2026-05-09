@@ -275,9 +275,10 @@ function Invoke-HypervDvdSafeReplace {
         # here (e.g. step 4 didn't actually re-target some slot, so the
         # pivot is still locked) is recoverable on the next apply or via
         # manual sweep -- not worth shadowing the primary outcome with.
-        if (Test-Path -LiteralPath $pivotPath) {
-            Remove-Item -LiteralPath $pivotPath -Force -ErrorAction SilentlyContinue
-        }
+        # No Test-Path guard: -ErrorAction SilentlyContinue handles the
+        # missing-file case directly and the guard adds a TOCTOU window
+        # without protective value (spike #3).
+        Remove-Item -LiteralPath $pivotPath -Force -ErrorAction SilentlyContinue
     }
 }
 
