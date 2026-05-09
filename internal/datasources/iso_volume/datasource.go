@@ -112,7 +112,8 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 				},
 			},
 			"content_base64": schema.StringAttribute{
-				Computed: true,
+				Computed:  true,
+				Sensitive: true,
 				MarkdownDescription: "Base64-encoded synthesized ISO bytes. Wire this into " +
 					"`hyperv_image_file.content_base64` (literal_bytes mode) or decode into a " +
 					"`local_file.content_base64` for further composition.",

@@ -156,7 +156,8 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			"content_base64": schema.StringAttribute{
-				Optional: true,
+				Optional:  true,
+				Sensitive: true,
 				MarkdownDescription: "Base64-encoded byte payload to land at `destination_path`. When set, " +
 					"the resource operates in `literal_bytes`-mode: the provider decodes the base64, " +
 					"writes the bytes to a runner-side tmpfile, computes a SHA-256, and streams through " +
