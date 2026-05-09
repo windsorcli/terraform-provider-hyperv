@@ -107,6 +107,30 @@ type NewImageFileFromURLInput struct {
 type NewImageFileFromLocalPathInput struct {
 	DestinationPath string `json:"destination_path"`
 	LocalPath       string `json:"-"`
+	// ReplaceWhileMounted opts the host-side Move-Item into a swap-via-
+	// pivot dance that handles the case where DestinationPath is currently
+	// mounted as a DVD on a running VM. Off by default; set true for
+	// callers that may stream over a destination some VM holds open
+	// (cidata seeds, autounattend ISOs).
+	ReplaceWhileMounted bool `json:"-"`
+}
+
+// NewImageFileFromBytesInput is the public input shape for the
+// literal_bytes source mode. The runner writes Bytes to a tmpfile,
+// hashes it, streams to a sibling .part of DestinationPath, and asks
+// new.ps1 to verify-and-rename via the same wire path local_path mode
+// uses. The wire shape on the host stays identical -- new.ps1 cannot
+// tell whether the staged bytes came from the runner's filesystem
+// (local_path) or from an in-memory payload (literal_bytes).
+//
+// ReplaceWhileMounted has the same semantics as on the local_path
+// input. Callers that synthesize iso_volume bytes for a DVD-mountable
+// destination set it true; literal_bytes for a fresh path leaves it
+// false (default).
+type NewImageFileFromBytesInput struct {
+	DestinationPath     string `json:"destination_path"`
+	Bytes               []byte `json:"-"`
+	ReplaceWhileMounted bool   `json:"-"`
 }
 
 // VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.

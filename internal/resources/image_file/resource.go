@@ -2,6 +2,9 @@ package image_file
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -48,31 +51,34 @@ func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 // at plan time instead of an opaque cmdlet error at apply time.
 func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
 	return []resource.ConfigValidator{
-		urlAndLocalPathConflictValidator{},
+		sourceModeExclusivityValidator{},
 	}
 }
 
-// urlAndLocalPathConflictValidator rejects configs that set both `url`
-// and `local_path` -- the two source-mode discriminators are mutually
-// exclusive (url fetches over HTTP, local_path streams from the runner;
-// picking both is ambiguous).
-type urlAndLocalPathConflictValidator struct{}
+// sourceModeExclusivityValidator rejects configs that set more than one
+// of the three placement-mode discriminators: `url`, `local_path`,
+// `content_base64`. Each represents a distinct source for the bytes
+// landing at `destination_path` (HTTP fetch / runner-side file /
+// in-memory payload), and picking more than one is ambiguous on the
+// wire. A config with none of them is host_path-mode (verify-only) and
+// is fine.
+type sourceModeExclusivityValidator struct{}
 
 // Description / MarkdownDescription surface in `terraform validate -json`
 // and schema-introspection paths.
-func (v urlAndLocalPathConflictValidator) Description(_ context.Context) string {
-	return "url and local_path are mutually exclusive source-mode discriminators"
+func (v sourceModeExclusivityValidator) Description(_ context.Context) string {
+	return "url, local_path, and content_base64 are mutually exclusive source-mode discriminators"
 }
 
 // MarkdownDescription mirrors Description -- no markdown-only formatting.
-func (v urlAndLocalPathConflictValidator) MarkdownDescription(ctx context.Context) string {
+func (v sourceModeExclusivityValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
 // ValidateResource pulls the typed Model from the Config and dispatches
 // to validate, which holds the actual rule logic. Split for direct unit
 // testing without tfsdk.Config plumbing.
-func (v urlAndLocalPathConflictValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+func (v sourceModeExclusivityValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -81,31 +87,57 @@ func (v urlAndLocalPathConflictValidator) ValidateResource(ctx context.Context, 
 	resp.Diagnostics.Append(v.validate(data)...)
 }
 
-// validate is the pure-Go core. Returns a single attribute-anchored
-// diagnostic on `local_path` (chosen over `url` so the user lands on
-// the more recently-introduced surface) when both source attributes
-// are set.
-func (v urlAndLocalPathConflictValidator) validate(data Model) diag.Diagnostics {
+// validate is the pure-Go core. Anchors the diagnostic on the most-
+// recently-introduced surface among the conflicting attributes (the
+// user is most likely to be confused about its interaction with the
+// older, more-established attributes), so:
+//
+//   - url + local_path -> anchor on local_path
+//   - url + content_base64 -> anchor on content_base64
+//   - local_path + content_base64 -> anchor on content_base64
+//   - all three -> anchor on content_base64
+func (v sourceModeExclusivityValidator) validate(data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
 	urlSet := !data.URL.IsNull() && !data.URL.IsUnknown()
 	localPathSet := !data.LocalPath.IsNull() && !data.LocalPath.IsUnknown()
-	if urlSet && localPathSet {
-		diags.AddAttributeError(
-			path.Root("local_path"),
-			"url and local_path are mutually exclusive",
-			"The `url` block and `local_path` attribute are mutually exclusive source-mode "+
-				"discriminators -- url-mode fetches over HTTP, local_path-mode streams from "+
-				"the Terraform runner. Pick one. To switch modes on an existing resource, the "+
-				"resource must be destroyed and recreated (both attributes carry RequiresReplace).",
-		)
+	contentSet := !data.ContentBase64.IsNull() && !data.ContentBase64.IsUnknown()
+
+	count := 0
+	if urlSet {
+		count++
 	}
+	if localPathSet {
+		count++
+	}
+	if contentSet {
+		count++
+	}
+	if count <= 1 {
+		return diags
+	}
+
+	anchor := path.Root("content_base64")
+	if !contentSet {
+		anchor = path.Root("local_path")
+	}
+	diags.AddAttributeError(
+		anchor,
+		"url, local_path, and content_base64 are mutually exclusive",
+		"The `url` block, `local_path` attribute, and `content_base64` attribute are mutually "+
+			"exclusive source-mode discriminators -- url-mode fetches over HTTP, local_path-mode "+
+			"streams from the Terraform runner, literal_bytes-mode (content_base64) lands an "+
+			"in-memory payload. Pick one. To switch modes on an existing resource, the resource "+
+			"must be destroyed and recreated (all three attributes carry RequiresReplace).",
+	)
 	return diags
 }
 
-// ModifyPlan computes the runner-side SHA-256 and size of `local_path`
-// at plan time and writes them into the planned `sha256` / `size_bytes`
-// attributes. This is what makes content changes to the local file
-// (same path, different bytes) surface as a plan diff -- without it,
+// ModifyPlan computes the runner-side SHA-256 and size of the bytes
+// that will land on the host (read from `local_path` for local_path-
+// mode, decoded from `content_base64` for literal_bytes-mode) at plan
+// time and writes them into the planned `sha256` / `size_bytes`
+// attributes. This is what makes content changes (same destination,
+// different bytes) surface as a plan diff -- without it,
 // `UseStateForUnknown` would carry the prior values forward and the
 // framework would either skip the Update entirely or reject the apply
 // with a "Provider produced inconsistent result" check on the
@@ -115,8 +147,10 @@ func (v urlAndLocalPathConflictValidator) validate(data Model) diag.Diagnostics 
 // changes both, and the framework's post-apply consistency check
 // triggers on either one drifting from plan to apply.
 //
-// Skipped for url-mode and host_path-mode (LocalPath null/unknown), and
-// during destroy (no plan).
+// Skipped for url-mode and host_path-mode (none of the runner-side
+// inputs are set), during destroy (no plan), and when the relevant
+// runner-side input is itself unknown at plan time (driven from a
+// not-yet-applied dependency).
 func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -128,40 +162,59 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		return
 	}
 
-	if plan.LocalPath.IsNull() || plan.LocalPath.IsUnknown() {
-		return
+	switch {
+	case !plan.LocalPath.IsNull() && !plan.LocalPath.IsUnknown():
+		localPath := plan.LocalPath.ValueString()
+
+		info, err := os.Stat(localPath)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("local_path"),
+				"Cannot stat local file at plan time",
+				fmt.Sprintf("os.Stat(%s) failed: %v\n\n"+
+					"The provider reads local_path during plan so changes to the file's "+
+					"contents between applies trigger a re-stream. The file must exist "+
+					"and be readable when running plan/apply.",
+					localPath, err),
+			)
+			return
+		}
+
+		sha, err := hyperv.ComputeFileSHA256(localPath)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("local_path"),
+				"Cannot read local file at plan time",
+				fmt.Sprintf("Computing SHA-256 of %s failed: %v",
+					localPath, err),
+			)
+			return
+		}
+
+		plan.Sha256 = types.StringValue(sha)
+		plan.SizeBytes = types.Int64Value(info.Size())
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+
+	case !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown():
+		// literal_bytes-mode: decode and hash the in-memory payload.
+		// `content_base64` is RequiresReplace, so a different value here
+		// triggers Replace, not Update -- but the planned Replace's
+		// Computed attributes still need to reflect the new bytes for
+		// the framework's post-apply consistency check.
+		decoded, decodeErr := base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
+		if decodeErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("content_base64"),
+				"Cannot decode content_base64 at plan time",
+				fmt.Sprintf("base64.StdEncoding.DecodeString failed: %v", decodeErr),
+			)
+			return
+		}
+		sum := sha256.Sum256(decoded)
+		plan.Sha256 = types.StringValue(hex.EncodeToString(sum[:]))
+		plan.SizeBytes = types.Int64Value(int64(len(decoded)))
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	}
-
-	localPath := plan.LocalPath.ValueString()
-
-	info, err := os.Stat(localPath)
-	if err != nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("local_path"),
-			"Cannot stat local file at plan time",
-			fmt.Sprintf("os.Stat(%s) failed: %v\n\n"+
-				"The provider reads local_path during plan so changes to the file's "+
-				"contents between applies trigger a re-stream. The file must exist "+
-				"and be readable when running plan/apply.",
-				localPath, err),
-		)
-		return
-	}
-
-	sha, err := hyperv.ComputeFileSHA256(localPath)
-	if err != nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("local_path"),
-			"Cannot read local file at plan time",
-			fmt.Sprintf("Computing SHA-256 of %s failed: %v",
-				localPath, err),
-		)
-		return
-	}
-
-	plan.Sha256 = types.StringValue(sha)
-	plan.SizeBytes = types.Int64Value(info.Size())
-	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 // Configure stashes the typed Hyper-V client built by the provider's
@@ -268,12 +321,14 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	case !plan.LocalPath.IsNull() && !plan.LocalPath.IsUnknown():
 		tflog.Debug(ctx, "creating hyperv_image_file (local_path mode)", map[string]any{
-			"destination_path": dest,
-			"local_path":       plan.LocalPath.ValueString(),
+			"destination_path":      dest,
+			"local_path":            plan.LocalPath.ValueString(),
+			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
 		})
 		f, err = r.client.NewImageFileFromLocalPath(ctx, hyperv.NewImageFileFromLocalPathInput{
-			DestinationPath: dest,
-			LocalPath:       plan.LocalPath.ValueString(),
+			DestinationPath:     dest,
+			LocalPath:           plan.LocalPath.ValueString(),
+			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
 		})
 		if err != nil {
 			if errors.Is(err, hyperv.ErrChecksumMismatch) {
@@ -292,6 +347,45 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 				return
 			}
 			resp.Diagnostics.AddError("Create hyperv_image_file failed (local_path mode)", err.Error())
+			return
+		}
+	case !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown():
+		tflog.Debug(ctx, "creating hyperv_image_file (literal_bytes mode)", map[string]any{
+			"destination_path":      dest,
+			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
+		})
+		decoded, decodeErr := base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
+		if decodeErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("content_base64"),
+				"Cannot decode content_base64",
+				fmt.Sprintf("base64.StdEncoding.DecodeString failed: %v\n\n"+
+					"`content_base64` must be a valid standard-encoded base64 string. The typical "+
+					"source is another runner-side data source's `content_base64` output (e.g. "+
+					"`data.hyperv_iso_volume.cidata.content_base64`); a typo or hand-edited fixture "+
+					"is the most likely cause of a malformed value.",
+					decodeErr),
+			)
+			return
+		}
+		f, err = r.client.NewImageFileFromBytes(ctx, hyperv.NewImageFileFromBytesInput{
+			DestinationPath:     dest,
+			Bytes:               decoded,
+			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
+		})
+		if err != nil {
+			if errors.Is(err, hyperv.ErrChecksumMismatch) {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("content_base64"),
+					"Streamed bytes checksum mismatch",
+					"The bytes that landed on the host don't match the runner-side hash. "+
+						"This signals transport corruption between runner and host. Re-running "+
+						"`terraform apply` typically clears it; if it persists, the SSH/WinRM "+
+						"transport may be unhealthy.\n\n"+err.Error(),
+				)
+				return
+			}
+			resp.Diagnostics.AddError("Create hyperv_image_file failed (literal_bytes mode)", err.Error())
 			return
 		}
 	default:
@@ -316,7 +410,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	state := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.KeepOnDestroy)
+	state := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -351,21 +445,27 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	// Preserve the user's url block, local_path, and keep_on_destroy
-	// from prior state -- all three are user intent and aren't
-	// reconstructible from the file contents on disk. The bench has no
-	// concept of keep_on_destroy; the value lives only in Terraform
-	// state, so Read must round-trip what's already there.
+	// Preserve the user's url block, local_path, content_base64,
+	// replace_while_mounted, and keep_on_destroy from prior state --
+	// all five are user intent and aren't reconstructible from the file
+	// contents on disk. The bench has no concept of these fields; the
+	// values live only in Terraform state, so Read must round-trip what's
+	// already there.
 	//
-	// Normalize keep_on_destroy null -> false (the schema default) so
-	// the Import path (which calls Read with only the ID populated)
-	// produces state consistent with what Apply writes. Without this,
-	// ImportStateVerify fails with "keep_on_destroy: false vs <missing>".
+	// Normalize keep_on_destroy and replace_while_mounted null -> false
+	// (the schema defaults) so the Import path (which calls Read with
+	// only the ID populated) produces state consistent with what Apply
+	// writes. Without this, ImportStateVerify fails with
+	// "keep_on_destroy: false vs <missing>".
 	keepOnDestroy := state.KeepOnDestroy
 	if keepOnDestroy.IsNull() {
 		keepOnDestroy = types.BoolValue(false)
 	}
-	newState := modelFromImageFile(f, state.URL, state.LocalPath, keepOnDestroy)
+	replaceWhileMounted := state.ReplaceWhileMounted
+	if replaceWhileMounted.IsNull() {
+		replaceWhileMounted = types.BoolValue(false)
+	}
+	newState := modelFromImageFile(f, state.URL, state.LocalPath, state.ContentBase64, replaceWhileMounted, keepOnDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -394,12 +494,14 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 
 	if !plan.LocalPath.IsNull() && !plan.LocalPath.IsUnknown() {
 		tflog.Debug(ctx, "updating hyperv_image_file (local_path mode -- re-streaming)", map[string]any{
-			"destination_path": plan.DestinationPath.ValueString(),
-			"local_path":       plan.LocalPath.ValueString(),
+			"destination_path":      plan.DestinationPath.ValueString(),
+			"local_path":            plan.LocalPath.ValueString(),
+			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
 		})
 		f, err := r.client.NewImageFileFromLocalPath(ctx, hyperv.NewImageFileFromLocalPathInput{
-			DestinationPath: plan.DestinationPath.ValueString(),
-			LocalPath:       plan.LocalPath.ValueString(),
+			DestinationPath:     plan.DestinationPath.ValueString(),
+			LocalPath:           plan.LocalPath.ValueString(),
+			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
 		})
 		if err != nil {
 			if errors.Is(err, hyperv.ErrChecksumMismatch) {
@@ -416,9 +518,49 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			resp.Diagnostics.AddError("Update hyperv_image_file failed (local_path mode)", err.Error())
 			return
 		}
-		// In local_path mode plan.URL is null (mutually exclusive); pass
-		// it through unchanged so the round-trip preserves that nullness.
-		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.KeepOnDestroy)
+		// In local_path mode plan.URL and plan.ContentBase64 are null
+		// (mutually exclusive); pass them through unchanged so the round-
+		// trip preserves that nullness.
+		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+		return
+	}
+
+	if !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown() {
+		tflog.Debug(ctx, "updating hyperv_image_file (literal_bytes mode -- re-streaming)", map[string]any{
+			"destination_path":      plan.DestinationPath.ValueString(),
+			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
+		})
+		decoded, decodeErr := base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
+		if decodeErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("content_base64"),
+				"Cannot decode content_base64",
+				fmt.Sprintf("base64.StdEncoding.DecodeString failed: %v", decodeErr),
+			)
+			return
+		}
+		f, err := r.client.NewImageFileFromBytes(ctx, hyperv.NewImageFileFromBytesInput{
+			DestinationPath:     plan.DestinationPath.ValueString(),
+			Bytes:               decoded,
+			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
+		})
+		if err != nil {
+			if errors.Is(err, hyperv.ErrChecksumMismatch) {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("content_base64"),
+					"Streamed bytes checksum mismatch",
+					"The bytes that landed on the host during re-stream don't match the "+
+						"runner-side hash. This signals transport corruption between runner "+
+						"and host. Re-running `terraform apply` typically clears it.\n\n"+
+						err.Error(),
+				)
+				return
+			}
+			resp.Diagnostics.AddError("Update hyperv_image_file failed (literal_bytes mode)", err.Error())
+			return
+		}
+		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -448,7 +590,9 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
-	hostPathMode := state.URL.IsNull() && (state.LocalPath.IsNull() || state.LocalPath.IsUnknown())
+	hostPathMode := state.URL.IsNull() &&
+		(state.LocalPath.IsNull() || state.LocalPath.IsUnknown()) &&
+		(state.ContentBase64.IsNull() || state.ContentBase64.IsUnknown())
 	if hostPathMode {
 		tflog.Info(ctx, "host_path-mode hyperv_image_file; skipping host-side delete", map[string]any{
 			"destination_path": state.DestinationPath.ValueString(),
@@ -502,15 +646,17 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals; we don't need to preserve
 // the user's prior representation here.
-func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtype.Path, keepOnDestroy types.Bool) Model {
+func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtype.Path, contentBase64 types.String, replaceWhileMounted types.Bool, keepOnDestroy types.Bool) Model {
 	return Model{
-		ID:              pathtype.NewPathValue(f.Path),
-		DestinationPath: pathtype.NewPathValue(f.Path),
-		URL:             url,
-		LocalPath:       localPath,
-		Sha256:          types.StringValue(f.Sha256),
-		SizeBytes:       types.Int64Value(f.SizeBytes),
-		KeepOnDestroy:   keepOnDestroy,
+		ID:                  pathtype.NewPathValue(f.Path),
+		DestinationPath:     pathtype.NewPathValue(f.Path),
+		URL:                 url,
+		LocalPath:           localPath,
+		ContentBase64:       contentBase64,
+		ReplaceWhileMounted: replaceWhileMounted,
+		Sha256:              types.StringValue(f.Sha256),
+		SizeBytes:           types.Int64Value(f.SizeBytes),
+		KeepOnDestroy:       keepOnDestroy,
 	}
 }
 

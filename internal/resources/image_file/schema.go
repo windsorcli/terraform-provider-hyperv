@@ -21,11 +21,12 @@ import (
 // when `task generate` runs tfplugindocs (see PLAN.md S15).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "Manages a file (typically a VHDX or ISO) on the Hyper-V host. Three source modes:\n\n" +
+		MarkdownDescription: "Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:\n\n" +
 			"  * **`url`-mode** -- the provider downloads the file via a streamed HTTP GET (`System.Net.Http.HttpClient`), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at `destination_path`.\n" +
 			"  * **`local_path`-mode** -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.\n" +
+			"  * **`literal_bytes`-mode** -- the provider takes a base64-encoded byte payload from `content_base64` (typically wired from `data.hyperv_iso_volume.content_base64` or another runner-side data source), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. Same host-side wire path as `local_path`-mode -- the runner writes the bytes to a tmpfile and streams from there. Use this for synthesized seeds (cidata, autounattend, Talos machineconfig) so a `local_file` middleman isn't required.\n" +
 			"  * **`host_path`-mode** -- the user attests the file already exists at `destination_path`. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.\n\n" +
-			"The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; otherwise `host_path`-mode. `url` and `local_path` are mutually exclusive (the resource validator rejects configs that set both). Switching modes between applies forces replacement.\n\n" +
+			"The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; if `content_base64` is set, `literal_bytes`-mode; otherwise `host_path`-mode. The three placement modes (`url`, `local_path`, `content_base64`) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.\n\n" +
 			"**Drift detection:** SHA-256 is recomputed on every `Read`. Out-of-band file changes surface as a `sha256` change during refresh; large-file refreshes are correspondingly slow (Get-FileHash on a 5 GiB VHDX is ~30 s on spinning disk). In `local_path`-mode, the *runner-side* file is also hashed during plan so a content change since the last apply surfaces as a `sha256` diff that triggers Update.\n\n" +
 			"**Recovery from partial-create:** if the download/stream succeeds and the SHA-256 verifies but the atomic rename fails (e.g., destination path is on a different volume than the staging `.part` file), the file is left at the staging path with no Terraform state. Re-run `terraform apply` -- the next attempt re-streams to a fresh staging path. The PowerShell layer cleans up its own `.part` files on every failure path.",
 		Attributes: map[string]schema.Attribute{
@@ -152,6 +153,49 @@ func resourceSchema() schema.Schema {
 							stringvalidator.OneOf("gz", "gzip", "xz", "zst", "zstd", "bz2", "bzip2"),
 						},
 					},
+				},
+			},
+			"content_base64": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "Base64-encoded byte payload to land at `destination_path`. When set, " +
+					"the resource operates in `literal_bytes`-mode: the provider decodes the base64, " +
+					"writes the bytes to a runner-side tmpfile, computes a SHA-256, and streams through " +
+					"the active connection backend to a `.part` sibling of `destination_path`. The host-" +
+					"side script verifies the streamed bytes' SHA against the runner-computed value and " +
+					"atomic-renames into place.\n\n" +
+					"Mutually exclusive with `url` and `local_path` (the resource validator rejects " +
+					"more than one set together). **Forces replacement** when changed -- swapping the " +
+					"payload is conceptually a different resource. Content changes to the *bytes* with " +
+					"the same `destination_path` and matching SHA do NOT replace; they pass through as " +
+					"a Read no-op.\n\n" +
+					"**Typical wiring:** `content_base64 = data.hyperv_iso_volume.cidata.content_base64` " +
+					"composes the runner-side ISO9660 synthesizer (data source) with this resource's " +
+					"placement primitive in two HCL blocks instead of three (no `local_file` middleman).",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"replace_while_mounted": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				MarkdownDescription: "When `true`, in-place Update operations (re-stream of new bytes " +
+					"at the same `destination_path`) use a swap-via-pivot dance that handles the case " +
+					"where the destination is currently mounted as a DVD on a running VM. Hyper-V holds " +
+					"an exclusive open handle on a DVD-mounted ISO; without this flag, `Move-Item -Force` " +
+					"surfaces \"Cannot create a file when that file already exists\" because the locked " +
+					"destination can't be deleted before the rename.\n\n" +
+					"Opt-in (default `false`) because vhdx files attached as VM HardDiskController disks " +
+					"don't hot-swap and don't hit the same lock pattern; only DVDs do. Set to `true` for " +
+					"any image_file whose destination may be referenced by a `dvd_drive.iso_path` on a " +
+					"running VM (the canonical case is cidata seeds for cloud-init / Talos machineconfig).\n\n" +
+					"**Honored only in `local_path` and `literal_bytes` modes** -- those are the modes " +
+					"with a re-stream Update path. `url` mode forces replacement on any change so the " +
+					"flag is moot; `host_path` mode never writes to `destination_path` at all. Setting " +
+					"the flag in those modes is harmless (silently ignored) but a config validator " +
+					"flags it as a likely user error.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"sha256": schema.StringAttribute{

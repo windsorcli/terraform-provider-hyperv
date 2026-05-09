@@ -461,14 +461,86 @@ func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileF
 	// choice and the discriminator are guaranteed to agree.
 	stdin, err := json.Marshal(struct {
 		NewImageFileFromLocalPathInput
-		StagingPath    string `json:"staging_path"`
-		ExpectedSha256 string `json:"expected_sha256"`
-		SourceMode     string `json:"source_mode"`
+		StagingPath         string `json:"staging_path"`
+		ExpectedSha256      string `json:"expected_sha256"`
+		SourceMode          string `json:"source_mode"`
+		ReplaceWhileMounted bool   `json:"replace_while_mounted"`
 	}{
 		NewImageFileFromLocalPathInput: in,
 		StagingPath:                    stagingPath,
 		ExpectedSha256:                 expectedSha,
 		SourceMode:                     "local_path",
+		ReplaceWhileMounted:            in.ReplaceWhileMounted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
+	}
+
+	var f ImageFile
+	if err := c.runScript(ctx, string(body), stdin, &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// NewImageFileFromBytes lands a literal byte payload at DestinationPath
+// via the same wire path as local_path mode. Writes Bytes to a runner-
+// side tmpfile, hashes it, picks a sibling .part staging path on the
+// host, streams via Connection.StreamFile, and dispatches new.ps1 in
+// source_mode=local_path for the verify-and-rename. The host-side
+// contract is identical to local_path mode -- the script can't tell
+// whether the staged bytes came from a runner-side file or an in-memory
+// payload, and doesn't need to.
+//
+// Returns ErrChecksumMismatch when the streamed bytes don't hash to the
+// runner-computed value (transport corruption between runner and host).
+// Memory cost: the payload is held twice briefly (in `in.Bytes` and in
+// the runner tmpfile) which is fine for the sub-MiB seed-ISO workloads
+// this method targets; for multi-GiB files prefer NewImageFileFromLocalPath
+// or NewImageFileFromURL instead.
+func (c *Client) NewImageFileFromBytes(ctx context.Context, in NewImageFileFromBytesInput) (*ImageFile, error) {
+	expectedSha := sha256Hex(in.Bytes)
+
+	tmpFile, err := os.CreateTemp("", "hyperv-image-*.bin")
+	if err != nil {
+		return nil, fmt.Errorf("create runner tmpfile for image bytes: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmpFile.Write(in.Bytes); err != nil {
+		_ = tmpFile.Close()
+		return nil, fmt.Errorf("write image bytes to %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("close runner tmpfile %s: %w", tmpPath, err)
+	}
+
+	stagingPath, err := pickStagingPath(in.DestinationPath)
+	if err != nil {
+		return nil, fmt.Errorf("pick staging path: %w", err)
+	}
+
+	if err := c.runner.StreamFile(ctx, tmpPath, stagingPath); err != nil {
+		return nil, fmt.Errorf("stream image bytes %s to %s: %w", tmpPath, stagingPath, err)
+	}
+
+	body, err := scripts.ImageFileScript("new")
+	if err != nil {
+		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		DestinationPath     string `json:"destination_path"`
+		StagingPath         string `json:"staging_path"`
+		ExpectedSha256      string `json:"expected_sha256"`
+		SourceMode          string `json:"source_mode"`
+		ReplaceWhileMounted bool   `json:"replace_while_mounted"`
+	}{
+		DestinationPath:     in.DestinationPath,
+		StagingPath:         stagingPath,
+		ExpectedSha256:      expectedSha,
+		SourceMode:          "local_path",
+		ReplaceWhileMounted: in.ReplaceWhileMounted,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
