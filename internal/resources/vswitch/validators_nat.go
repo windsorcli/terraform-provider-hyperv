@@ -152,6 +152,60 @@ func (v natAttrsRejectedOnNonNatValidator) ValidateResource(ctx context.Context,
 		!data.NatHostAddress.IsNull() && !data.NatHostAddress.IsUnknown())
 }
 
+// natPrefixIssue identifies which CIDR-shape rule a candidate
+// nat_internal_address_prefix failed. natPrefixOK means the prefix is
+// usable as-is.
+type natPrefixIssue int
+
+const (
+	natPrefixOK natPrefixIssue = iota
+	natPrefixIssueParse
+	natPrefixIssueNotIPv4
+	natPrefixIssueBadLength
+	natPrefixIssueHostBits
+)
+
+// natPrefixCheckResult carries the contextual bits the validator needs
+// to format per-issue diagnostics. Fields are populated only for the
+// issue they describe; zero values otherwise.
+type natPrefixCheckResult struct {
+	Issue     natPrefixIssue
+	ParseErr  error  // populated when Issue == natPrefixIssueParse
+	PrefixLen int    // populated when Issue == natPrefixIssueBadLength
+	Canonical string // populated when Issue == natPrefixIssueHostBits (the ipnet.String() form)
+}
+
+// checkNATPrefix runs the CIDR-shape rules for nat_internal_address_prefix
+// in order and returns the first one that fails (or natPrefixOK).
+//
+// Rules:
+//  1. Parseable as CIDR.
+//  2. IPv4 family (NAT switches currently support IPv4 only).
+//  3. Prefix length 1..30 (shorter leaves no usable hosts; /31 and /32
+//     are degenerate for a NAT subnet).
+//  4. Canonical network-address form: net.ParseCIDR accepts host-bit
+//     forms like "192.168.100.1/24"; Windows New-NetNat rejects them.
+//
+// Pure function so unit tests pin each rule without constructing a
+// tfsdk.Config to drive the validator end-to-end.
+func checkNATPrefix(prefix string) natPrefixCheckResult {
+	ip, ipnet, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return natPrefixCheckResult{Issue: natPrefixIssueParse, ParseErr: err}
+	}
+	if ip.To4() == nil {
+		return natPrefixCheckResult{Issue: natPrefixIssueNotIPv4}
+	}
+	ones, _ := ipnet.Mask.Size()
+	if ones < 1 || ones > 30 {
+		return natPrefixCheckResult{Issue: natPrefixIssueBadLength, PrefixLen: ones}
+	}
+	if !ip.Equal(ipnet.IP) {
+		return natPrefixCheckResult{Issue: natPrefixIssueHostBits, Canonical: ipnet.String()}
+	}
+	return natPrefixCheckResult{Issue: natPrefixOK}
+}
+
 // natPrefixCIDRValidator: nat_internal_address_prefix must be a valid
 // IPv4 CIDR with prefix length <= 30 (smaller prefixes leave no usable
 // host addresses) AND must be in canonical network-address form (host
@@ -159,6 +213,9 @@ func (v natAttrsRejectedOnNonNatValidator) ValidateResource(ctx context.Context,
 // rejects host-bit forms like "192.168.100.1/24" with an opaque cmdlet
 // error; rejecting here gives the operator a plan-time diagnostic that
 // suggests the canonical equivalent.
+//
+// The actual rule logic lives in checkNATPrefix; this validator is a
+// thin wrapper that maps each issue to a path-anchored diagnostic.
 type natPrefixCIDRValidator struct{}
 
 func (v natPrefixCIDRValidator) Description(_ context.Context) string {
@@ -179,44 +236,33 @@ func (v natPrefixCIDRValidator) ValidateResource(ctx context.Context, req resour
 		return
 	}
 	prefix := data.NatInternalAddressPrefix.ValueString()
-	ip, ipnet, err := net.ParseCIDR(prefix)
-	if err != nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("nat_internal_address_prefix"),
-			"nat_internal_address_prefix is not a valid CIDR",
-			fmt.Sprintf("Could not parse %q as a CIDR: %s. Use a form like \"192.168.100.0/24\".", prefix, err),
-		)
+	result := checkNATPrefix(prefix)
+	attr := path.Root("nat_internal_address_prefix")
+	switch result.Issue {
+	case natPrefixOK:
 		return
-	}
-	if ip.To4() == nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("nat_internal_address_prefix"),
+	case natPrefixIssueParse:
+		resp.Diagnostics.AddAttributeError(attr,
+			"nat_internal_address_prefix is not a valid CIDR",
+			fmt.Sprintf("Could not parse %q as a CIDR: %s. Use a form like \"192.168.100.0/24\".",
+				prefix, result.ParseErr),
+		)
+	case natPrefixIssueNotIPv4:
+		resp.Diagnostics.AddAttributeError(attr,
 			"nat_internal_address_prefix must be IPv4",
 			fmt.Sprintf("%q parses as a non-IPv4 address. NAT switches currently support IPv4 only.", prefix),
 		)
-		return
-	}
-	ones, _ := ipnet.Mask.Size()
-	if ones < 1 || ones > 30 {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("nat_internal_address_prefix"),
+	case natPrefixIssueBadLength:
+		resp.Diagnostics.AddAttributeError(attr,
 			"nat_internal_address_prefix has an unusable prefix length",
 			fmt.Sprintf("Prefix length /%d leaves too few host addresses for a NAT subnet. "+
-				"Use /30 or longer (e.g. /24).", ones),
+				"Use /30 or longer (e.g. /24).", result.PrefixLen),
 		)
-		return
-	}
-	// net.ParseCIDR accepts host-bit forms like "192.168.100.1/24" and
-	// returns ip=192.168.100.1, ipnet.IP=192.168.100.0. Windows New-NetNat
-	// rejects host-bit forms; require the canonical network address so
-	// the operator gets a plan-time diagnostic instead of an opaque
-	// cmdlet error at apply time.
-	if !ip.Equal(ipnet.IP) {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("nat_internal_address_prefix"),
+	case natPrefixIssueHostBits:
+		resp.Diagnostics.AddAttributeError(attr,
 			"nat_internal_address_prefix must be in canonical network-address form",
 			fmt.Sprintf("%q has non-zero host bits. Windows NetNat rejects this form. "+
-				"Use the masked network address: %q.", prefix, ipnet.String()),
+				"Use the masked network address: %q.", prefix, result.Canonical),
 		)
 	}
 }
