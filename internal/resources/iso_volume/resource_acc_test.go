@@ -65,6 +65,25 @@ func TestAcc_ISOVolume_basic(t *testing.T) {
 					"meta-data": "instance-id: tfacc-basic\nlocal-hostname: tfacc\n",
 					"user-data": "#cloud-config\nhostname: tfacc\n",
 				}),
+				// PreApply plancheck pins ModifyPlan: the Create plan
+				// must show the ModifyPlan-computed sha256, not
+				// `(known after apply)`. A regression that removed
+				// ModifyPlan would surface here as the planned sha256
+				// being unknown rather than wantSha.
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectKnownValue(
+							"hyperv_iso_volume.test",
+							tfjsonpath.New("sha256"),
+							knownvalue.StringExact(wantSha),
+						),
+						plancheck.ExpectKnownValue(
+							"hyperv_iso_volume.test",
+							tfjsonpath.New("size_bytes"),
+							knownvalue.Int64Exact(wantSize),
+						),
+					},
+				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_iso_volume.test",
@@ -127,11 +146,22 @@ func TestAcc_ISOVolume_inPlaceUpdateOnFiles(t *testing.T) {
 			},
 			{
 				Config: isoVolumeConfig(dest, "CIDATA", v2),
+				// The plancheck triplet pins both the in-place
+				// classification and the ModifyPlan-computed hash:
+				// without ModifyPlan, the planned sha256 would be the
+				// state-derived v1 hash (UseStateForUnknown) and the
+				// apply would either fail the framework's consistency
+				// check or silently mislead the operator.
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(
 							"hyperv_iso_volume.test",
 							plancheck.ResourceActionUpdate,
+						),
+						plancheck.ExpectKnownValue(
+							"hyperv_iso_volume.test",
+							tfjsonpath.New("sha256"),
+							knownvalue.StringExact(v2Sha),
 						),
 					},
 				},
@@ -176,11 +206,21 @@ func TestAcc_ISOVolume_inPlaceUpdateOnVolumeLabel(t *testing.T) {
 			},
 			{
 				Config: isoVolumeConfig(dest, "AUTOUNATTEND", files),
+				// Same plancheck shape as inPlaceUpdateOnFiles: the
+				// label change must rebuild + re-stream in place AND
+				// the planned sha256 must reflect the recomputed
+				// AUTOUNATTEND-labeled bytes (ModifyPlan, not the
+				// stale CIDATA-labeled state hash).
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(
 							"hyperv_iso_volume.test",
 							plancheck.ResourceActionUpdate,
+						),
+						plancheck.ExpectKnownValue(
+							"hyperv_iso_volume.test",
+							tfjsonpath.New("sha256"),
+							knownvalue.StringExact(autoSha),
 						),
 					},
 				},
