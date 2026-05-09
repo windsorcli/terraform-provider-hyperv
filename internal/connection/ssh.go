@@ -373,6 +373,20 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 				Duration: duration,
 			}, nil
 		}
+		// session.Wait() returns *ssh.ExitMissingError when the channel
+		// closed without an exit-status reply -- typical for "the remote
+		// process probably finished but the network blinked". Mark the
+		// client dead so the next RunScript reconnects on its own (the
+		// keepalive ticker would otherwise notice on its next interval,
+		// up to keepaliveInterval seconds later -- a verify-on-drop
+		// recovery path can't wait that long), and surface the typed
+		// sentinel so typed-client methods can opt into a follow-up
+		// verify when their cmdlet is idempotent.
+		var exitMissing *ssh.ExitMissingError
+		if errors.As(runErr, &exitMissing) {
+			b.alive.Store(false)
+			return Result{}, fmt.Errorf("ssh: run script: %w: %v", ErrSessionDropped, runErr)
+		}
 		return Result{}, fmt.Errorf("ssh: run script: %w", runErr)
 	}
 

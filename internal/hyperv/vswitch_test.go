@@ -1,11 +1,14 @@
 package hyperv
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
@@ -246,5 +249,109 @@ func TestClient_RemoveVMSwitch_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	err := c.RemoveVMSwitch(t.Context(), "missing")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// shortenVerifyTimings drops the verify-on-drop loop's delay to a value
+// fast enough for unit tests but >0 so the time.After branch is still
+// exercised. Restored on test cleanup so other tests in the package
+// see the production defaults.
+func shortenVerifyTimings(t *testing.T) {
+	t.Helper()
+	prevDelay, prevAttempts := removeVMSwitchVerifyDelay, removeVMSwitchVerifyAttempts
+	removeVMSwitchVerifyDelay = 1 * time.Millisecond
+	removeVMSwitchVerifyAttempts = 3
+	t.Cleanup(func() {
+		removeVMSwitchVerifyDelay = prevDelay
+		removeVMSwitchVerifyAttempts = prevAttempts
+	})
+}
+
+// SessionDropped + post-drop GetVMSwitch returning NotFound: the cmdlet
+// almost always succeeded on the host and the SSH session just blinked.
+// RemoveVMSwitch must verify and treat as success rather than surface a
+// false failure -- this is the External-switch destroy case the fix
+// targets.
+func TestClient_RemoveVMSwitch_SessionDroppedRecoversWhenSwitchGone(t *testing.T) {
+	shortenVerifyTimings(t)
+
+	notFoundEnvelope := `{"category":"ObjectNotFound","message":"switch not found","cmdlet":"Get-VMSwitch"}`
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervSwitch").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervSwitch").Return("", notFoundEnvelope, 1)
+	c := NewClient(fr)
+
+	if err := c.RemoveVMSwitch(t.Context(), "windsor-hvtest01"); err != nil {
+		t.Fatalf("RemoveVMSwitch: expected nil after verify confirmed gone, got %v", err)
+	}
+}
+
+// SessionDropped + post-drop GetVMSwitch returns the switch (still
+// exists): the destroy genuinely failed (or hadn't started). The
+// recovery path must NOT swallow this as success.
+func TestClient_RemoveVMSwitch_SessionDroppedSurfacesWhenSwitchStillExists(t *testing.T) {
+	shortenVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervSwitch").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	err := c.RemoveVMSwitch(t.Context(), "still-here")
+	if err == nil {
+		t.Fatal("expected error when switch is still observable post-drop, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+}
+
+// SessionDropped + post-drop GetVMSwitch keeps failing with a transport
+// error (host hasn't recovered). After exhausting attempts, surface the
+// original drop error -- a re-run of terraform destroy can pick up
+// where this left off once the host is healthy.
+func TestClient_RemoveVMSwitch_SessionDroppedExhaustsAttempts(t *testing.T) {
+	shortenVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervSwitch").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervSwitch").ReturnErr(connection.ErrSessionDropped)
+	c := NewClient(fr)
+
+	err := c.RemoveVMSwitch(t.Context(), "stuck")
+	if err == nil {
+		t.Fatal("expected error after verify exhausts attempts, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+}
+
+// SessionDropped + ctx canceled mid-recovery: the verify loop must
+// honor cancellation and return promptly, not consume the full delay
+// budget. Operators canceling an apply should see the abort within the
+// cancel signal.
+func TestClient_RemoveVMSwitch_SessionDroppedRespectsContextCancel(t *testing.T) {
+	prev := removeVMSwitchVerifyDelay
+	removeVMSwitchVerifyDelay = 5 * time.Second
+	t.Cleanup(func() { removeVMSwitchVerifyDelay = prev })
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervSwitch").ReturnErr(connection.ErrSessionDropped)
+	c := NewClient(fr)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	start := time.Now()
+	err := c.RemoveVMSwitch(ctx, "any")
+	if d := time.Since(start); d > 1*time.Second {
+		t.Errorf("verify loop ignored ctx cancel: took %v", d)
+	}
+	if err == nil {
+		t.Fatal("expected error on canceled context, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
 	}
 }
