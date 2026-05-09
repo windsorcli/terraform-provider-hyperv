@@ -15,6 +15,7 @@ package vswitch_test
 // gates on HYPERV_TEST_NET_ADAPTER for the bench's bound NIC name.
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -23,6 +24,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+
+	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
 )
@@ -49,7 +52,10 @@ func TestAcc_VirtualSwitch_basic(t *testing.T) {
 		// bench after destroy, not just absent from Terraform state.
 		// Without this, a silently-failing Remove-VMSwitch would let
 		// the test pass green while leaving an orphan switch behind.
-		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch", client.GetVMSwitch),
+		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch",
+			func(ctx context.Context, name string) (*hyperv.VMSwitch, error) {
+				return client.GetVMSwitch(ctx, name, "")
+			}),
 		Steps: []resource.TestStep{
 			{
 				Config: vswitchPrivateConfig(name, "initial notes"),
@@ -151,7 +157,10 @@ func TestAcc_VirtualSwitch_internal(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		CheckDestroy:             acctest.CheckResourceGone("hyperv_virtual_switch", client.GetVMSwitch),
+		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch",
+			func(ctx context.Context, name string) (*hyperv.VMSwitch, error) {
+				return client.GetVMSwitch(ctx, name, "")
+			}),
 		Steps: []resource.TestStep{
 			{
 				Config: vswitchInternalConfig(name),
@@ -183,4 +192,80 @@ resource "hyperv_virtual_switch" "test" {
   switch_type = "Internal"
 }
 `, name)
+}
+
+// TestAcc_VirtualSwitch_nat exercises the NAT switch_type. NAT switches
+// orchestrate three host-side cmdlets (New-VMSwitch + New-NetIPAddress +
+// New-NetNat) and are constrained by Microsoft's one-NetNat-per-host rule
+// -- both wrinkles only show up against a real bench. Topology-independent
+// like the Private and Internal scenarios; no bound NIC required.
+//
+// Update step exercises the only mutable NAT attribute
+// (nat_internal_address_prefix), confirming Set-NetNat fires without the
+// underlying VMSwitch teardown that RequiresReplace attributes would
+// trigger. CheckDestroy passes nat_name through GetVMSwitch so the read
+// joins NetNat + NetIPAddress -- a half-torn-down NAT triple would
+// surface here rather than silently leaving orphan state on the host.
+func TestAcc_VirtualSwitch_nat(t *testing.T) {
+	name := acctest.RandomName("vswitch-nat")
+	natName := acctest.RandomName("nat")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch",
+			func(ctx context.Context, switchName string) (*hyperv.VMSwitch, error) {
+				return client.GetVMSwitch(ctx, switchName, natName)
+			}),
+		Steps: []resource.TestStep{
+			{
+				Config: vswitchNATConfig(name, natName, "192.168.100.0/24", "192.168.100.1"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("switch_type"), knownvalue.StringExact("NAT")),
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("nat_name"), knownvalue.StringExact(natName)),
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("nat_internal_address_prefix"),
+						knownvalue.StringExact("192.168.100.0/24")),
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("nat_host_address"),
+						knownvalue.StringExact("192.168.100.1")),
+				},
+			},
+			{
+				// In-place update: prefix change -> Set-NetNat, no teardown.
+				Config: vswitchNATConfig(name, natName, "192.168.200.0/24", "192.168.100.1"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_virtual_switch.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("nat_internal_address_prefix"),
+						knownvalue.StringExact("192.168.200.0/24")),
+				},
+			},
+		},
+	})
+}
+
+// vswitchNATConfig is the canonical NAT-switch HCL fixture used by the
+// acceptance test. Notably absent: net_adapter_names and
+// allow_management_os (rejected for NAT by the resource validators).
+func vswitchNATConfig(name, natName, prefix, hostAddr string) string {
+	return fmt.Sprintf(`
+resource "hyperv_virtual_switch" "test" {
+  name                        = %q
+  switch_type                 = "NAT"
+  nat_name                    = %q
+  nat_internal_address_prefix = %q
+  nat_host_address            = %q
+}
+`, name, natName, prefix, hostAddr)
 }

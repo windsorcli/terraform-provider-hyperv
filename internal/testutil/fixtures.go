@@ -13,16 +13,20 @@ const VMHostFixtureJSON = `{
 	"VirtualHardDiskPath": "C:\\ProgramData\\Microsoft\\Windows\\Virtual Hard Disks"
 }`
 
-// VMSwitchExternalFixtureJSON is the canonical six-field shape that
-// vswitch/{get,new,set}.ps1 emit, locked by the Pester contract tests.
-// Single source of truth across the typed-client and resource-layer suites.
+// VMSwitchExternalFixtureJSON is the canonical nine-field shape (six base
+// + three NAT) that vswitch/{get,new,set}.ps1 emit, locked by the Pester
+// contract tests. Single source of truth across the typed-client and
+// resource-layer suites. NAT fields are empty strings on non-NAT switches.
 const VMSwitchExternalFixtureJSON = `{
 	"Name": "external-switch",
 	"SwitchType": "External",
 	"AllowManagementOS": true,
 	"NetAdapterInterfaceDescription": "Intel(R) Ethernet I210",
 	"Notes": "production",
-	"Id": "12345678-1234-5678-1234-567812345678"
+	"Id": "12345678-1234-5678-1234-567812345678",
+	"NatName": "",
+	"NatInternalAddressPrefix": "",
+	"NatHostAddress": ""
 }`
 
 // VMSwitchPrivateFixtureJSON is the Private-switch variant -- no NIC
@@ -34,7 +38,27 @@ const VMSwitchPrivateFixtureJSON = `{
 	"AllowManagementOS": false,
 	"NetAdapterInterfaceDescription": null,
 	"Notes": "",
-	"Id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	"Id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+	"NatName": "",
+	"NatInternalAddressPrefix": "",
+	"NatHostAddress": ""
+}`
+
+// VMSwitchNATFixtureJSON is the NAT-switch variant. SwitchType is the
+// synthesized "NAT" string (not Hyper-V's underlying Internal enum value);
+// NatName / NatInternalAddressPrefix / NatHostAddress are populated. Used
+// by typed-client tests to lock the joined Get-VMSwitch + Get-NetNat +
+// Get-NetIPAddress shape get.ps1 emits when nat_name is supplied.
+const VMSwitchNATFixtureJSON = `{
+	"Name": "windsor-nat",
+	"SwitchType": "NAT",
+	"AllowManagementOS": false,
+	"NetAdapterInterfaceDescription": "",
+	"Notes": "",
+	"Id": "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",
+	"NatName": "windsor-nat",
+	"NatInternalAddressPrefix": "192.168.100.0/24",
+	"NatHostAddress": "192.168.100.1"
 }`
 
 // ImageFileFixtureJSON is the canonical three-field shape that

@@ -144,7 +144,11 @@ type Model struct {
 func readVSwitch(ctx context.Context, c *hyperv.Client, name string) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	sw, err := c.GetVMSwitch(ctx, name)
+	// Data source has no state, so it can't carry nat_name across reads.
+	// NAT-typed switches read here as their underlying type (Internal);
+	// users wanting the NAT-augmented view should reference the resource
+	// directly (it carries nat_name in state for the round-trip).
+	sw, err := c.GetVMSwitch(ctx, name, "")
 	if err != nil {
 		switch {
 		case errors.Is(err, hyperv.ErrNotFound):

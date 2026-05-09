@@ -42,10 +42,13 @@ func resourceSchema() schema.Schema {
 			"switch_type": schema.StringAttribute{
 				Required: true,
 				MarkdownDescription: "Switch type. One of `External` (binds to a host NIC), `Internal` " +
-					"(host-VM only), or `Private` (VM-VM only). **Forces replacement** -- Hyper-V cannot " +
-					"convert a switch from one type to another.",
+					"(host-VM only), `Private` (VM-VM only), or `NAT` (Internal switch with a registered " +
+					"`NetNat` instance providing outbound NAT). **Forces replacement** -- Hyper-V cannot " +
+					"convert a switch from one type to another. NAT requires `nat_name` and " +
+					"`nat_internal_address_prefix`; the provider enforces Microsoft's one-`NetNat`-per-host " +
+					"constraint at create time.",
 				Validators: []validator.String{
-					stringvalidator.OneOf("External", "Internal", "Private"),
+					stringvalidator.OneOf("External", "Internal", "Private", "NAT"),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -81,11 +84,52 @@ func resourceSchema() schema.Schema {
 			"net_adapter_interface_description": schema.StringAttribute{
 				Computed: true,
 				MarkdownDescription: "Read-only: the Hyper-V-reported description of the bound NIC (External switches only). " +
-					"Empty for Internal/Private. For NIC-teamed External switches this is the team adapter's description, " +
+					"Empty for Internal/Private/NAT. For NIC-teamed External switches this is the team adapter's description, " +
 					"not any individual member NIC's.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"nat_name": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "NAT instance name. **Required** when `switch_type = \"NAT\"`; rejected " +
+					"otherwise. Doubles as the resource-side identifier consumers reference. **Forces " +
+					"replacement** -- `New-NetNat -Name` is immutable.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"nat_internal_address_prefix": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Internal subnet (CIDR) the NAT instance routes for, e.g. " +
+					"`192.168.100.0/24`. **Required** when `switch_type = \"NAT\"`; rejected otherwise. " +
+					"Mutable in place via `Set-NetNat -InternalIPInterfaceAddressPrefix`.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"nat_host_address": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Host-side gateway IPv4 address assigned to the host vNIC (`vEthernet " +
+					"(<switch_name>)`). Must lie inside `nat_internal_address_prefix`. **Required** when " +
+					"`switch_type = \"NAT\"`; rejected otherwise. **Forces replacement** -- changing the " +
+					"host vNIC's IP requires tearing the NAT triple down.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"force_management_os_migration": schema.BoolAttribute{
+				Optional: true,
+				MarkdownDescription: "Allow destroy of an `External` switch with `allow_management_os = true` " +
+					"when the SSH connection's source IP lies inside the switch's vNIC subnet. Defaults to " +
+					"`false`: a pre-flight precondition refuses to destroy in that configuration because the " +
+					"host can be left LAN-unreachable if the SSH session drops mid-migration. Set `true` only " +
+					"when you have console / IPMI fallback or are operating from a different management path.",
 			},
 		},
 	}

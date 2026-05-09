@@ -26,10 +26,12 @@ function Set-HypervSwitch {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [ValidateSet('External', 'Internal', 'Private')] [string] $SwitchType,
+        [ValidateSet('External', 'Internal', 'Private', 'NAT')] [string] $SwitchType,
         [string[]]       $NetAdapterNames,
         [Nullable[bool]] $AllowManagementOS,
-        [string]         $Notes
+        [string]         $Notes,
+        [string]         $NatName,
+        [string]         $NatInternalAddressPrefix
     )
 
     # Existence pre-check. Symmetric with get.ps1 / remove.ps1: Set-VMSwitch
@@ -76,6 +78,59 @@ function Set-HypervSwitch {
         throw "allow_management_os is not valid for switch_type '$($existing.SwitchType)' (External only)"
     }
 
+    # NAT branch. The mutable-in-place set is narrow:
+    #   - Notes lives on the underlying VMSwitch -> Set-VMSwitch.
+    #   - nat_internal_address_prefix lives on NetNat -> Set-NetNat.
+    # Everything else (nat_name, nat_host_address, switch_type) is
+    # RequiresReplace at the schema layer; it never reaches Update.
+    if ($SwitchType -eq 'NAT') {
+        $touchedSwitch = $false
+        if ($PSBoundParameters.ContainsKey('Notes')) {
+            Set-VMSwitch -Name $Name -Notes $Notes -ErrorAction Stop
+            $touchedSwitch = $true
+        }
+        $touchedNat = $false
+        if ($PSBoundParameters.ContainsKey('NatInternalAddressPrefix')) {
+            Set-NetNat -Name $NatName `
+                -InternalIPInterfaceAddressPrefix $NatInternalAddressPrefix `
+                -ErrorAction Stop | Out-Null
+            $touchedNat = $true
+        }
+        if (-not $touchedSwitch -and -not $touchedNat) {
+            throw "Set-HypervSwitch requires at least one mutable attribute (notes or nat_internal_address_prefix)"
+        }
+
+        # Read-back. Mirrors get.ps1's NAT augmentation: pull the underlying
+        # VMSwitch, the NetIPAddress, the NetNat, then synthesize the
+        # SwitchType=NAT shape.
+        $sw = Get-VMSwitch -Name $Name -ErrorAction Stop
+        $natIp = Get-NetIPAddress `
+            -InterfaceAlias "vEthernet ($Name)" `
+            -AddressFamily 'IPv4' `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $netNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+        $natNameOut = if ($null -ne $netNat) { $netNat.Name } else { '' }
+        $natPrefixOut = if ($null -ne $netNat) { $netNat.InternalIPInterfaceAddressPrefix } else { '' }
+        $natHostOut = if ($null -ne $natIp) { $natIp.IPAddress } else { '' }
+
+        $sw |
+            Select-Object `
+                Name,
+                @{ N = 'SwitchType';                      E = { 'NAT' } },
+                AllowManagementOS,
+                NetAdapterInterfaceDescription,
+                Notes,
+                @{ N = 'Id';                              E = { $_.Id.ToString() } },
+                @{ N = 'NatName';                         E = { $natNameOut } },
+                @{ N = 'NatInternalAddressPrefix';        E = { $natPrefixOut } },
+                @{ N = 'NatHostAddress';                  E = { $natHostOut } } |
+            Write-HypervResult
+        return
+    }
+
     $setArgs = @{
         Name        = $Name
         ErrorAction = 'Stop'
@@ -118,7 +173,10 @@ function Set-HypervSwitch {
             AllowManagementOS,
             NetAdapterInterfaceDescription,
             Notes,
-            @{ N = 'Id';                              E = { $_.Id.ToString() } } |
+            @{ N = 'Id';                              E = { $_.Id.ToString() } },
+            @{ N = 'NatName';                         E = { '' } },
+            @{ N = 'NatInternalAddressPrefix';        E = { '' } },
+            @{ N = 'NatHostAddress';                  E = { '' } } |
         Write-HypervResult
 }
 
@@ -141,6 +199,12 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         if ($params.PSObject.Properties.Name -contains 'notes' -and $null -ne $params.notes) {
             $callArgs.Notes = $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'nat_name' -and $null -ne $params.nat_name -and $params.nat_name -ne '') {
+            $callArgs.NatName = $params.nat_name
+        }
+        if ($params.PSObject.Properties.Name -contains 'nat_internal_address_prefix' -and $null -ne $params.nat_internal_address_prefix -and $params.nat_internal_address_prefix -ne '') {
+            $callArgs.NatInternalAddressPrefix = $params.nat_internal_address_prefix
         }
 
         Set-HypervSwitch @callArgs

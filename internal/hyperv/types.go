@@ -22,6 +22,12 @@ type VMHost struct {
 // Field tags use PascalCase to match Get-VMSwitch's native output (the
 // stdin convention is snake_case per the wire contract; stdout is the raw
 // cmdlet shape consumed by the typed client).
+//
+// SwitchType reads as "External", "Internal", "Private", or the synthesized
+// "NAT" -- Hyper-V's underlying enum has no NAT type, so the script reports
+// SwitchType=NAT only when the caller passes nat_name and the matching
+// NetNat + NetIPAddress are both present on the host. NAT fields are empty
+// strings for non-NAT switches.
 type VMSwitch struct {
 	Name                           string `json:"Name"`
 	SwitchType                     string `json:"SwitchType"`
@@ -29,6 +35,9 @@ type VMSwitch struct {
 	NetAdapterInterfaceDescription string `json:"NetAdapterInterfaceDescription"`
 	Notes                          string `json:"Notes"`
 	ID                             string `json:"Id"`
+	NatName                        string `json:"NatName"`
+	NatInternalAddressPrefix       string `json:"NatInternalAddressPrefix"`
+	NatHostAddress                 string `json:"NatHostAddress"`
 }
 
 // NewVMSwitchInput is the stdin JSON shape for vswitch/new.ps1.
@@ -38,12 +47,19 @@ type VMSwitch struct {
 // the entry block in new.ps1 treats absent keys and explicit null as
 // equivalent (both skip the splat), so omitempty + nil pointer yields the
 // "use cmdlet default" behavior.
+//
+// NAT fields are required when SwitchType == "NAT" and rejected otherwise
+// (the resource-layer validator enforces this; the script trusts the
+// validation already happened).
 type NewVMSwitchInput struct {
-	Name              string   `json:"name"`
-	SwitchType        string   `json:"switch_type"`
-	NetAdapterNames   []string `json:"net_adapter_names,omitempty"`
-	AllowManagementOS *bool    `json:"allow_management_os,omitempty"`
-	Notes             *string  `json:"notes,omitempty"`
+	Name                     string   `json:"name"`
+	SwitchType               string   `json:"switch_type"`
+	NetAdapterNames          []string `json:"net_adapter_names,omitempty"`
+	AllowManagementOS        *bool    `json:"allow_management_os,omitempty"`
+	Notes                    *string  `json:"notes,omitempty"`
+	NatName                  string   `json:"nat_name,omitempty"`
+	NatInternalAddressPrefix string   `json:"nat_internal_address_prefix,omitempty"`
+	NatHostAddress           string   `json:"nat_host_address,omitempty"`
 }
 
 // SetVMSwitchInput is the stdin JSON shape for vswitch/set.ps1.
@@ -55,12 +71,18 @@ type NewVMSwitchInput struct {
 //   - Only keys present in the input get forwarded to Set-VMSwitch (see
 //     set.ps1's wire contract). Sending nil/null for an attribute means
 //     "leave it alone"; sending a value means "set it to this".
+//
+// NatName is forwarded for NAT switches so set.ps1 can route to Set-NetNat
+// when nat_internal_address_prefix is in the payload, and so the read-back
+// can synthesize SwitchType=NAT.
 type SetVMSwitchInput struct {
-	Name              string   `json:"name"`
-	SwitchType        string   `json:"switch_type,omitempty"`
-	NetAdapterNames   []string `json:"net_adapter_names,omitempty"`
-	AllowManagementOS *bool    `json:"allow_management_os,omitempty"`
-	Notes             *string  `json:"notes,omitempty"`
+	Name                     string   `json:"name"`
+	SwitchType               string   `json:"switch_type,omitempty"`
+	NetAdapterNames          []string `json:"net_adapter_names,omitempty"`
+	AllowManagementOS        *bool    `json:"allow_management_os,omitempty"`
+	Notes                    *string  `json:"notes,omitempty"`
+	NatName                  string   `json:"nat_name,omitempty"`
+	NatInternalAddressPrefix string   `json:"nat_internal_address_prefix,omitempty"`
 }
 
 // ImageFile is the canonical read shape emitted by image_file/{get,new}.ps1.

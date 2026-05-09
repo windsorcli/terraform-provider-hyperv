@@ -191,7 +191,7 @@ Describe 'Set-HypervSwitch' {
             }
         }
 
-        It 'emits the same six-field read shape as get.ps1' {
+        It 'emits the same nine-field read shape as get.ps1' {
             Mock Set-VMSwitch { }
             Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name -SwitchType 'External' }
 
@@ -201,10 +201,63 @@ Describe 'Set-HypervSwitch' {
                 'AllowManagementOS',
                 'Id',
                 'Name',
+                'NatHostAddress',
+                'NatInternalAddressPrefix',
+                'NatName',
                 'NetAdapterInterfaceDescription',
                 'Notes',
                 'SwitchType'
             )
+        }
+    }
+
+    Context 'NAT switch updates' {
+        # Set-NetNat supports only -InternalIPInterfaceAddressPrefix in place;
+        # the rest is RequiresReplace at the schema layer. Tests pin the
+        # cmdlet selection: NAT updates DON'T touch Set-VMSwitch.
+
+        It 'forwards only -InternalIPInterfaceAddressPrefix to Set-NetNat when nat_internal_address_prefix changes' {
+            Mock Set-VMSwitch { }
+            Mock Set-NetNat { }
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat {
+                New-HypervNetNatSample -Name 'windsor-nat' `
+                    -InternalIPInterfaceAddressPrefix '10.0.0.0/24'
+            }
+
+            Set-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -NatInternalAddressPrefix '10.0.0.0/24' | Out-Null
+
+            Should -Invoke Set-NetNat -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'windsor-nat' -and
+                $InternalIPInterfaceAddressPrefix -eq '10.0.0.0/24'
+            }
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'NAT update with notes-only change DOES touch Set-VMSwitch (notes lives on the switch, not the NetNat)' {
+            Mock Set-VMSwitch { }
+            Mock Set-NetNat { }
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat { New-HypervNetNatSample }
+
+            Set-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -Notes 'updated' | Out-Null
+
+            Should -Invoke Set-VMSwitch -Times 1 -Exactly -ParameterFilter {
+                $Notes -eq 'updated'
+            }
+            Should -Invoke Set-NetNat -Times 0 -Exactly
         }
     }
 

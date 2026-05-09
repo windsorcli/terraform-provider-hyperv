@@ -48,6 +48,11 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 	return []resource.ConfigValidator{
 		privateAllowMgmtOSValidator{},
 		externalRequiresAdapterNamesValidator{},
+		natRequiresNatAttrsValidator{},
+		natRejectsNonNatAttrsValidator{},
+		natAttrsRejectedOnNonNatValidator{},
+		natPrefixCIDRValidator{},
+		natHostAddressInPrefixValidator{},
 	}
 }
 
@@ -190,7 +195,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	state := modelFromVMSwitch(ctx, sw, plan.NetAdapterNames, &resp.Diagnostics)
+	state := modelFromVMSwitch(ctx, sw, plan.NetAdapterNames, plan.ForceManagementOSMigration, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -215,7 +220,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	sw, err := r.client.GetVMSwitch(ctx, state.Name.ValueString())
+	sw, err := r.client.GetVMSwitch(ctx, state.Name.ValueString(), state.NatName.ValueString())
 	if err != nil {
 		if errors.Is(err, hyperv.ErrNotFound) {
 			tflog.Info(ctx, "hyperv_virtual_switch not found; removing from state", map[string]any{
@@ -232,7 +237,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	// cmdlet's read shape (Get-VMSwitch reports NetAdapterInterfaceDescription
 	// -- a friendly NIC label -- not the original adapter name list). Keep
 	// the prior state's value so subsequent plans don't show phantom diffs.
-	newState := modelFromVMSwitch(ctx, sw, state.NetAdapterNames, &resp.Diagnostics)
+	newState := modelFromVMSwitch(ctx, sw, state.NetAdapterNames, state.ForceManagementOSMigration, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -273,7 +278,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	newState := modelFromVMSwitch(ctx, sw, plan.NetAdapterNames, &resp.Diagnostics)
+	newState := modelFromVMSwitch(ctx, sw, plan.NetAdapterNames, plan.ForceManagementOSMigration, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -282,6 +287,21 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 
 // Delete runs remove.ps1. ErrNotFound is treated as success -- the switch
 // is already gone, no need to error.
+//
+// Pre-flight: External + AllowManagementOS=true triggers an asynchronous
+// IP migration back to the physical NIC during teardown. If the SSH
+// session traverses the switch's vNIC, a mid-migration drop can leave
+// the host LAN-unreachable -- recoverable only via console / IPMI.
+// The force_management_os_migration attribute is the operator's
+// acknowledgement; without it, refuse the destroy with a clear error
+// so the user picks a safer path (console session, NAT-first topology,
+// or explicit opt-in).
+//
+// This pre-flight is config-aware (state.ForceManagementOSMigration)
+// rather than network-topology-aware: detecting whether the SSH
+// session's source IP lies inside the vNIC subnet from inside the
+// provider would require introspection across heterogeneous backends
+// (local/SSH/WinRM). The flag is the simpler, explicit handshake.
 func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -295,8 +315,23 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
+	if state.SwitchType.ValueString() == "External" &&
+		state.AllowManagementOS.ValueBool() &&
+		!state.ForceManagementOSMigration.ValueBool() {
+		resp.Diagnostics.AddError(
+			"External switch destroy refused without force_management_os_migration",
+			"This switch is External with allow_management_os = true. Destroying it triggers "+
+				"an asynchronous host-IP migration back to the physical NIC. If the SSH session "+
+				"traverses this switch's vNIC and drops mid-migration, the host can be left "+
+				"LAN-unreachable -- recoverable only via console / IPMI. Set "+
+				"force_management_os_migration = true to acknowledge the risk, or destroy from "+
+				"a connection that doesn't traverse this switch.",
+		)
+		return
+	}
+
 	tflog.Debug(ctx, "deleting hyperv_virtual_switch", map[string]any{"name": state.Name.ValueString()})
-	err := r.client.RemoveVMSwitch(ctx, state.Name.ValueString())
+	err := r.client.RemoveVMSwitch(ctx, state.Name.ValueString(), state.NatName.ValueString())
 	if err != nil && !errors.Is(err, hyperv.ErrNotFound) {
 		resp.Diagnostics.AddError("Delete hyperv_virtual_switch failed", err.Error())
 		return
@@ -332,6 +367,15 @@ func buildNewInput(ctx context.Context, plan Model) (hyperv.NewVMSwitchInput, di
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
+	if !plan.NatName.IsNull() && !plan.NatName.IsUnknown() {
+		in.NatName = plan.NatName.ValueString()
+	}
+	if !plan.NatInternalAddressPrefix.IsNull() && !plan.NatInternalAddressPrefix.IsUnknown() {
+		in.NatInternalAddressPrefix = plan.NatInternalAddressPrefix.ValueString()
+	}
+	if !plan.NatHostAddress.IsNull() && !plan.NatHostAddress.IsUnknown() {
+		in.NatHostAddress = plan.NatHostAddress.ValueString()
+	}
 	return in, diags
 }
 
@@ -349,12 +393,13 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 		diags.Append(plan.NetAdapterNames.ElementsAs(ctx, &names, false)...)
 		in.NetAdapterNames = names
 	}
-	// Don't forward allow_management_os for Private switches. The attribute
-	// is Optional+Computed, so plan carries the prior-state value (false on
-	// Private since there's no host NIC) even when the user never set it --
-	// forwarding it would trip set.ps1's "not valid for Private" guard on
-	// every Update of a Private switch.
-	if state.SwitchType.ValueString() != "Private" &&
+	// Don't forward allow_management_os for Private/NAT switches. The
+	// attribute is Optional+Computed, so plan carries the prior-state value
+	// (false on Private/NAT since there's no toggle) even when the user
+	// never set it -- forwarding it would trip set.ps1's "not valid"
+	// guards on every Update of a non-External switch.
+	stateType := state.SwitchType.ValueString()
+	if stateType != "Private" && stateType != "NAT" &&
 		!plan.AllowManagementOS.IsNull() && !plan.AllowManagementOS.IsUnknown() {
 		v := plan.AllowManagementOS.ValueBool()
 		in.AllowManagementOS = &v
@@ -363,6 +408,16 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
+	// NAT updates: nat_name is RequiresReplace, so it's always carried from
+	// state to set.ps1 as routing context. nat_internal_address_prefix is
+	// the only mutable NAT attribute; forward when present (non-null) so
+	// set.ps1 can decide whether to call Set-NetNat.
+	if stateType == "NAT" {
+		in.NatName = state.NatName.ValueString()
+		if !plan.NatInternalAddressPrefix.IsNull() && !plan.NatInternalAddressPrefix.IsUnknown() {
+			in.NatInternalAddressPrefix = plan.NatInternalAddressPrefix.ValueString()
+		}
+	}
 	return in, diags
 }
 
@@ -370,8 +425,10 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 // supplies the net_adapter_names list separately because that attribute is
 // user intent (config/plan) -- the cmdlet's read shape exposes only
 // NetAdapterInterfaceDescription, which is a friendly label, not the
-// adapter-name list the user originally passed.
-func modelFromVMSwitch(ctx context.Context, sw *hyperv.VMSwitch, netAdapterNames types.List, diags *diag.Diagnostics) Model {
+// adapter-name list the user originally passed. forceMigration is
+// preserved similarly: it's a destroy-time toggle that doesn't round-trip
+// through the wire, so plan/state carries it.
+func modelFromVMSwitch(ctx context.Context, sw *hyperv.VMSwitch, netAdapterNames types.List, forceMigration types.Bool, diags *diag.Diagnostics) Model {
 	// Preserve the user's net_adapter_names if it's known; fall back to an
 	// empty list when unknown/null so state doesn't end up holding an
 	// unknown value across an apply.
@@ -381,6 +438,18 @@ func modelFromVMSwitch(ctx context.Context, sw *hyperv.VMSwitch, netAdapterNames
 		diags.Append(d...)
 		adapterNames = empty
 	}
+	natName := types.StringNull()
+	if sw.NatName != "" {
+		natName = types.StringValue(sw.NatName)
+	}
+	natPrefix := types.StringNull()
+	if sw.NatInternalAddressPrefix != "" {
+		natPrefix = types.StringValue(sw.NatInternalAddressPrefix)
+	}
+	natHost := types.StringNull()
+	if sw.NatHostAddress != "" {
+		natHost = types.StringValue(sw.NatHostAddress)
+	}
 	return Model{
 		ID:                             types.StringValue(sw.Name),
 		Name:                           types.StringValue(sw.Name),
@@ -389,5 +458,9 @@ func modelFromVMSwitch(ctx context.Context, sw *hyperv.VMSwitch, netAdapterNames
 		AllowManagementOS:              types.BoolValue(sw.AllowManagementOS),
 		Notes:                          types.StringValue(sw.Notes),
 		NetAdapterInterfaceDescription: types.StringValue(sw.NetAdapterInterfaceDescription),
+		NatName:                        natName,
+		NatInternalAddressPrefix:       natPrefix,
+		NatHostAddress:                 natHost,
+		ForceManagementOSMigration:     forceMigration,
 	}
 }
