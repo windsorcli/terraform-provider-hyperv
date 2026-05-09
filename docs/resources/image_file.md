@@ -85,7 +85,7 @@ resource "hyperv_image_file" "preplaced_iso" {
 
 ### Optional
 
-- `content_base64` (String) Base64-encoded byte payload to land at `destination_path`. When set, the resource operates in `literal_bytes`-mode: the provider decodes the base64, writes the bytes to a runner-side tmpfile, computes a SHA-256, and streams through the active connection backend to a `.part` sibling of `destination_path`. The host-side script verifies the streamed bytes' SHA against the runner-computed value and atomic-renames into place.
+- `content_base64` (String, Sensitive) Base64-encoded byte payload to land at `destination_path`. When set, the resource operates in `literal_bytes`-mode: the provider decodes the base64, writes the bytes to a runner-side tmpfile, computes a SHA-256, and streams through the active connection backend to a `.part` sibling of `destination_path`. The host-side script verifies the streamed bytes' SHA against the runner-computed value and atomic-renames into place.
 
 Mutually exclusive with `url` and `local_path` (the resource validator rejects more than one set together). **Forces replacement** when changed -- swapping the payload is conceptually a different resource. Content changes to the *bytes* with the same `destination_path` and matching SHA do NOT replace; they pass through as a Read no-op.
 

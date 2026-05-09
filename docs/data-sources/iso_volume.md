@@ -38,7 +38,7 @@ Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its by
 
 ### Read-Only
 
-- `content_base64` (String) Base64-encoded synthesized ISO bytes. Wire this into `hyperv_image_file.content_base64` (literal_bytes mode) or decode into a `local_file.content_base64` for further composition.
+- `content_base64` (String, Sensitive) Base64-encoded synthesized ISO bytes. Wire this into `hyperv_image_file.content_base64` (literal_bytes mode) or decode into a `local_file.content_base64` for further composition.
 - `id` (String) Mirrors `sha256`. Stable across runs for the same inputs (the data source has no Hyper-V identity to anchor on).
 - `sha256` (String) SHA-256 of the synthesized ISO bytes (lowercase hex, no `sha256:` prefix). Same inputs always produce the same hash by the determinism contract.
 - `size_bytes` (Number) Size of the synthesized ISO in bytes.
