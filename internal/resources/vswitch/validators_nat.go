@@ -154,12 +154,15 @@ func (v natAttrsRejectedOnNonNatValidator) ValidateResource(ctx context.Context,
 
 // natPrefixCIDRValidator: nat_internal_address_prefix must be a valid
 // IPv4 CIDR with prefix length <= 30 (smaller prefixes leave no usable
-// host addresses). Defers to the kernel for finer validity checks; we
-// just shape-check the string.
+// host addresses) AND must be in canonical network-address form (host
+// bits zeroed). Windows New-NetNat -InternalIPInterfaceAddressPrefix
+// rejects host-bit forms like "192.168.100.1/24" with an opaque cmdlet
+// error; rejecting here gives the operator a plan-time diagnostic that
+// suggests the canonical equivalent.
 type natPrefixCIDRValidator struct{}
 
 func (v natPrefixCIDRValidator) Description(_ context.Context) string {
-	return "nat_internal_address_prefix must be a valid IPv4 CIDR (prefix length 1..30)"
+	return "nat_internal_address_prefix must be a canonical IPv4 CIDR (prefix length 1..30, host bits zeroed)"
 }
 
 func (v natPrefixCIDRValidator) MarkdownDescription(ctx context.Context) string {
@@ -200,6 +203,20 @@ func (v natPrefixCIDRValidator) ValidateResource(ctx context.Context, req resour
 			"nat_internal_address_prefix has an unusable prefix length",
 			fmt.Sprintf("Prefix length /%d leaves too few host addresses for a NAT subnet. "+
 				"Use /30 or longer (e.g. /24).", ones),
+		)
+		return
+	}
+	// net.ParseCIDR accepts host-bit forms like "192.168.100.1/24" and
+	// returns ip=192.168.100.1, ipnet.IP=192.168.100.0. Windows New-NetNat
+	// rejects host-bit forms; require the canonical network address so
+	// the operator gets a plan-time diagnostic instead of an opaque
+	// cmdlet error at apply time.
+	if !ip.Equal(ipnet.IP) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("nat_internal_address_prefix"),
+			"nat_internal_address_prefix must be in canonical network-address form",
+			fmt.Sprintf("%q has non-zero host bits. Windows NetNat rejects this form. "+
+				"Use the masked network address: %q.", prefix, ipnet.String()),
 		)
 	}
 }
