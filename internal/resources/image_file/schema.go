@@ -193,8 +193,7 @@ func resourceSchema() schema.Schema {
 					"**Honored only in `local_path` and `literal_bytes` modes** -- those are the modes " +
 					"with a re-stream Update path. `url` mode forces replacement on any change so the " +
 					"flag is moot; `host_path` mode never writes to `destination_path` at all. Setting " +
-					"the flag in those modes is harmless (silently ignored) but a config validator " +
-					"flags it as a likely user error.",
+					"the flag in those modes is harmless: the value is silently ignored.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},

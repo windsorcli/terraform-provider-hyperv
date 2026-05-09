@@ -106,7 +106,7 @@ Forward and back slashes are accepted equivalently. The path is resolved relativ
 
 Opt-in (default `false`) because vhdx files attached as VM HardDiskController disks don't hot-swap and don't hit the same lock pattern; only DVDs do. Set to `true` for any image_file whose destination may be referenced by a `dvd_drive.iso_path` on a running VM (the canonical case is cidata seeds for cloud-init / Talos machineconfig).
 
-**Honored only in `local_path` and `literal_bytes` modes** -- those are the modes with a re-stream Update path. `url` mode forces replacement on any change so the flag is moot; `host_path` mode never writes to `destination_path` at all. Setting the flag in those modes is harmless (silently ignored) but a config validator flags it as a likely user error.
+**Honored only in `local_path` and `literal_bytes` modes** -- those are the modes with a re-stream Update path. `url` mode forces replacement on any change so the flag is moot; `host_path` mode never writes to `destination_path` at all. Setting the flag in those modes is harmless: the value is silently ignored.
 - `url` (Attributes) URL-mode source configuration. When present, the file is downloaded via a streamed HTTP GET and the SHA-256 is verified against `checksum` before the atomic rename. Mutually exclusive with `local_path` (a config validator rejects both set together). **Forces replacement** when changed -- the file is re-fetched, not patched in place. (see [below for nested schema](#nestedatt--url))
 
 ### Read-Only
