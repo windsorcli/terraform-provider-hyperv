@@ -402,8 +402,8 @@ func TestAcc_ISOVolume_import(t *testing.T) {
 // (gated by detach_dvd_attachments_for_replace=true on the wire from
 // iso_volume), this step fails with the bug reported from ../core:
 //
-//   hyperv: powershell execution failed: Cannot create a file when that
-//     file already exists. (cmdlet=Move-Item)
+//	hyperv: powershell execution failed: Cannot create a file when that
+//	  file already exists. (cmdlet=Move-Item)
 //
 // Hyper-V holds an exclusive open handle on a DVD-mounted ISO; Move-
 // Item -Force does delete-then-rename, the delete is pended/no-op'd
@@ -419,7 +419,7 @@ func TestAcc_ISOVolume_import(t *testing.T) {
 // 256 MiB memory floor matches every other VM-touching acc test.
 //
 // Step 2 is the only step that exercises the fix. Step 1 is just the
-// setup that gets us to "running VM with locked DVD."
+// setup that gets us to a running VM with a locked DVD.
 func TestAcc_ISOVolume_replaceUnderRunningVM(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
 	client := acctest.NewClient(t)
