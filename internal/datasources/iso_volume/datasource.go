@@ -7,12 +7,10 @@
 // hyperv_image_file in literal_bytes mode, or local_file +
 // hyperv_image_file in local_path mode) to land the bytes on a host.
 //
-// Mirrors the synthesis half of the hyperv_iso_volume managed resource.
-// The split exists because synthesis is not a Hyper-V concern -- it's a
-// filesystem-image operation. Keeping it separate from host placement
-// makes both pieces single-responsibility, lets each evolve
-// independently, and keeps the host-mounted-file lock dance scoped to
-// the placement primitive where it belongs.
+// Synthesis is not a Hyper-V concern -- it's a filesystem-image
+// operation. Keeping it separate from host placement makes both pieces
+// single-responsibility and keeps the host-mounted-file lock dance
+// scoped to the placement primitive where it belongs.
 package iso_volume //nolint:revive // underscore in package name mirrors the directory.
 
 import (
@@ -52,10 +50,9 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 	resp.TypeName = req.ProviderTypeName + "_iso_volume"
 }
 
-// Schema returns the locked-in schema. Validators mirror the managed
-// resource (`hyperv_iso_volume`) so a config that's valid for one is
-// valid for the other -- callers that migrate from the resource to the
-// data source pattern see no validation drift.
+// Schema returns the locked-in schema for the data source. Required
+// inputs are volume_label and files; everything else is Computed
+// (content_base64, sha256, size_bytes, id).
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Synthesizes a deterministic ISO9660 seed volume on the runner and exposes " +
@@ -67,9 +64,6 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 			"placement primitive own the host-side lifecycle (incl. the `replace_while_mounted` " +
 			"escape hatch for files held open by a running VM's DVD), while this data source stays " +
 			"pure: same `volume_label` + same `files` -> byte-identical bytes -> stable sha256.\n\n" +
-			"The `hyperv_iso_volume` *managed resource* still exists and bundles synthesis + " +
-			"placement in one block; new consumers should prefer this data source + " +
-			"`hyperv_image_file` for cleaner separation of concerns.\n\n" +
 			"**Determinism contract:** the synthesized bytes are stable across runners, OSes, and " +
 			"clocks. The Primary Volume Descriptor's timestamp and system-identifier fields are " +
 			"post-processed to fixed values; per-file timestamps are zero-valued by the upstream " +
