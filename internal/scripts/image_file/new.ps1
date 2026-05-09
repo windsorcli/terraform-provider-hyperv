@@ -290,7 +290,7 @@ function Invoke-HypervDvdSafeReplace {
 # Move-Item atomic on NTFS, same finally-block cleanup keeps a half-baked
 # staging file from lingering across a failed apply.
 #
-# DetachDvdAttachmentsForReplace opts the Move-Item step into the
+# ReplaceWhileMounted opts the Move-Item step into the
 # detach-write-attach dance via Invoke-HypervDvdSafeReplace. Callers that
 # place files which may be mounted as a Hyper-V DVD on a running VM
 # (currently only iso_volume seeds; image_file's vhdx workloads don't
@@ -301,7 +301,7 @@ function New-HypervImageFileFromLocalPath {
         [Parameter(Mandatory)] [string] $DestinationPath,
         [Parameter(Mandatory)] [string] $StagingPath,
         [Parameter(Mandatory)] [string] $ExpectedSha256,
-        [switch]                        $DetachDvdAttachmentsForReplace
+        [switch]                        $ReplaceWhileMounted
     )
     try {
         if (-not (Test-Path -LiteralPath $StagingPath -PathType Leaf)) {
@@ -322,7 +322,7 @@ function New-HypervImageFileFromLocalPath {
                 [System.Management.Automation.ErrorCategory]::InvalidData, $StagingPath)
             throw $errorRecord
         }
-        if ($DetachDvdAttachmentsForReplace) {
+        if ($ReplaceWhileMounted) {
             Invoke-HypervDvdSafeReplace -StagingPath $StagingPath -DestinationPath $DestinationPath
         }
         else {
@@ -377,21 +377,21 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -DestinationPath $params.destination_path
             }
             'local_path' {
-                # detach_dvd_attachments_for_replace defaults to absent (false).
+                # replace_while_mounted defaults to absent (false).
                 # ConvertFrom-Json silently emits $null for missing keys under
                 # StrictMode 3, so the explicit PSObject.Properties probe avoids
                 # a property-not-found at parse time and keeps the flag opt-in
                 # for callers that don't set it (currently: image_file's url
                 # and local_path direct uses; only iso_volume sets it true).
                 $detachFlag = $false
-                if ($params.PSObject.Properties.Name -contains 'detach_dvd_attachments_for_replace') {
-                    $detachFlag = [bool] $params.detach_dvd_attachments_for_replace
+                if ($params.PSObject.Properties.Name -contains 'replace_while_mounted') {
+                    $detachFlag = [bool] $params.replace_while_mounted
                 }
                 New-HypervImageFileFromLocalPath `
                     -DestinationPath                 $params.destination_path `
                     -StagingPath                     $params.staging_path `
                     -ExpectedSha256                  $params.expected_sha256 `
-                    -DetachDvdAttachmentsForReplace:$detachFlag
+                    -ReplaceWhileMounted:$detachFlag
             }
             default {
                 throw "Unknown source_mode '$($params.source_mode)'; expected 'url', 'host_path', or 'local_path'."

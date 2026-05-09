@@ -399,7 +399,7 @@ func TestAcc_ISOVolume_import(t *testing.T) {
 // to succeed.
 //
 // Without the fix in image_file/new.ps1's Invoke-HypervDvdSafeReplace
-// (gated by detach_dvd_attachments_for_replace=true on the wire from
+// (gated by replace_while_mounted=true on the wire from
 // iso_volume), this step fails with the bug reported from ../core:
 //
 //	hyperv: powershell execution failed: Cannot create a file when that

@@ -288,7 +288,7 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	}
 }
 
-// detach_dvd_attachments_for_replace is iso_volume-only -- it gates the
+// replace_while_mounted is iso_volume-only -- it gates the
 // host script's detach-write-attach Move-Item dance, which exists to
 // rescue a re-stream onto a destination that a running VM has mounted as
 // a DVD. image_file's local_path path serves vhdx workloads (not hot-
@@ -322,8 +322,8 @@ func TestClient_NewImageFileFromLocalPath_StdinDoesNotSetDetachFlag(t *testing.T
 		t.Fatalf("Calls = %d, want 1", len(calls))
 	}
 	stdin := string(calls[0].StdinJSON)
-	if strings.Contains(stdin, "detach_dvd_attachments_for_replace") {
-		t.Errorf("stdin contains detach_dvd_attachments_for_replace; image_file must not opt into the iso_volume-only flag\nfull stdin: %s", stdin)
+	if strings.Contains(stdin, "replace_while_mounted") {
+		t.Errorf("stdin contains replace_while_mounted; image_file must not opt into the iso_volume-only flag\nfull stdin: %s", stdin)
 	}
 }
 

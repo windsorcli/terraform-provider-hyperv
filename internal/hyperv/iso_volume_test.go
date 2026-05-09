@@ -157,7 +157,7 @@ func TestClient_NewISOVolumeFromBytes_StreamFailureSurfaces(t *testing.T) {
 	}
 }
 
-// Stdin contract: iso_volume sets detach_dvd_attachments_for_replace=true
+// Stdin contract: iso_volume sets replace_while_mounted=true
 // on every local_path call so the host script swaps the VM's DVD
 // attachment around the Move-Item rather than colliding with a Hyper-V
 // exclusive open handle. Drift here means a running-VM cidata edit would
@@ -165,7 +165,7 @@ func TestClient_NewISOVolumeFromBytes_StreamFailureSurfaces(t *testing.T) {
 // original bug this flag exists to fix. The flag is iso-volume-specific;
 // image_file's local_path path must NOT set it (covered by a negative
 // assertion in image_file_test.go).
-func TestClient_NewISOVolumeFromBytes_StdinSetsDetachDvdAttachmentsForReplace(t *testing.T) {
+func TestClient_NewISOVolumeFromBytes_StdinSetsReplaceWhileMounted(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
@@ -181,16 +181,16 @@ func TestClient_NewISOVolumeFromBytes_StdinSetsDetachDvdAttachmentsForReplace(t 
 		t.Fatalf("calls = %d, want 1", len(calls))
 	}
 	var got struct {
-		DetachDvdAttachmentsForReplace bool `json:"detach_dvd_attachments_for_replace"`
+		ReplaceWhileMounted bool `json:"replace_while_mounted"`
 	}
 	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
 		t.Fatalf("stdin not valid JSON: %v", err)
 	}
-	if !got.DetachDvdAttachmentsForReplace {
-		t.Errorf("detach_dvd_attachments_for_replace = false, want true (iso_volume must opt into the dvd-aware Move-Item)")
+	if !got.ReplaceWhileMounted {
+		t.Errorf("replace_while_mounted = false, want true (iso_volume must opt into the dvd-aware Move-Item)")
 	}
-	if !strings.Contains(string(calls[0].StdinJSON), `"detach_dvd_attachments_for_replace":true`) {
-		t.Errorf("stdin missing the literal `\"detach_dvd_attachments_for_replace\":true` field\nfull stdin: %s", string(calls[0].StdinJSON))
+	if !strings.Contains(string(calls[0].StdinJSON), `"replace_while_mounted":true`) {
+		t.Errorf("stdin missing the literal `\"replace_while_mounted\":true` field\nfull stdin: %s", string(calls[0].StdinJSON))
 	}
 }
 

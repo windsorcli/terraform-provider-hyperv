@@ -59,7 +59,7 @@ func (c *Client) NewISOVolumeFromBytes(ctx context.Context, destinationPath stri
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
 	}
-	// detach_dvd_attachments_for_replace=true is iso-volume-specific.
+	// replace_while_mounted=true is iso-volume-specific.
 	// Cidata/autounattend/Talos seeds may be mounted as a DVD on a running
 	// VM at re-stream time; the host script swaps the VM's DVD attachment
 	// around the Move-Item so the rename can't collide with Hyper-V's
@@ -67,17 +67,17 @@ func (c *Client) NewISOVolumeFromBytes(ctx context.Context, destinationPath stri
 	// does NOT set this; vhdx files attached as VM HardDiskController
 	// disks aren't hot-replaced and don't hit the same lock pattern.
 	stdin, err := json.Marshal(struct {
-		DestinationPath                string `json:"destination_path"`
-		StagingPath                    string `json:"staging_path"`
-		ExpectedSha256                 string `json:"expected_sha256"`
-		SourceMode                     string `json:"source_mode"`
-		DetachDvdAttachmentsForReplace bool   `json:"detach_dvd_attachments_for_replace"`
+		DestinationPath     string `json:"destination_path"`
+		StagingPath         string `json:"staging_path"`
+		ExpectedSha256      string `json:"expected_sha256"`
+		SourceMode          string `json:"source_mode"`
+		ReplaceWhileMounted bool   `json:"replace_while_mounted"`
 	}{
-		DestinationPath:                destinationPath,
-		StagingPath:                    stagingPath,
-		ExpectedSha256:                 expectedSha,
-		SourceMode:                     "local_path",
-		DetachDvdAttachmentsForReplace: true,
+		DestinationPath:     destinationPath,
+		StagingPath:         stagingPath,
+		ExpectedSha256:      expectedSha,
+		SourceMode:          "local_path",
+		ReplaceWhileMounted: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)

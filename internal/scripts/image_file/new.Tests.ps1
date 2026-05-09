@@ -412,7 +412,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
         }
     }
 
-    Context 'detach-dvd-on-replace mode (DetachDvdAttachmentsForReplace switch)' {
+    Context 'replace-while-mounted mode (ReplaceWhileMounted switch)' {
         # iso_volume sets this flag because cidata seeds may be mounted as
         # a DVD on a running VM. Move-Item -Force against a destination
         # Hyper-V holds an exclusive open handle on surfaces "Cannot
@@ -449,7 +449,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
                 -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
                 -ExpectedSha256                  'expected' `
-                -DetachDvdAttachmentsForReplace | Out-Null
+                -ReplaceWhileMounted | Out-Null
 
             Should -Invoke Get-VM         -Times 1 -Exactly
             Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
@@ -515,7 +515,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
                 -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
                 -ExpectedSha256                  'expected' `
-                -DetachDvdAttachmentsForReplace | Out-Null
+                -ReplaceWhileMounted | Out-Null
 
             # Strip the random pivot guid (and the trailing .iso the
             # cmdlet validator requires) from move/copy entries before
@@ -566,7 +566,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath                 'C:/hyperv/seeds/cidata.iso' `
                 -StagingPath                     'C:/hyperv/seeds/cidata.iso.part-abc' `
                 -ExpectedSha256                  'expected' `
-                -DetachDvdAttachmentsForReplace | Out-Null
+                -ReplaceWhileMounted | Out-Null
 
             # Final restore must use backslash form (C:\...), not the
             # user-supplied forward-slash form.
@@ -606,7 +606,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
                 -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
                 -ExpectedSha256                  'expected' `
-                -DetachDvdAttachmentsForReplace } | Should -Throw -ExpectedMessage '*simulated copy failure*'
+                -ReplaceWhileMounted } | Should -Throw -ExpectedMessage '*simulated copy failure*'
 
             # The single slot got pointed back at the destination once
             # via the finally block. Without that, the post-fail VM
@@ -638,7 +638,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath                 'C:/hyperv/seeds/cidata.iso' `
                 -StagingPath                     'C:/hyperv/seeds/cidata.iso.part-abc' `
                 -ExpectedSha256                  'expected' `
-                -DetachDvdAttachmentsForReplace | Out-Null
+                -ReplaceWhileMounted | Out-Null
 
             # Two Set-VMDvdDrive calls: one to pivot, one back to dest.
             Should -Invoke Set-VMDvdDrive -Times 2 -Exactly
@@ -679,7 +679,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
                 -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
                 -ExpectedSha256                  'expected' `
-                -DetachDvdAttachmentsForReplace | Out-Null
+                -ReplaceWhileMounted | Out-Null
 
             Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
         }
