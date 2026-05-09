@@ -2,6 +2,8 @@ package iso_volume
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -21,6 +23,7 @@ var (
 	_ resource.Resource                = (*Resource)(nil)
 	_ resource.ResourceWithConfigure   = (*Resource)(nil)
 	_ resource.ResourceWithImportState = (*Resource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*Resource)(nil)
 )
 
 // Resource implements hyperv_iso_volume.
@@ -39,6 +42,70 @@ func (r *Resource) Metadata(_ context.Context, req resource.MetadataRequest, res
 // Schema returns the locked-in schema (see schema.go).
 func (r *Resource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = resourceSchema()
+}
+
+// ModifyPlan synthesizes the ISO at plan time and writes the
+// resulting `sha256` / `size_bytes` into planned state. Without this,
+// `UseStateForUnknown` would carry the prior state's hash forward
+// when `volume_label` or `files` change in-place, hiding the bytes-
+// change signal from `terraform plan` and tripping the framework's
+// post-apply consistency check on any Update where the new bytes
+// differed from prior state's sha256.
+//
+// Plan-time Build is fast (~5ms for sub-MiB seeds) and deterministic,
+// so the recomputed hash matches what Apply will write to state -- a
+// regression that perturbed determinism would surface here as an
+// "inconsistent result after apply" diagnostic.
+//
+// Skipped during destroy (Plan is null). When `volume_label` or
+// `files` is Unknown (driven from a not-yet-resolved variable),
+// sha256 / size_bytes are set to Unknown so the framework expects
+// any value at apply -- the Apply-side Build inside Create / Update
+// produces the actual hash and writes it to state.
+//
+// Mirrors hyperv_image_file's local_path ModifyPlan (PR #70).
+func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.VolumeLabel.IsUnknown() || plan.Files.IsUnknown() {
+		plan.Sha256 = types.StringUnknown()
+		plan.SizeBytes = types.Int64Unknown()
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+		return
+	}
+
+	files, fdiags := filesFromMap(ctx, plan.Files)
+	resp.Diagnostics.Append(fdiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	bytes, err := iso.Build(plan.VolumeLabel.ValueString(), files)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("files"),
+			"Cannot synthesize iso volume at plan time",
+			fmt.Sprintf("iso.Build failed: %v\n\n"+
+				"The provider builds the iso bytes during plan so changes to "+
+				"volume_label or files surface as a sha256 plan diff. The "+
+				"synthesizer rejected the inputs before any bytes left the runner.",
+				err),
+		)
+		return
+	}
+
+	sum := sha256.Sum256(bytes)
+	plan.Sha256 = types.StringValue(hex.EncodeToString(sum[:]))
+	plan.SizeBytes = types.Int64Value(int64(len(bytes)))
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 // Configure stashes the typed Hyper-V client built by the provider's
