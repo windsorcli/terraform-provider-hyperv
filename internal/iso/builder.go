@@ -181,16 +181,21 @@ func stampDeterministicPVD(iso []byte) error {
 }
 
 // zeroTimestamp writes ECMA-119 8.4.26.1's all-zero "no time recorded"
-// representation: 16 ASCII '0' characters for the YYYYMMDDHHMMSSXX
-// fields, plus a single zero byte for the timezone offset.
+// representation into dst: 16 ASCII '0' characters for the
+// YYYYMMDDHHMMSSXX fields, plus a single zero byte for the timezone
+// offset.
+//
+// Precondition: dst must be exactly pvdTimestampLen (17) bytes. The
+// single caller (stampDeterministicPVD) guarantees this via its
+// upstream length check on the iso buffer; a refactor that violates
+// the precondition surfaces as a slice-out-of-bounds panic at the
+// dst[16] write rather than silently leaving the non-deterministic
+// timestamp bytes in place.
 //
 // All-spaces (ASCII 0x20) is also a valid "unspecified" representation
 // per the spec, but cloud-init and other ISO consumers parse the digit
 // form more reliably; the bench tests exercise the digit form.
 func zeroTimestamp(dst []byte) {
-	if len(dst) != pvdTimestampLen {
-		return
-	}
 	for i := 0; i < 16; i++ {
 		dst[i] = '0'
 	}
