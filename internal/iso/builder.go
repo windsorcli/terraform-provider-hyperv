@@ -214,9 +214,6 @@ func padToA(src []byte, n int) []byte {
 		out[i] = ' '
 	}
 	copy(out, src)
-	if len(src) > n {
-		copy(out, src[:n])
-	}
 	return out
 }
 
