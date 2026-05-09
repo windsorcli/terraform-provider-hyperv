@@ -144,18 +144,67 @@ function New-HypervNatSwitch {
     }
     $sw = New-VMSwitch @vmsArgs
 
-    New-NetIPAddress `
-        -InterfaceAlias "vEthernet ($Name)" `
-        -IPAddress $NatHostAddress `
-        -PrefixLength $prefixLength `
-        -AddressFamily 'IPv4' `
-        -ErrorAction Stop | Out-Null
-
-    if (-not $adoptNat) {
-        New-NetNat `
-            -Name $NatName `
-            -InternalIPInterfaceAddressPrefix $NatInternalAddressPrefix `
+    # Rollback on partial-failure: once New-VMSwitch succeeds, any failure
+    # in the subsequent NetIPAddress / NetNat steps would otherwise leave
+    # an orphan VMSwitch on the host. Terraform records no state because
+    # New returns an error, so the next apply tries to create the same
+    # switch and fails with "already exists" -- blocking all further
+    # applies until the operator manually runs Remove-VMSwitch. Wrap the
+    # post-VMSwitch sequence in a try/catch that tears down whatever
+    # landed (in remove.ps1's order: NetNat -> NetIPAddress -> VMSwitch),
+    # then re-throws so the typed envelope still surfaces to Go.
+    $ipCreated = $false
+    $natCreated = $false
+    try {
+        New-NetIPAddress `
+            -InterfaceAlias "vEthernet ($Name)" `
+            -IPAddress $NatHostAddress `
+            -PrefixLength $prefixLength `
+            -AddressFamily 'IPv4' `
             -ErrorAction Stop | Out-Null
+        $ipCreated = $true
+
+        if (-not $adoptNat) {
+            New-NetNat `
+                -Name $NatName `
+                -InternalIPInterfaceAddressPrefix $NatInternalAddressPrefix `
+                -ErrorAction Stop | Out-Null
+            $natCreated = $true
+        }
+    }
+    catch {
+        # Best-effort rollback. Capture the original failure first so a
+        # subsequent throw from a cleanup step (which bypasses -ErrorAction
+        # SilentlyContinue because it's a terminating error from within a
+        # cmdlet's body) doesn't overwrite it. The caller must see the
+        # ORIGINAL failure (e.g. "address already in use"), not the
+        # cleanup chatter -- the typed envelope on the Go side keys on
+        # the original error's category / FullyQualifiedErrorId. Order
+        # mirrors remove.ps1: NetNat -> NetIPAddress -> VMSwitch.
+        #
+        # The explicit `$null = $_` discard inside each cleanup catch
+        # mirrors vm/new.ps1's orphan-cleanup pattern -- it satisfies
+        # PSScriptAnalyzer's PSAvoidUsingEmptyCatchBlock and makes the
+        # intent literal: cleanup failures are deliberately swallowed
+        # so the caller sees the original create-side failure.
+        $original = $_
+        if ($natCreated) {
+            try { Remove-NetNat -Name $NatName -Confirm:$false -ErrorAction Stop }
+            catch { $null = $_ }
+        }
+        if ($ipCreated) {
+            try {
+                Remove-NetIPAddress `
+                    -InterfaceAlias "vEthernet ($Name)" `
+                    -IPAddress $NatHostAddress `
+                    -Confirm:$false `
+                    -ErrorAction Stop
+            }
+            catch { $null = $_ }
+        }
+        try { Remove-VMSwitch -Name $Name -Force -ErrorAction Stop }
+        catch { $null = $_ }
+        throw $original
     }
 
     $sw |

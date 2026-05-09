@@ -252,5 +252,86 @@ Describe 'New-HypervSwitch' {
             Should -Invoke New-NetIPAddress -Times 1 -Exactly
             Should -Invoke New-NetNat -Times 0 -Exactly
         }
+
+        It 'rolls back the VMSwitch when New-NetIPAddress fails (no orphan switch on the host)' {
+            # Without rollback, a New-NetIPAddress failure leaves an orphan
+            # Internal VMSwitch on the host with no Terraform state. The
+            # next apply re-runs New-VMSwitch and fails with "already
+            # exists" -- blocking all further applies until manual cleanup.
+            # The catch block must Remove-VMSwitch (best-effort) before
+            # re-throwing the original failure.
+            Mock Get-NetNat { }
+            Mock New-VMSwitch { New-HypervSwitchSample -Name $Name -SwitchType 'Internal' }
+            Mock New-NetIPAddress { throw 'simulated NetIPAddress failure' }
+            Mock New-NetNat { New-HypervNetNatSample }
+            Mock Remove-VMSwitch { }
+            Mock Remove-NetIPAddress { }
+            Mock Remove-NetNat { }
+
+            { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -NatInternalAddressPrefix '192.168.100.0/24' `
+                -NatHostAddress '192.168.100.1' } |
+                Should -Throw -ExpectedMessage '*NetIPAddress failure*'
+
+            # VMSwitch was created, so it must be torn down.
+            Should -Invoke Remove-VMSwitch -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'windsor-nat' -and $Force -eq $true
+            }
+            # NetIPAddress did NOT land (the cmdlet itself threw), so the
+            # cleanup must skip Remove-NetIPAddress -- otherwise a benign
+            # cleanup error could mask the real failure.
+            Should -Invoke Remove-NetIPAddress -Times 0 -Exactly
+            Should -Invoke Remove-NetNat -Times 0 -Exactly
+        }
+
+        It 'rolls back NetNat + NetIPAddress + VMSwitch when New-NetNat fails (full chain)' {
+            # New-NetNat fails after NetIPAddress landed. The catch block
+            # must tear down the chain in remove.ps1 order: NetNat (none
+            # to remove since it never landed), NetIPAddress, VMSwitch.
+            Mock Get-NetNat { }
+            Mock New-VMSwitch { New-HypervSwitchSample -Name $Name -SwitchType 'Internal' }
+            Mock New-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock New-NetNat { throw 'simulated NetNat failure' }
+            Mock Remove-VMSwitch { }
+            Mock Remove-NetIPAddress { }
+            Mock Remove-NetNat { }
+
+            { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -NatInternalAddressPrefix '192.168.100.0/24' `
+                -NatHostAddress '192.168.100.1' } |
+                Should -Throw -ExpectedMessage '*NetNat failure*'
+
+            # NetNat itself failed, so $natCreated stays false -- skip
+            # Remove-NetNat to avoid noise on a cleanup that has nothing
+            # to clean. NetIPAddress landed, so its rollback fires.
+            Should -Invoke Remove-NetNat -Times 0 -Exactly
+            Should -Invoke Remove-NetIPAddress -Times 1 -Exactly -ParameterFilter {
+                $InterfaceAlias -eq 'vEthernet (windsor-nat)' -and
+                $IPAddress -eq '192.168.100.1'
+            }
+            Should -Invoke Remove-VMSwitch -Times 1 -Exactly
+        }
+
+        It 'rollback re-throws the ORIGINAL failure (not the cleanup chatter)' {
+            # The typed envelope on the Go side keys on the original
+            # PowerShell error category / FullyQualifiedErrorId. Surfacing
+            # a cleanup-step error instead would mis-route ErrPSExecution.
+            Mock Get-NetNat { }
+            Mock New-VMSwitch { New-HypervSwitchSample -Name $Name -SwitchType 'Internal' }
+            Mock New-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock New-NetNat { throw 'original NetNat failure' }
+            # Cleanup itself fails -- shouldn't surface to the caller.
+            Mock Remove-NetIPAddress { throw 'cleanup chatter' }
+            Mock Remove-VMSwitch { throw 'more cleanup chatter' }
+            Mock Remove-NetNat { }
+
+            { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -NatInternalAddressPrefix '192.168.100.0/24' `
+                -NatHostAddress '192.168.100.1' } |
+                Should -Throw -ExpectedMessage '*original NetNat failure*'
+        }
     }
 }
