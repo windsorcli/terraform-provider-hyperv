@@ -106,8 +106,10 @@ func resourceSchema() schema.Schema {
 				Computed: true,
 				MarkdownDescription: "Internal subnet (CIDR) the NAT instance routes for, e.g. " +
 					"`192.168.100.0/24`. **Required** when `switch_type = \"NAT\"`; rejected otherwise. " +
-					"Mutable in place via `Set-NetNat -InternalIPInterfaceAddressPrefix`.",
+					"**Forces replacement** -- `Set-NetNat` does not accept `-InternalIPInterfaceAddressPrefix`, " +
+					"so changing the prefix requires tearing the NAT triple down and recreating it.",
 				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},

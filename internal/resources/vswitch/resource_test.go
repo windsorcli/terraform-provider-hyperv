@@ -410,10 +410,14 @@ func TestBuildNewInput_NATForwardsAllNATFields(t *testing.T) {
 	}
 }
 
-// NAT update only forwards the mutable NAT attribute (prefix). nat_name is
-// RequiresReplace and is carried as routing context, not as a mutation.
-// nat_host_address is RequiresReplace too -- never forwarded on Update.
-func TestBuildSetInput_NATForwardsNamePlusMutablePrefix(t *testing.T) {
+// NAT updates carry nat_name from state purely as read-back routing
+// context for set.ps1 (so it can synthesize SwitchType=NAT). Every
+// NAT-specific input is RequiresReplace at the schema layer:
+// nat_internal_address_prefix forces replacement because Set-NetNat does
+// not accept -InternalIPInterfaceAddressPrefix on the bench (verified
+// against Server 2022 + PS 5.1), so the only in-place mutation that
+// reaches Update for a NAT switch is Notes.
+func TestBuildSetInput_NATForwardsNameForReadback(t *testing.T) {
 	t.Parallel()
 
 	state := Model{
@@ -424,7 +428,7 @@ func TestBuildSetInput_NATForwardsNamePlusMutablePrefix(t *testing.T) {
 		NatHostAddress:           types.StringValue("192.168.100.1"),
 	}
 	plan := state
-	plan.NatInternalAddressPrefix = types.StringValue("10.0.0.0/24") // change
+	plan.Notes = types.StringValue("updated notes")
 
 	in, diags := buildSetInput(t.Context(), plan, state)
 	if diags.HasError() {
@@ -433,8 +437,8 @@ func TestBuildSetInput_NATForwardsNamePlusMutablePrefix(t *testing.T) {
 	if in.NatName != "windsor-nat" {
 		t.Errorf("NatName = %q, want windsor-nat (from state)", in.NatName)
 	}
-	if in.NatInternalAddressPrefix != "10.0.0.0/24" {
-		t.Errorf("NatInternalAddressPrefix = %q, want 10.0.0.0/24 (from plan)", in.NatInternalAddressPrefix)
+	if in.Notes == nil || *in.Notes != "updated notes" {
+		t.Errorf("Notes = %v, want pointer to \"updated notes\"", in.Notes)
 	}
 	if in.AllowManagementOS != nil {
 		t.Errorf("AllowManagementOS should be nil for NAT switch; got %v", in.AllowManagementOS)

@@ -72,17 +72,17 @@ type NewVMSwitchInput struct {
 //     set.ps1's wire contract). Sending nil/null for an attribute means
 //     "leave it alone"; sending a value means "set it to this".
 //
-// NatName is forwarded for NAT switches so set.ps1 can route to Set-NetNat
-// when nat_internal_address_prefix is in the payload, and so the read-back
-// can synthesize SwitchType=NAT.
+// NatName is forwarded for NAT switches so set.ps1 can route the read-back
+// through Get-NetNat + Get-NetIPAddress and synthesize SwitchType=NAT.
+// Every NAT-specific input on the resource is RequiresReplace; the only
+// in-place mutation that reaches Update for a NAT switch is Notes.
 type SetVMSwitchInput struct {
-	Name                     string   `json:"name"`
-	SwitchType               string   `json:"switch_type,omitempty"`
-	NetAdapterNames          []string `json:"net_adapter_names,omitempty"`
-	AllowManagementOS        *bool    `json:"allow_management_os,omitempty"`
-	Notes                    *string  `json:"notes,omitempty"`
-	NatName                  string   `json:"nat_name,omitempty"`
-	NatInternalAddressPrefix string   `json:"nat_internal_address_prefix,omitempty"`
+	Name              string   `json:"name"`
+	SwitchType        string   `json:"switch_type,omitempty"`
+	NetAdapterNames   []string `json:"net_adapter_names,omitempty"`
+	AllowManagementOS *bool    `json:"allow_management_os,omitempty"`
+	Notes             *string  `json:"notes,omitempty"`
+	NatName           string   `json:"nat_name,omitempty"`
 }
 
 // ImageFile is the canonical read shape emitted by image_file/{get,new}.ps1.

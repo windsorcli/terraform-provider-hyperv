@@ -200,12 +200,16 @@ resource "hyperv_virtual_switch" "test" {
 // -- both wrinkles only show up against a real bench. Topology-independent
 // like the Private and Internal scenarios; no bound NIC required.
 //
-// Update step exercises the only mutable NAT attribute
-// (nat_internal_address_prefix), confirming Set-NetNat fires without the
-// underlying VMSwitch teardown that RequiresReplace attributes would
-// trigger. CheckDestroy passes nat_name through GetVMSwitch so the read
-// joins NetNat + NetIPAddress -- a half-torn-down NAT triple would
-// surface here rather than silently leaving orphan state on the host.
+// Update step exercises Notes -- the only in-place mutation that reaches
+// Update for a NAT switch (every NAT-specific input is RequiresReplace,
+// because Set-NetNat does not accept -InternalIPInterfaceAddressPrefix
+// on the bench: verified by an earlier draft of this test against Server
+// 2022 + PS 5.1, which failed with "A parameter cannot be found that
+// matches parameter name 'InternalIPInterfaceAddressPrefix'.").
+//
+// CheckDestroy passes nat_name through GetVMSwitch so the read joins
+// NetNat + NetIPAddress -- a half-torn-down NAT triple would surface
+// here rather than silently leaving orphan state on the host.
 func TestAcc_VirtualSwitch_nat(t *testing.T) {
 	name := acctest.RandomName("vswitch-nat")
 	natName := acctest.RandomName("nat")
@@ -220,7 +224,7 @@ func TestAcc_VirtualSwitch_nat(t *testing.T) {
 			}),
 		Steps: []resource.TestStep{
 			{
-				Config: vswitchNATConfig(name, natName, "192.168.100.0/24", "192.168.100.1"),
+				Config: vswitchNATConfig(name, natName, "192.168.100.0/24", "192.168.100.1", "initial notes"),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
 						tfjsonpath.New("switch_type"), knownvalue.StringExact("NAT")),
@@ -232,11 +236,16 @@ func TestAcc_VirtualSwitch_nat(t *testing.T) {
 					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
 						tfjsonpath.New("nat_host_address"),
 						knownvalue.StringExact("192.168.100.1")),
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("notes"),
+						knownvalue.StringExact("initial notes")),
 				},
 			},
 			{
-				// In-place update: prefix change -> Set-NetNat, no teardown.
-				Config: vswitchNATConfig(name, natName, "192.168.200.0/24", "192.168.100.1"),
+				// In-place update: notes mutation routes through
+				// Set-VMSwitch on the underlying Internal switch. No
+				// teardown of NetNat or NetIPAddress.
+				Config: vswitchNATConfig(name, natName, "192.168.100.0/24", "192.168.100.1", "updated notes"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(
@@ -247,8 +256,11 @@ func TestAcc_VirtualSwitch_nat(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
-						tfjsonpath.New("nat_internal_address_prefix"),
-						knownvalue.StringExact("192.168.200.0/24")),
+						tfjsonpath.New("notes"),
+						knownvalue.StringExact("updated notes")),
+					statecheck.ExpectKnownValue("hyperv_virtual_switch.test",
+						tfjsonpath.New("switch_type"),
+						knownvalue.StringExact("NAT")),
 				},
 			},
 		},
@@ -258,7 +270,7 @@ func TestAcc_VirtualSwitch_nat(t *testing.T) {
 // vswitchNATConfig is the canonical NAT-switch HCL fixture used by the
 // acceptance test. Notably absent: net_adapter_names and
 // allow_management_os (rejected for NAT by the resource validators).
-func vswitchNATConfig(name, natName, prefix, hostAddr string) string {
+func vswitchNATConfig(name, natName, prefix, hostAddr, notes string) string {
 	return fmt.Sprintf(`
 resource "hyperv_virtual_switch" "test" {
   name                        = %q
@@ -266,6 +278,7 @@ resource "hyperv_virtual_switch" "test" {
   nat_name                    = %q
   nat_internal_address_prefix = %q
   nat_host_address            = %q
+  notes                       = %q
 }
-`, name, natName, prefix, hostAddr)
+`, name, natName, prefix, hostAddr, notes)
 }

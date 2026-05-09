@@ -30,8 +30,7 @@ function Set-HypervSwitch {
         [string[]]       $NetAdapterNames,
         [Nullable[bool]] $AllowManagementOS,
         [string]         $Notes,
-        [string]         $NatName,
-        [string]         $NatInternalAddressPrefix
+        [string]         $NatName
     )
 
     # Existence pre-check. Symmetric with get.ps1 / remove.ps1: Set-VMSwitch
@@ -78,27 +77,19 @@ function Set-HypervSwitch {
         throw "allow_management_os is not valid for switch_type '$($existing.SwitchType)' (External only)"
     }
 
-    # NAT branch. The mutable-in-place set is narrow:
-    #   - Notes lives on the underlying VMSwitch -> Set-VMSwitch.
-    #   - nat_internal_address_prefix lives on NetNat -> Set-NetNat.
-    # Everything else (nat_name, nat_host_address, switch_type) is
-    # RequiresReplace at the schema layer; it never reaches Update.
+    # NAT branch. Every NAT-specific input is RequiresReplace at the
+    # schema layer (nat_name, nat_internal_address_prefix, and
+    # nat_host_address all force replacement -- Set-NetNat does not
+    # accept -InternalIPInterfaceAddressPrefix, so prefix changes can
+    # only be expressed as a teardown + recreate). The only mutation
+    # that reaches Update for a NAT switch is Notes, applied to the
+    # underlying VMSwitch. The read-back joins Get-NetNat +
+    # Get-NetIPAddress to synthesize SwitchType=NAT in the output.
     if ($SwitchType -eq 'NAT') {
-        $touchedSwitch = $false
-        if ($PSBoundParameters.ContainsKey('Notes')) {
-            Set-VMSwitch -Name $Name -Notes $Notes -ErrorAction Stop
-            $touchedSwitch = $true
+        if (-not $PSBoundParameters.ContainsKey('Notes')) {
+            throw "Set-HypervSwitch requires at least one mutable attribute (notes)"
         }
-        $touchedNat = $false
-        if ($PSBoundParameters.ContainsKey('NatInternalAddressPrefix')) {
-            Set-NetNat -Name $NatName `
-                -InternalIPInterfaceAddressPrefix $NatInternalAddressPrefix `
-                -ErrorAction Stop | Out-Null
-            $touchedNat = $true
-        }
-        if (-not $touchedSwitch -and -not $touchedNat) {
-            throw "Set-HypervSwitch requires at least one mutable attribute (notes or nat_internal_address_prefix)"
-        }
+        Set-VMSwitch -Name $Name -Notes $Notes -ErrorAction Stop
 
         # Read-back. Mirrors get.ps1's NAT augmentation: pull the underlying
         # VMSwitch, the NetIPAddress, the NetNat, then synthesize the
@@ -202,9 +193,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         if ($params.PSObject.Properties.Name -contains 'nat_name' -and $null -ne $params.nat_name -and $params.nat_name -ne '') {
             $callArgs.NatName = $params.nat_name
-        }
-        if ($params.PSObject.Properties.Name -contains 'nat_internal_address_prefix' -and $null -ne $params.nat_internal_address_prefix -and $params.nat_internal_address_prefix -ne '') {
-            $callArgs.NatInternalAddressPrefix = $params.nat_internal_address_prefix
         }
 
         Set-HypervSwitch @callArgs

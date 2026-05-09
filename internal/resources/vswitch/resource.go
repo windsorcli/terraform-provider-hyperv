@@ -408,15 +408,12 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
-	// NAT updates: nat_name is RequiresReplace, so it's always carried from
-	// state to set.ps1 as routing context. nat_internal_address_prefix is
-	// the only mutable NAT attribute; forward when present (non-null) so
-	// set.ps1 can decide whether to call Set-NetNat.
+	// NAT updates: every NAT-specific input is RequiresReplace, so the
+	// only in-place mutation that reaches Update for a NAT switch is
+	// Notes. nat_name is carried from state purely as read-back routing
+	// context (set.ps1 uses it to synthesize SwitchType=NAT).
 	if stateType == "NAT" {
 		in.NatName = state.NatName.ValueString()
-		if !plan.NatInternalAddressPrefix.IsNull() && !plan.NatInternalAddressPrefix.IsUnknown() {
-			in.NatInternalAddressPrefix = plan.NatInternalAddressPrefix.ValueString()
-		}
 	}
 	return in, diags
 }
