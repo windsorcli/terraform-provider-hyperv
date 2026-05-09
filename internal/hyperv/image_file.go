@@ -553,6 +553,14 @@ func (c *Client) NewImageFileFromBytes(ctx context.Context, in NewImageFileFromB
 	return &f, nil
 }
 
+// sha256Hex returns the lowercase-hex SHA-256 of buf. Wraps the stdlib
+// one-shot hash for callers that already have the bytes in memory and
+// don't need the streaming ComputeFileSHA256 path.
+func sha256Hex(buf []byte) string {
+	h := sha256.Sum256(buf)
+	return hex.EncodeToString(h[:])
+}
+
 // ComputeFileSHA256 returns the lowercase-hex SHA-256 of the file at
 // path. Streams via io.Copy so files of any size hash without buffering
 // the whole payload in memory.

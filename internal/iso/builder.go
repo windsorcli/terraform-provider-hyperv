@@ -1,13 +1,15 @@
 // Package iso synthesizes deterministic ISO9660 volumes on the runner for
-// the hyperv_iso_volume resource. The bytes the runner produces are stable
-// across hosts, OSes, and clocks: same `volume_label` + same `files` map ->
-// byte-identical output -> stable SHA-256 across applies.
+// the data.hyperv_iso_volume data source. The bytes the runner produces
+// are stable across hosts, OSes, and clocks: same `volume_label` + same
+// `files` map -> byte-identical output -> stable SHA-256 across applies.
 //
-// Determinism matters for two reasons. First, the resource's `sha256`
-// attribute is what drives drift detection on Read -- if the input map is
-// unchanged but synthesis emits different bytes, every refresh would show
-// phantom drift. Second, the runner-streamed deploy reuses
-// hyperv_image_file's local_path-mode wire path; the host-side script
+// Determinism matters for two reasons. First, the data source's `sha256`
+// output is what consumers (typically `hyperv_image_file` in
+// literal_bytes mode) hash the bytes they place on the host against -- if
+// the input map is unchanged but synthesis emits different bytes, every
+// plan would surface phantom drift on the placement resource. Second,
+// the runner-streamed deploy reuses hyperv_image_file's local_path-mode
+// wire path; the host-side script
 // verifies the streamed bytes' SHA against the runner-computed value and
 // rejects mismatches as transport corruption. A non-deterministic builder
 // would break both contracts.
@@ -95,9 +97,9 @@ var systemIdentifier = padToA([]byte("TF-PROVIDER-HYPERV"), pvdSystemIDLen)
 //
 // Subdirectories are deliberately not exposed: the canonical NoCloud
 // (cidata) and autounattend layouts both put files at the volume root,
-// and v1 of hyperv_iso_volume mirrors that. Adding a hierarchical files
-// map would force callers to think about path delimiters, depth limits,
-// and ECMA-119 8-level-deep restrictions for marginal benefit.
+// and v1 of data.hyperv_iso_volume mirrors that. Adding a hierarchical
+// files map would force callers to think about path delimiters, depth
+// limits, and ECMA-119 8-level-deep restrictions for marginal benefit.
 type File struct {
 	Name    string
 	Content []byte
