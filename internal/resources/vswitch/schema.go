@@ -127,11 +127,15 @@ func resourceSchema() schema.Schema {
 			},
 			"force_management_os_migration": schema.BoolAttribute{
 				Optional: true,
-				MarkdownDescription: "Allow destroy of an `External` switch with `allow_management_os = true` " +
-					"when the SSH connection's source IP lies inside the switch's vNIC subnet. Defaults to " +
-					"`false`: a pre-flight precondition refuses to destroy in that configuration because the " +
-					"host can be left LAN-unreachable if the SSH session drops mid-migration. Set `true` only " +
-					"when you have console / IPMI fallback or are operating from a different management path.",
+				MarkdownDescription: "Acknowledges the destroy hazard for an `External` switch with " +
+					"`allow_management_os = true`. Removing such a switch triggers an asynchronous " +
+					"host-IP migration back to the physical NIC; if the SSH session traverses the " +
+					"switch's vNIC and drops mid-migration, the host can be left LAN-unreachable -- " +
+					"recoverable only via console / IPMI. The provider does not introspect the SSH " +
+					"path, so the gate fires unconditionally on every External + `allow_management_os " +
+					"= true` destroy regardless of how Terraform is connecting; defaults to `false`. " +
+					"Set `true` to confirm you have console / IPMI fallback or are managing the host " +
+					"through a path that does not traverse this switch's vNIC.",
 			},
 		},
 	}
