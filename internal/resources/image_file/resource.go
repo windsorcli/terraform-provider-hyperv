@@ -469,16 +469,16 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Update is reached only in local_path-mode when the runner-side file's
-// contents change between applies. ModifyPlan recomputes the SHA from
-// disk; if it differs from state, the framework dispatches Update here
-// (every other user-settable field is RequiresReplace). Re-stream the
-// new bytes and verify host-side hash matches.
+// Update is reached when the runner-side bytes change (local_path /
+// literal_bytes mode, ModifyPlan-recomputed SHA differs from state) or
+// when a non-RequiresReplace flag toggles (replace_while_mounted /
+// keep_on_destroy). The bytes-changed path re-streams; the flag-only
+// path takes the SHA-equality shortcut and skips the wire entirely so
+// a cidata-seed flag flip doesn't re-stream the full ISO over WinRM.
 //
-// For url-mode and host_path-mode, every user-settable field is
-// RequiresReplace, so Update is effectively unreachable in those modes
-// -- pass the plan through to state for the framework's Computed
-// propagation machinery.
+// For url-mode and host_path-mode, every user-settable source field is
+// RequiresReplace, so the bytes-changed path is unreachable -- the
+// shortcut handles the flag-only case there too.
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -489,6 +489,21 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	var plan Model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var state Model
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// SHA-equality shortcut. ModifyPlan recomputes plan.Sha256 from the
+	// source bytes (decoded content_base64 or runner-side local_path);
+	// equality with state.Sha256 means the source bytes are unchanged
+	// and only flag attributes can be driving this Update.
+	if !plan.Sha256.IsNull() && !plan.Sha256.IsUnknown() && plan.Sha256.Equal(state.Sha256) {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
 
