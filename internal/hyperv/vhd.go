@@ -196,6 +196,7 @@ func (c *Client) NewVHDDifferencing(ctx context.Context, in NewVHDDifferencingIn
 // pathtype.Path semantic-equality plumbing the typed client doesn't
 // otherwise need.
 func (c *Client) recoverVHDNewOnDrop(ctx context.Context, expected expectedVHD, original error) (*VHD, error) {
+	var lastVerifyErr error
 	for attempt := 0; attempt < vhdVerifyAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -218,8 +219,10 @@ func (c *Client) recoverVHDNewOnDrop(ctx context.Context, expected expectedVHD, 
 			return nil, fmt.Errorf("%w (verified VHD at %q not present post-drop; cmdlet did not take effect)",
 				original, expected.Path)
 		}
+		lastVerifyErr = getErr
 	}
-	return nil, fmt.Errorf("%w (verify exhausted %d attempts)", original, vhdVerifyAttempts)
+	return nil, fmt.Errorf("%w (verify exhausted %d attempts; last verify error: %v)",
+		original, vhdVerifyAttempts, lastVerifyErr)
 }
 
 // ResizeVHD changes the declared size of an existing VHD. The cmdlet

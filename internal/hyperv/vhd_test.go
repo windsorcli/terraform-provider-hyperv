@@ -478,6 +478,9 @@ func TestClient_NewVHDDynamic_SessionDroppedExhaustsAttempts(t *testing.T) {
 	if !errors.Is(err, connection.ErrSessionDropped) {
 		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
 	}
+	if !strings.Contains(err.Error(), "last verify error") {
+		t.Errorf("err = %v, want detail naming last verify error", err)
+	}
 }
 
 // SessionDropped + ctx canceled mid-recovery: the verify loop must

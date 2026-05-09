@@ -105,9 +105,16 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 // drop error if Get reports NotFound (the cmdlet did not take effect)
 // OR if the verify loop runs out of attempts.
 //
+// On exhaustion the wrap includes the last verify error so the operator
+// can see *why* the verify never completed (transport flapping,
+// permission flap on the host, vmms restart) rather than just "verify
+// exhausted N attempts." Without that hint, repeated transient drops
+// look identical to silent infrastructure problems.
+//
 // ctx.Done is honored between attempts: a canceled apply unblocks
 // without consuming the full delay budget.
 func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name string, original error) (*VMSwitch, error) {
+	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -121,8 +128,10 @@ func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name string, orig
 		if errors.Is(getErr, ErrNotFound) {
 			return nil, fmt.Errorf("%w (verified switch %q absent post-drop; cmdlet did not take effect)", original, name)
 		}
+		lastVerifyErr = getErr
 	}
-	return nil, fmt.Errorf("%w (verify exhausted %d attempts)", original, vmSwitchVerifyAttempts)
+	return nil, fmt.Errorf("%w (verify exhausted %d attempts; last verify error: %v)",
+		original, vmSwitchVerifyAttempts, lastVerifyErr)
 }
 
 // SetVMSwitch applies a partial update and returns the post-mutation read
@@ -196,6 +205,7 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
 // ctx.Done is honored between attempts: a canceled apply unblocks
 // without consuming the full delay budget.
 func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, original error) error {
+	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -209,6 +219,8 @@ func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, o
 		if getErr == nil {
 			return fmt.Errorf("%w (verified switch %q still exists post-drop)", original, name)
 		}
+		lastVerifyErr = getErr
 	}
-	return fmt.Errorf("%w (verify exhausted %d attempts)", original, vmSwitchVerifyAttempts)
+	return fmt.Errorf("%w (verify exhausted %d attempts; last verify error: %v)",
+		original, vmSwitchVerifyAttempts, lastVerifyErr)
 }

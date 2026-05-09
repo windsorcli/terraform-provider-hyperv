@@ -333,6 +333,13 @@ func TestClient_NewVMSwitch_SessionDroppedExhaustsAttempts(t *testing.T) {
 	if !errors.Is(err, connection.ErrSessionDropped) {
 		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
 	}
+	// Exhaustion wrap must surface the last verify error so the
+	// operator sees *why* the verify never completed (transport
+	// flapping, vmms restart) -- regression of this hint would
+	// drop diagnostic detail to "exhausted N attempts" only.
+	if !strings.Contains(err.Error(), "last verify error") {
+		t.Errorf("err = %v, want detail naming last verify error", err)
+	}
 }
 
 // SessionDropped + ctx canceled mid-recovery: the verify loop must
@@ -439,6 +446,9 @@ func TestClient_RemoveVMSwitch_SessionDroppedExhaustsAttempts(t *testing.T) {
 	}
 	if !errors.Is(err, connection.ErrSessionDropped) {
 		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+	if !strings.Contains(err.Error(), "last verify error") {
+		t.Errorf("err = %v, want detail naming last verify error", err)
 	}
 }
 
