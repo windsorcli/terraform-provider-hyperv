@@ -265,10 +265,12 @@ func (c *Client) prepareVMSwitchExternalForRemove(ctx context.Context, name stri
 func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, name string, original error) error {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
+		timer := time.NewTimer(vmSwitchVerifyDelay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("%w (pre-remove verify aborted: %v)", original, ctx.Err())
-		case <-time.After(vmSwitchVerifyDelay):
+		case <-timer.C:
 		}
 		sw, getErr := c.GetVMSwitch(ctx, name)
 		if getErr == nil {
@@ -304,10 +306,12 @@ func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, na
 func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, original error) error {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
+		timer := time.NewTimer(vmSwitchVerifyDelay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("%w (verify aborted: %v)", original, ctx.Err())
-		case <-time.After(vmSwitchVerifyDelay):
+		case <-timer.C:
 		}
 		_, getErr := c.GetVMSwitch(ctx, name)
 		if errors.Is(getErr, ErrNotFound) {
