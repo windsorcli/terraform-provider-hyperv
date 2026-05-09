@@ -135,7 +135,9 @@ func resourceSchema() schema.Schema {
 					"path, so the gate fires unconditionally on every External + `allow_management_os " +
 					"= true` destroy regardless of how Terraform is connecting; defaults to `false`. " +
 					"Set `true` to confirm you have console / IPMI fallback or are managing the host " +
-					"through a path that does not traverse this switch's vNIC.",
+					"through a path that does not traverse this switch's vNIC. **Only valid when " +
+					"`switch_type = \"External\"`** -- a config validator rejects this attribute on " +
+					"NAT / Internal / Private switches at plan time.",
 			},
 		},
 	}

@@ -53,6 +53,7 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 		natAttrsRejectedOnNonNatValidator{},
 		natPrefixCIDRValidator{},
 		natHostAddressInPrefixValidator{},
+		forceMigrationRejectedOnNonExternalValidator{},
 	}
 }
 

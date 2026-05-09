@@ -319,3 +319,49 @@ func (v natHostAddressInPrefixValidator) ValidateResource(ctx context.Context, r
 		)
 	}
 }
+
+// forceMigrationRejectedOnNonExternalValidator: force_management_os_migration
+// is meaningful only for External + allow_management_os = true destroy
+// paths. The Delete gate keys on switch_type == "External" explicitly, so
+// setting it on NAT / Internal / Private is a silent no-op. Worse, the
+// specific scenario where a user sets it on a NAT switch then mutates
+// the value triggers Update with no other diff, which set.ps1 surfaces
+// as "requires at least one mutable attribute (notes)" -- a confusing
+// error masking the real problem (the attribute does not apply).
+//
+// Symmetric with natRejectsNonNatAttrsValidator and privateAllowMgmtOSValidator
+// in shape: catch the misconfiguration at plan time with a clear,
+// attribute-anchored diagnostic.
+type forceMigrationRejectedOnNonExternalValidator struct{}
+
+func (v forceMigrationRejectedOnNonExternalValidator) Description(_ context.Context) string {
+	return "force_management_os_migration requires switch_type = \"External\""
+}
+
+func (v forceMigrationRejectedOnNonExternalValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v forceMigrationRejectedOnNonExternalValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if data.SwitchType.IsUnknown() {
+		return
+	}
+	if data.ForceManagementOSMigration.IsNull() || data.ForceManagementOSMigration.IsUnknown() {
+		return
+	}
+	if data.SwitchType.ValueString() == "External" {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(
+		path.Root("force_management_os_migration"),
+		"force_management_os_migration requires switch_type = \"External\"",
+		"force_management_os_migration only governs the destroy path for External + "+
+			"allow_management_os = true switches. Remove the attribute or change switch_type "+
+			"to \"External\".",
+	)
+}
