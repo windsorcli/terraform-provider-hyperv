@@ -48,18 +48,22 @@ resource "hyperv_virtual_switch" "external" {
 ### Required
 
 - `name` (String) Switch name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a switch in place.
-- `switch_type` (String) Switch type. One of `External` (binds to a host NIC), `Internal` (host-VM only), or `Private` (VM-VM only). **Forces replacement** -- Hyper-V cannot convert a switch from one type to another.
+- `switch_type` (String) Switch type. One of `External` (binds to a host NIC), `Internal` (host-VM only), `Private` (VM-VM only), or `NAT` (Internal switch with a registered `NetNat` instance providing outbound NAT). **Forces replacement** -- Hyper-V cannot convert a switch from one type to another. NAT requires `nat_name` and `nat_internal_address_prefix`; the provider enforces Microsoft's one-`NetNat`-per-host constraint at create time.
 
 ### Optional
 
 - `allow_management_os` (Boolean) Whether the host OS can use the bound NIC alongside VMs. Defaults to `true` on `External` and `Internal` switches. **Not valid for `Private` switches** -- a config validator rejects this combination at plan time.
+- `force_management_os_migration` (Boolean) Acknowledges the destroy hazard for an `External` switch with `allow_management_os = true`. Removing such a switch triggers an asynchronous host-IP migration back to the physical NIC; if the SSH session traverses the switch's vNIC and drops mid-migration, the host can be left LAN-unreachable -- recoverable only via console / IPMI. The provider does not introspect the SSH path, so the gate fires unconditionally on every External + `allow_management_os = true` destroy regardless of how Terraform is connecting; defaults to `false`. Set `true` to confirm you have console / IPMI fallback or are managing the host through a path that does not traverse this switch's vNIC.
+- `nat_host_address` (String) Host-side gateway IPv4 address assigned to the host vNIC (`vEthernet (<switch_name>)`). Must lie inside `nat_internal_address_prefix`. **Required** when `switch_type = "NAT"`; rejected otherwise. **Forces replacement** -- changing the host vNIC's IP requires tearing the NAT triple down.
+- `nat_internal_address_prefix` (String) Internal subnet (CIDR) the NAT instance routes for, e.g. `192.168.100.0/24`. **Required** when `switch_type = "NAT"`; rejected otherwise. **Forces replacement** -- `Set-NetNat` does not accept `-InternalIPInterfaceAddressPrefix`, so changing the prefix requires tearing the NAT triple down and recreating it.
+- `nat_name` (String) NAT instance name. **Required** when `switch_type = "NAT"`; rejected otherwise. Doubles as the resource-side identifier consumers reference. **Forces replacement** -- `New-NetNat -Name` is immutable.
 - `net_adapter_names` (List of String) List of host NIC names to bind the switch to. Required when `switch_type = "External"`; ignored otherwise. Multiple names form a NIC team.
 - `notes` (String) Free-form description stored on the switch by Hyper-V. Setting to an empty string clears it.
 
 ### Read-Only
 
 - `id` (String) Resource identifier. Mirrors `name` -- Hyper-V switch names are unique per host.
-- `net_adapter_interface_description` (String) Read-only: the Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private. For NIC-teamed External switches this is the team adapter's description, not any individual member NIC's.
+- `net_adapter_interface_description` (String) Read-only: the Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private/NAT. For NIC-teamed External switches this is the team adapter's description, not any individual member NIC's.
 
 ## Import
 
