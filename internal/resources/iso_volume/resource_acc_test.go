@@ -393,6 +393,161 @@ func TestAcc_ISOVolume_import(t *testing.T) {
 	})
 }
 
+// TestAcc_ISOVolume_replaceUnderRunningVM is the load-bearing assertion
+// for the dvd-aware Move-Item dance: edit a cidata seed while a Hyper-V
+// VM has it mounted as a DVD and is in Running state, expect the apply
+// to succeed.
+//
+// Without the fix in image_file/new.ps1's Invoke-HypervDvdSafeReplace
+// (gated by detach_dvd_attachments_for_replace=true on the wire from
+// iso_volume), this step fails with the bug reported from ../core:
+//
+//   hyperv: powershell execution failed: Cannot create a file when that
+//     file already exists. (cmdlet=Move-Item)
+//
+// Hyper-V holds an exclusive open handle on a DVD-mounted ISO; Move-
+// Item -Force does delete-then-rename, the delete is pended/no-op'd
+// against the locked file, and the rename leg surfaces ERROR_ALREADY_
+// EXISTS. With the fix, the host script enumerates VMs whose DVD Path
+// equals the destination, detaches via Set-VMDvdDrive -Path $null,
+// runs Move-Item, and restores the attachment in a finally block.
+//
+// The VM in this test is gen 2 with no boot device and only the cidata
+// seed mounted; UEFI lands on the no-boot-device firmware screen but
+// reaches Running, which is enough to take the lock. Cidata is not a
+// bootable layout, so the firmware never tries to chain into it. The
+// 256 MiB memory floor matches every other VM-touching acc test.
+//
+// Step 2 is the only step that exercises the fix. Step 1 is just the
+// setup that gets us to "running VM with locked DVD."
+func TestAcc_ISOVolume_replaceUnderRunningVM(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
+	client := acctest.NewClient(t)
+
+	v1 := map[string]string{
+		"meta-data": "instance-id: replace-running-v1\nlocal-hostname: tfacc\n",
+		"user-data": "#cloud-config\nhostname: tfacc-v1\n",
+	}
+	v2 := map[string]string{
+		"meta-data": "instance-id: replace-running-v2\nlocal-hostname: tfacc\n",
+		"user-data": "#cloud-config\nhostname: tfacc-v2\n",
+	}
+	v2Sha := mustBuildSha(t, "CIDATA", v2)
+
+	isoDest := toForwardSlash(joinHostPath(dir, acctest.RandomName("iso-replace-running")+".iso"))
+	vmName := acctest.RandomName("vm-iso-replace")
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// Both resources land in state. The framework's destroy walks
+		// in reverse-dependency order: VM first (which releases the
+		// DVD lock as part of Remove-VM), then iso_volume (whose
+		// post-detach delete runs against an unlocked file). The
+		// CheckDestroy hook only asserts the iso_volume file is gone --
+		// VM-gone is covered by hyperv_vm's own acc tests; here we
+		// care about the file at destination_path.
+		CheckDestroy: acctest.CheckResourceGone("hyperv_iso_volume", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				// Step 1: bring up the system the bug needs -- VM in
+				// Running state with the iso_volume mounted as DVD.
+				Config: isoVolumeReplaceRunningConfig(isoDest, vmName, "CIDATA", v1),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.target",
+						tfjsonpath.New("state").AtMapKey("current"),
+						knownvalue.StringExact("Running"),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.target",
+						tfjsonpath.New("dvd_drive").AtSliceIndex(0).AtMapKey("iso_path"),
+						knownvalue.StringExact(isoDest),
+					),
+				},
+			},
+			{
+				// Step 2: edit cidata content while the VM still holds
+				// the DVD lock. The plancheck pins ResourceActionUpdate
+				// so a future regression that flipped files to
+				// RequiresReplace doesn't silently sidestep this test
+				// (Replace would Destroy + recreate, which detaches and
+				// attaches via the VM resource's path, not via this
+				// resource's Update path -- different code, different
+				// bug surface).
+				Config: isoVolumeReplaceRunningConfig(isoDest, vmName, "CIDATA", v2),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_iso_volume.cidata",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_iso_volume.cidata",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(v2Sha),
+					),
+					// VM stayed Running across the Update -- the host
+					// script's detach is transient (Set-VMDvdDrive
+					// -Path $null then -Path <dest>), not a stop+start.
+					// A regression that stopped the VM to release the
+					// lock would fail here.
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.target",
+						tfjsonpath.New("state").AtMapKey("current"),
+						knownvalue.StringExact("Running"),
+					),
+					// DVD path is the same value as before the edit --
+					// the finally-block reattach restored it. Drift here
+					// would mean the post-Update VM has a detached DVD
+					// (the original bug surface in reverse).
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.target",
+						tfjsonpath.New("dvd_drive").AtSliceIndex(0).AtMapKey("iso_path"),
+						knownvalue.StringExact(isoDest),
+					),
+				},
+			},
+		},
+	})
+}
+
+// isoVolumeReplaceRunningConfig wires hyperv_iso_volume.cidata into
+// hyperv_vm.target's DVD slot at SCSI 0:1, with the VM commanded to
+// Running. The iso_path reference creates the dependency edge that
+// makes Terraform apply iso_volume first, then VM -- so step 1's
+// initial Create runs against zero matching VMs (no detach dance) and
+// step 2's Update runs against the VM that exists and is Running.
+func isoVolumeReplaceRunningConfig(isoDest, vmName, label string, files map[string]string) string {
+	return fmt.Sprintf(`
+resource "hyperv_iso_volume" "cidata" {
+  destination_path = %q
+  volume_label     = %q
+  files = %s
+}
+
+resource "hyperv_vm" "target" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = 268435456 }
+  dvd_drive = [
+    {
+      iso_path            = hyperv_iso_volume.cidata.destination_path
+      controller_number   = 0
+      controller_location = 1
+    },
+  ]
+  state = {
+    desired = "Running"
+  }
+}
+`, isoDest, label, hclMap(files), vmName)
+}
+
 // isoVolumeConfig is the smallest valid HCL for the resource. Files
 // are emitted in sorted order so the generated HCL is stable across
 // runs (regardless of Go map iteration order at test compile time).

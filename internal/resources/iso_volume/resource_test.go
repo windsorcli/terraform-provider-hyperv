@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -313,6 +314,59 @@ func TestFilesFromMap_NullAndUnknownAreNoop(t *testing.T) {
 		if got != nil {
 			t.Errorf("filesFromMap(%v): got %v, want nil slice", m, got)
 		}
+	}
+}
+
+// hasUnknownFileValue is the seam ModifyPlan uses to detect a Map whose
+// keys are known but whose values aren't yet (e.g. files = {
+// "user-data" = some_resource.foo.attr } where foo hasn't applied).
+// Without this check, ModifyPlan's Build path runs filesFromMap on a
+// map whose ElementsAs cannot decode an unknown string element into a
+// Go string -- the framework surfaces "Received unknown value, however
+// the target type cannot handle unknown values. Path: [\"user-data\"]"
+// at plan time. The fix treats per-element unknowns the same as
+// IsUnknown() on the whole map: skip the Build, set sha256/size_bytes
+// to Unknown, defer hash computation to apply.
+//
+// This test pins the helper's contract before the ModifyPlan caller
+// uses it; a regression that returned false on a known map containing
+// an Unknown value would re-introduce the original plan-time crash.
+func TestHasUnknownFileValue(t *testing.T) {
+	t.Parallel()
+
+	known, diags := types.MapValueFrom(context.Background(), types.StringType, map[string]string{
+		"meta-data": "foo",
+		"user-data": "bar",
+	})
+	if diags.HasError() {
+		t.Fatalf("MapValueFrom: %v", diags)
+	}
+
+	mixed, diags := types.MapValue(types.StringType, map[string]attr.Value{
+		"meta-data": types.StringValue("foo"),
+		"user-data": types.StringUnknown(),
+	})
+	if diags.HasError() {
+		t.Fatalf("MapValue: %v", diags)
+	}
+
+	cases := []struct {
+		name string
+		m    types.Map
+		want bool
+	}{
+		{"all known values", known, false},
+		{"one unknown value among known", mixed, true},
+		{"null map", types.MapNull(types.StringType), false},
+		{"wholly unknown map", types.MapUnknown(types.StringType), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasUnknownFileValue(tc.m)
+			if got != tc.want {
+				t.Errorf("hasUnknownFileValue(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -288,6 +288,45 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	}
 }
 
+// detach_dvd_attachments_for_replace is iso_volume-only -- it gates the
+// host script's detach-write-attach Move-Item dance, which exists to
+// rescue a re-stream onto a destination that a running VM has mounted as
+// a DVD. image_file's local_path path serves vhdx workloads (not hot-
+// replaced under a VM's HardDiskController) and must keep the legacy
+// Move-Item -Force behavior. A drift here that started sending the flag
+// would call Get-VMDvdDrive on every image_file write -- harmless on the
+// host but noisy in the audit trail and a contract muddle for whoever
+// reads the wire format next.
+func TestClient_NewImageFileFromLocalPath_StdinDoesNotSetDetachFlag(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "fixture.iso")
+	if err := os.WriteFile(localPath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.NewImageFileFromLocalPath(t.Context(), NewImageFileFromLocalPathInput{
+		DestinationPath: "C:/hyperv/iso/fixture.iso",
+		LocalPath:       localPath,
+	}); err != nil {
+		t.Fatalf("NewImageFileFromLocalPath: %v", err)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls = %d, want 1", len(calls))
+	}
+	stdin := string(calls[0].StdinJSON)
+	if strings.Contains(stdin, "detach_dvd_attachments_for_replace") {
+		t.Errorf("stdin contains detach_dvd_attachments_for_replace; image_file must not opt into the iso_volume-only flag\nfull stdin: %s", stdin)
+	}
+}
+
 // NewImageFileFromLocalPath maps the InvalidData + ImageFileChecksumMismatch
 // envelope to ErrChecksumMismatch -- same shape as url-mode so the
 // resource layer's diagnostic can use one rule for both source modes.

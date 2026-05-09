@@ -1,11 +1,14 @@
 package hyperv
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
@@ -311,5 +314,230 @@ func TestClient_RemoveVHD_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	err := c.RemoveVHD(t.Context(), "C:\\vhds\\already-gone.vhdx")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// shortenVHDVerifyTimings drops the verify-on-drop loop's delay to a
+// value that keeps the unit-test runtime under a second. Symmetric
+// with shortenVerifyTimings (the vswitch helper) -- different timing
+// vars, same rationale.
+func shortenVHDVerifyTimings(t *testing.T) {
+	t.Helper()
+	prevDelay, prevAttempts := vhdVerifyDelay, vhdVerifyAttempts
+	vhdVerifyDelay = 1 * time.Millisecond
+	vhdVerifyAttempts = 3
+	t.Cleanup(func() {
+		vhdVerifyDelay = prevDelay
+		vhdVerifyAttempts = prevAttempts
+	})
+}
+
+// SessionDropped + post-drop GetVHD returns the freshly-created VHD
+// with matching VhdType + SizeBytes: the cmdlet succeeded on the host
+// but the SSH session blinked (collateral damage from a parallel
+// vswitch's NIC rebind, which is the actual recurring case in the
+// External-on-management-NIC topology). NewVHDDynamic must verify and
+// return the read shape from Get rather than surface a false-failure
+// that leaves the user with an orphan VHDX on the bench but a "Create
+// failed" diagnostic.
+func TestClient_NewVHDDynamic_SessionDroppedRecoversWhenVHDPresent(t *testing.T) {
+	shortenVHDVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDDynamic").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervVHD").Return(testutil.VHDDynamicFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	v, err := c.NewVHDDynamic(t.Context(), NewVHDDynamicInput{
+		Path: "C:\\hyperv\\vhds\\my-vm-system.vhdx",
+		// Match the fixture's SizeBytes so the verify guard accepts
+		// the Get result. A mismatch here would surface as a verify
+		// error -- exercised by the dedicated test below.
+		SizeBytes: 34359738368,
+	})
+	if err != nil {
+		t.Fatalf("NewVHDDynamic: expected nil after verify confirmed VHD present, got %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected non-nil VHD from recovery")
+	}
+	if v.Path != "C:\\hyperv\\vhds\\my-vm-system.vhdx" {
+		t.Errorf("Path = %q, want fixture value", v.Path)
+	}
+	if v.VhdType != "Dynamic" {
+		t.Errorf("VhdType = %q, want \"Dynamic\"", v.VhdType)
+	}
+}
+
+// SessionDropped + post-drop GetVHD returns NotFound: the cmdlet did
+// not take effect (or never started). Recovery must NOT swallow this
+// as success -- a silent return with no actual VHD on the bench would
+// have terraform record the resource in state and the next Read would
+// then RemoveResource, churning the apply. Surface the original drop.
+func TestClient_NewVHDDynamic_SessionDroppedSurfacesWhenVHDAbsent(t *testing.T) {
+	shortenVHDVerifyTimings(t)
+
+	notFoundEnvelope := `{"category":"ObjectNotFound","message":"VHD not found at path","cmdlet":""}`
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDDynamic").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervVHD").Return("", notFoundEnvelope, 1)
+	c := NewClient(fr)
+
+	_, err := c.NewVHDDynamic(t.Context(), NewVHDDynamicInput{
+		Path:      "C:\\hyperv\\vhds\\absent.vhdx",
+		SizeBytes: 34359738368,
+	})
+	if err == nil {
+		t.Fatal("expected error when verify shows VHD absent post-drop, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+}
+
+// SessionDropped + post-drop GetVHD returns a VHD whose SizeBytes does
+// not match what we requested: the cmdlet may have written a partial
+// header (or some other file already lived at the path with a different
+// shape). Adoption would propagate broken state into terraform; surface
+// the drop with the mismatch detail so the operator can sweep before
+// retry. Pairs with the symmetric VhdType-mismatch case below.
+func TestClient_NewVHDDynamic_SessionDroppedSurfacesWhenSizeMismatch(t *testing.T) {
+	shortenVHDVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDDynamic").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervVHD").Return(testutil.VHDDynamicFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	// Fixture SizeBytes is 34359738368 (32 GiB); request a different
+	// value so the verify guard rejects.
+	_, err := c.NewVHDDynamic(t.Context(), NewVHDDynamicInput{
+		Path:      "C:\\hyperv\\vhds\\my-vm-system.vhdx",
+		SizeBytes: 16106127360, // 15 GiB
+	})
+	if err == nil {
+		t.Fatal("expected error on size mismatch, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+	if !strings.Contains(err.Error(), "SizeBytes") {
+		t.Errorf("err = %v, want detail naming SizeBytes mismatch", err)
+	}
+}
+
+// SessionDropped + post-drop GetVHD returns a VHD whose VhdType doesn't
+// match what we requested: e.g. user asked for Fixed at a path where a
+// Dynamic already lives (or vice versa). Adoption would silently swap
+// the resource's storage characteristics; surface the drop with the
+// mismatch detail.
+func TestClient_NewVHDFixed_SessionDroppedSurfacesWhenTypeMismatch(t *testing.T) {
+	shortenVHDVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDFixed").ReturnErr(connection.ErrSessionDropped).
+		// Fixture is Dynamic; user requested Fixed. Type mismatch is
+		// the canonical "wrong VHD at same path" signal.
+		On("function Get-HypervVHD").Return(testutil.VHDDynamicFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewVHDFixed(t.Context(), NewVHDFixedInput{
+		Path:      "C:\\hyperv\\vhds\\my-vm-system.vhdx",
+		SizeBytes: 34359738368,
+	})
+	if err == nil {
+		t.Fatal("expected error on VhdType mismatch, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+	if !strings.Contains(err.Error(), "VhdType") {
+		t.Errorf("err = %v, want detail naming VhdType mismatch", err)
+	}
+}
+
+// SessionDropped + post-drop GetVHD keeps failing with a transport
+// error (host hasn't recovered from the NIC blink). After exhausting
+// attempts, surface the original drop -- the operator's re-run of
+// terraform apply can pick up where this left off.
+func TestClient_NewVHDDynamic_SessionDroppedExhaustsAttempts(t *testing.T) {
+	shortenVHDVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDDynamic").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervVHD").ReturnErr(connection.ErrSessionDropped)
+	c := NewClient(fr)
+
+	_, err := c.NewVHDDynamic(t.Context(), NewVHDDynamicInput{
+		Path:      "C:\\hyperv\\vhds\\stuck.vhdx",
+		SizeBytes: 34359738368,
+	})
+	if err == nil {
+		t.Fatal("expected error after verify exhausts attempts, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+}
+
+// SessionDropped + ctx canceled mid-recovery: the verify loop must
+// honor cancellation and return promptly, mirroring the vswitch path's
+// guarantee. An operator hitting Ctrl-C on a hung apply should not
+// have to wait out the full delay budget.
+func TestClient_NewVHDDynamic_SessionDroppedRespectsContextCancel(t *testing.T) {
+	prev := vhdVerifyDelay
+	vhdVerifyDelay = 5 * time.Second
+	t.Cleanup(func() { vhdVerifyDelay = prev })
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDDynamic").ReturnErr(connection.ErrSessionDropped)
+	c := NewClient(fr)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	start := time.Now()
+	_, err := c.NewVHDDynamic(ctx, NewVHDDynamicInput{
+		Path:      "C:\\hyperv\\vhds\\any.vhdx",
+		SizeBytes: 34359738368,
+	})
+	if d := time.Since(start); d > 1*time.Second {
+		t.Errorf("verify loop ignored ctx cancel: took %v", d)
+	}
+	if err == nil {
+		t.Fatal("expected error on canceled context, got nil")
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
+	}
+}
+
+// SessionDropped + Differencing variant: the recovery's expectedVHD
+// passes SizeBytes=0 ("skip size check") because differencing disks
+// inherit size from the parent. Path + VhdType match is the load-
+// bearing guard -- a regression that started checking SizeBytes for
+// Differencing would reject every successful Get because the fixture's
+// SizeBytes is whatever the parent had, not anything the user asked
+// for.
+func TestClient_NewVHDDifferencing_SessionDroppedRecoversSkipsSizeCheck(t *testing.T) {
+	shortenVHDVerifyTimings(t)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervVHDDifferencing").ReturnErr(connection.ErrSessionDropped).
+		On("function Get-HypervVHD").Return(testutil.VHDDifferencingFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	v, err := c.NewVHDDifferencing(t.Context(), NewVHDDifferencingInput{
+		Path:       "C:\\hyperv\\vhds\\child.vhdx",
+		ParentPath: "C:\\hyperv\\vhds\\parent.vhdx",
+	})
+	if err != nil {
+		t.Fatalf("NewVHDDifferencing: expected nil after verify (size check skipped for Differencing), got %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected non-nil VHD from recovery")
+	}
+	if v.VhdType != "Differencing" {
+		t.Errorf("VhdType = %q, want \"Differencing\"", v.VhdType)
 	}
 }

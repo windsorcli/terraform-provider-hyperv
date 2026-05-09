@@ -138,6 +138,149 @@ function New-HypervImageFileFromUrl {
     Read-HypervImageFileResult -Path $DestinationPath
 }
 
+# Invoke-HypervDvdSafeReplace replaces $DestinationPath with the bytes at
+# $StagingPath when the destination may currently be locked by a Hyper-V
+# DVD attachment on a running VM. `Move-Item -Force` does delete-then-
+# rename; on a destination with an exclusive open handle the delete is
+# pended and the rename surfaces "Cannot create a file when that file
+# already exists." Hyper-V supports DVD media hot-swap on running VMs
+# (Set-VMDvdDrive -Path <new>), so we use a swap-via-pivot dance:
+#
+#   1. Move staging from $StagingPath to a sibling pivot file
+#      ($DestinationPath.swap-<guid>). Rename within the directory is
+#      lock-free here because no VM has the staging path mounted.
+#   2. Re-target every matching DVD slot from $DestinationPath to the
+#      pivot. Hyper-V atomically releases its open handle on the old
+#      destination as the new media takes effect.
+#   3. With $DestinationPath now unlocked, copy the pivot bytes to it.
+#      Copy-Item reads the pivot through Hyper-V's FILE_SHARE_READ and
+#      writes a fresh file at the destination -- no rename of the locked
+#      pivot needed.
+#   4. Re-target every slot back to $DestinationPath. Hyper-V picks up
+#      the new bytes there and releases the lock on the pivot.
+#   5. Remove the pivot.
+#
+# Why not the more obvious detach-via-Set-VMDvdDrive-Path-null? On the
+# tested benches (Server 2022, Hyper-V module shipped with PS 5.1), a
+# Path=$null call clears the media on the slot, but a subsequent
+# Set-VMDvdDrive at the same (VMName, ControllerNumber, ControllerLocation)
+# tuple surfaces "the object was not found" -- empirically the slot's
+# resolution machinery breaks when the drive transiently has no media,
+# even though Get-VMDvdDrive still reports the drive as present at the
+# slot. Swap-via-pivot keeps every Set-VMDvdDrive call pointed at a
+# real existing file, sidestepping the issue entirely.
+#
+# All cleanup happens in a finally block so a partial failure (Copy-Item
+# disk-full, Hyper-V error mid-swap) restores the slots to $DestinationPath
+# rather than leaving the VM mounting a soon-deleted pivot. The pivot is
+# best-effort cleaned -- a leak is a sweepable artifact, not a corrupt
+# state.
+function Invoke-HypervDvdSafeReplace {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $StagingPath,
+        [Parameter(Mandatory)] [string] $DestinationPath
+    )
+    $normalizedDest = ($DestinationPath -replace '/', '\')
+
+    # Walk Get-VM and Get-VMDvdDrive per-VM rather than the more concise
+    # Get-VMDvdDrive -VMName '*' wildcard form. The wildcard form on PS
+    # 5.1 / older Hyper-V module versions returns VMDvdDrive objects with
+    # the VMName field unpopulated (the .VM parent is set, but the
+    # .VMName scalar that Set-VMDvdDrive's parameter set keys on lands as
+    # an empty string), so a downstream Set-VMDvdDrive -VMName $dvd.VMName
+    # dispatches to "" and surfaces the cmdlet's stock "object not found"
+    # error. The set-boot-order.ps1 path uses the same per-VM enumeration
+    # shape -- this matches an existing in-repo pattern known to work
+    # against the bench.
+    $attached = @()
+    foreach ($vm in (Get-VM -ErrorAction Stop)) {
+        foreach ($dvd in (Get-VMDvdDrive -VMName $vm.Name -ErrorAction Stop)) {
+            $p = $dvd.Path
+            if ($p -and [string]::Equals(
+                    ($p -replace '/', '\'),
+                    $normalizedDest,
+                    [System.StringComparison]::OrdinalIgnoreCase)) {
+                $attached += [pscustomobject]@{
+                    VMName             = $vm.Name
+                    ControllerNumber   = [int] $dvd.ControllerNumber
+                    ControllerLocation = [int] $dvd.ControllerLocation
+                }
+            }
+        }
+    }
+
+    if ($attached.Count -eq 0) {
+        # No VM holds the lock -- straight Move-Item -Force, same shape
+        # as the non-dvd-aware path.
+        Move-Item -LiteralPath $StagingPath -Destination $DestinationPath -Force -ErrorAction Stop
+        return
+    }
+
+    # Pivot is a sibling so the rename in step 1 stays on the same NTFS
+    # volume (atomic) and Copy-Item in step 3 stays in the same directory
+    # (no cross-volume slow path). The .swap- prefix groups all in-flight
+    # pivots under a single sweep pattern if a future cleanup tool ever
+    # needs one. The trailing .iso is required: Set-VMDvdDrive validates
+    # the path's extension (rejects "The specified path for the drive is
+    # not valid" otherwise) -- the cmdlet enforces .iso even though the
+    # iso_volume schema MarkdownDescription notes Hyper-V "doesn't
+    # require" the suffix at the storage layer; it is the cmdlet
+    # parameter validator that does.
+    $pivotPath = "$normalizedDest.swap-$([guid]::NewGuid().ToString('n')).iso"
+
+    Move-Item -LiteralPath $StagingPath -Destination $pivotPath -ErrorAction Stop
+
+    try {
+        # Step 2: re-point each slot at the pivot. Each Set-VMDvdDrive is
+        # an atomic media swap -- Hyper-V's open handle on $DestinationPath
+        # is released as the call returns. Backslash-normalized path
+        # because Hyper-V's storage layer canonicalizes; passing the
+        # user-form (often forward-slash from HCL) has been observed to
+        # land as an empty Path on the drive.
+        foreach ($dvd in $attached) {
+            Set-VMDvdDrive `
+                -VMName             $dvd.VMName `
+                -ControllerNumber   $dvd.ControllerNumber `
+                -ControllerLocation $dvd.ControllerLocation `
+                -Path               $pivotPath `
+                -ErrorAction Stop
+        }
+
+        # Step 3: $DestinationPath is now unlocked. Copy-Item reads the
+        # pivot through Hyper-V's FILE_SHARE_READ open mode (verified
+        # against bench at the time of writing) and writes a fresh file
+        # at the destination. -Force overwrites any leftover bytes.
+        Copy-Item -LiteralPath $pivotPath -Destination $DestinationPath -Force -ErrorAction Stop
+    }
+    finally {
+        # Step 4: restore each slot to $DestinationPath. Best-effort
+        # SilentlyContinue here: if step 3 failed and the destination is
+        # missing, we still try to put the slot back; if it succeeds the
+        # VM keeps its DVD link intact across the failed apply. ErrorAction
+        # Stop here would mask the original copy-failure error with a
+        # secondary "missing destination" error, which is less useful for
+        # diagnosis. The slot is left pointing at the pivot in the worst
+        # case -- the Read shape will surface that on the next refresh.
+        foreach ($dvd in $attached) {
+            Set-VMDvdDrive `
+                -VMName             $dvd.VMName `
+                -ControllerNumber   $dvd.ControllerNumber `
+                -ControllerLocation $dvd.ControllerLocation `
+                -Path               $normalizedDest `
+                -ErrorAction SilentlyContinue
+        }
+
+        # Step 5: clean up the pivot. SilentlyContinue because a failure
+        # here (e.g. step 4 didn't actually re-target some slot, so the
+        # pivot is still locked) is recoverable on the next apply or via
+        # manual sweep -- not worth shadowing the primary outcome with.
+        if (Test-Path -LiteralPath $pivotPath) {
+            Remove-Item -LiteralPath $pivotPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # New-HypervImageFileFromLocalPath verifies a file the Go-side StreamFile
 # primitive has just deposited at staging_path, then atomic-renames it to
 # destination_path on hash match. Mirrors the url-mode shape: the only
@@ -145,12 +288,19 @@ function New-HypervImageFileFromUrl {
 # HttpClient download). Same .part-in-destination-dir layout keeps the
 # Move-Item atomic on NTFS, same finally-block cleanup keeps a half-baked
 # staging file from lingering across a failed apply.
+#
+# DetachDvdAttachmentsForReplace opts the Move-Item step into the
+# detach-write-attach dance via Invoke-HypervDvdSafeReplace. Callers that
+# place files which may be mounted as a Hyper-V DVD on a running VM
+# (currently only iso_volume seeds; image_file's vhdx workloads don't
+# hot-replace under a VM's HardDiskController) set this flag.
 function New-HypervImageFileFromLocalPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $DestinationPath,
         [Parameter(Mandatory)] [string] $StagingPath,
-        [Parameter(Mandatory)] [string] $ExpectedSha256
+        [Parameter(Mandatory)] [string] $ExpectedSha256,
+        [switch]                        $DetachDvdAttachmentsForReplace
     )
     try {
         if (-not (Test-Path -LiteralPath $StagingPath -PathType Leaf)) {
@@ -171,7 +321,12 @@ function New-HypervImageFileFromLocalPath {
                 [System.Management.Automation.ErrorCategory]::InvalidData, $StagingPath)
             throw $errorRecord
         }
-        Move-Item -LiteralPath $StagingPath -Destination $DestinationPath -Force -ErrorAction Stop
+        if ($DetachDvdAttachmentsForReplace) {
+            Invoke-HypervDvdSafeReplace -StagingPath $StagingPath -DestinationPath $DestinationPath
+        }
+        else {
+            Move-Item -LiteralPath $StagingPath -Destination $DestinationPath -Force -ErrorAction Stop
+        }
     }
     finally {
         # Cleanup is best-effort: a successful Move-Item already consumed
@@ -221,10 +376,21 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -DestinationPath $params.destination_path
             }
             'local_path' {
+                # detach_dvd_attachments_for_replace defaults to absent (false).
+                # ConvertFrom-Json silently emits $null for missing keys under
+                # StrictMode 3, so the explicit PSObject.Properties probe avoids
+                # a property-not-found at parse time and keeps the flag opt-in
+                # for callers that don't set it (currently: image_file's url
+                # and local_path direct uses; only iso_volume sets it true).
+                $detachFlag = $false
+                if ($params.PSObject.Properties.Name -contains 'detach_dvd_attachments_for_replace') {
+                    $detachFlag = [bool] $params.detach_dvd_attachments_for_replace
+                }
                 New-HypervImageFileFromLocalPath `
-                    -DestinationPath $params.destination_path `
-                    -StagingPath     $params.staging_path `
-                    -ExpectedSha256  $params.expected_sha256
+                    -DestinationPath                 $params.destination_path `
+                    -StagingPath                     $params.staging_path `
+                    -ExpectedSha256                  $params.expected_sha256 `
+                    -DetachDvdAttachmentsForReplace:$detachFlag
             }
             default {
                 throw "Unknown source_mode '$($params.source_mode)'; expected 'url', 'host_path', or 'local_path'."

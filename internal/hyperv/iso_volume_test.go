@@ -157,6 +157,43 @@ func TestClient_NewISOVolumeFromBytes_StreamFailureSurfaces(t *testing.T) {
 	}
 }
 
+// Stdin contract: iso_volume sets detach_dvd_attachments_for_replace=true
+// on every local_path call so the host script swaps the VM's DVD
+// attachment around the Move-Item rather than colliding with a Hyper-V
+// exclusive open handle. Drift here means a running-VM cidata edit would
+// fail with "Cannot create a file when that file already exists" -- the
+// original bug this flag exists to fix. The flag is iso-volume-specific;
+// image_file's local_path path must NOT set it (covered by a negative
+// assertion in image_file_test.go).
+func TestClient_NewISOVolumeFromBytes_StdinSetsDetachDvdAttachmentsForReplace(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.NewISOVolumeFromBytes(t.Context(), "C:\\hyperv\\seeds\\x.iso", []byte("payload")); err != nil {
+		t.Fatalf("NewISOVolumeFromBytes: %v", err)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	var got struct {
+		DetachDvdAttachmentsForReplace bool `json:"detach_dvd_attachments_for_replace"`
+	}
+	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if !got.DetachDvdAttachmentsForReplace {
+		t.Errorf("detach_dvd_attachments_for_replace = false, want true (iso_volume must opt into the dvd-aware Move-Item)")
+	}
+	if !strings.Contains(string(calls[0].StdinJSON), `"detach_dvd_attachments_for_replace":true`) {
+		t.Errorf("stdin missing the literal `\"detach_dvd_attachments_for_replace\":true` field\nfull stdin: %s", string(calls[0].StdinJSON))
+	}
+}
+
 // sha256Of is the test-side mirror of the iso_volume.go helper. Kept
 // inline so a test failure points at the wire-level value, not at a
 // package-internal helper.

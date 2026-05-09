@@ -75,7 +75,7 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		return
 	}
 
-	if plan.VolumeLabel.IsUnknown() || plan.Files.IsUnknown() {
+	if plan.VolumeLabel.IsUnknown() || plan.Files.IsUnknown() || hasUnknownFileValue(plan.Files) {
 		plan.Sha256 = types.StringUnknown()
 		plan.SizeBytes = types.Int64Unknown()
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
@@ -354,6 +354,32 @@ func modelFromImageFile(f *hyperv.ImageFile, volumeLabel types.String, files typ
 		SizeBytes:       types.Int64Value(f.SizeBytes),
 		KeepOnDestroy:   keepOnDestroy,
 	}
+}
+
+// hasUnknownFileValue reports whether m contains at least one element
+// whose value is Unknown. ModifyPlan checks IsUnknown() on the whole
+// map, which catches `files = some_resource.foo.attr` (the entire map
+// driven from an unresolved reference); this helper covers the more
+// common shape `files = { "user-data" = some_resource.foo.attr,
+// "meta-data" = "..." }` where the keys are known but a single value
+// won't be until apply. Without this guard, ModifyPlan's downstream
+// filesFromMap -> ElementsAs path crashes with "Received unknown
+// value, however the target type cannot handle unknown values" --
+// `string` cannot represent Unknown.
+//
+// Returns false for null and wholly-unknown maps; the caller's
+// existing IsUnknown / IsNull checks handle those branches and a
+// duplicate signal here would just split the conditional.
+func hasUnknownFileValue(m types.Map) bool {
+	if m.IsNull() || m.IsUnknown() {
+		return false
+	}
+	for _, v := range m.Elements() {
+		if v.IsUnknown() {
+			return true
+		}
+	}
+	return false
 }
 
 // filesFromMap converts the model's Map<string, string> into the

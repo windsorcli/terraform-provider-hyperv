@@ -11,20 +11,26 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
 )
 
-// removeVMSwitchVerifyAttempts and removeVMSwitchVerifyDelay control the
-// verify-on-drop recovery loop in RemoveVMSwitch. The window has to span
-// the External-switch network blip on the destroying host: empirically
-// the bench's vEthernet re-bind takes 5-15 seconds. Five attempts at 5s
+// vmSwitchVerifyAttempts and vmSwitchVerifyDelay control the
+// verify-on-drop recovery loops in RemoveVMSwitch and NewVMSwitch. The
+// window has to span the External-switch network blip on either side of
+// the lifecycle (Create binds the NIC; Remove unbinds it; both rebind
+// trigger ~5-15s vEthernet churn that can blink the SSH session before
+// the cmdlet's exit status reaches the runner). Five attempts at 5s
 // each gives 25s headroom -- generous for the host to recover, tight
-// enough that a genuinely-failed remove still surfaces in well under a
-// terraform-apply deadline.
+// enough that a genuinely-failed Create or Remove still surfaces in
+// well under a terraform-apply deadline.
+//
+// Shared between Create and Remove because the timing target is the
+// same physical event (the NIC rebind) -- splitting them would just
+// duplicate the same numbers under different names.
 //
 // Vars (not consts) so tests can shrink the delay to keep unit-test
 // runtime under a second; production callers should leave the defaults
 // alone.
 var (
-	removeVMSwitchVerifyAttempts = 5
-	removeVMSwitchVerifyDelay    = 5 * time.Second
+	vmSwitchVerifyAttempts = 5
+	vmSwitchVerifyDelay    = 5 * time.Second
 )
 
 // GetVMSwitch fetches a virtual switch by name. Returns ErrNotFound when the
@@ -52,6 +58,26 @@ func (c *Client) GetVMSwitch(ctx context.Context, name string) (*VMSwitch, error
 // NewVMSwitch creates a virtual switch and returns the canonical read shape.
 // The script-side guard rejects Private + AllowManagementOS with a clear
 // error before invoking the cmdlet (see new.ps1).
+//
+// Recovers from connection.ErrSessionDropped via a verify-on-drop loop --
+// symmetric to RemoveVMSwitch's recovery, same physical root cause:
+// New-VMSwitch -NetAdapterName <NIC> on the very NIC the SSH session
+// traverses makes Hyper-V re-bind that NIC for a few seconds, blinking
+// the session before the cmdlet's exit status reaches the runner. The
+// cmdlet itself almost always succeeded -- the response just got
+// stranded. The recovery polls GetVMSwitch and on the first hit returns
+// that switch's read shape (Hyper-V refuses to create over an existing
+// same-name switch, so a post-drop Get-found switch is the one this
+// call just created). The collateral-damage twin -- another resource
+// running concurrently whose session shared the blinking link -- is
+// out of scope here; that resource's apply needs a separate retry,
+// which terraform's normal failure-and-rerun cycle covers.
+//
+// If the verify ultimately can't confirm the switch exists (Get keeps
+// failing with transport errors, returns NotFound, or ctx cancels),
+// the original ErrSessionDropped surfaces -- the operator can re-run
+// terraform apply once the host is healthy and the resource's Read
+// path will reconcile.
 func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitch, error) {
 	body, err := scripts.VswitchScript("new")
 	if err != nil {
@@ -63,10 +89,40 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 	}
 
 	var sw VMSwitch
-	if err := c.runScript(ctx, string(body), stdin, &sw); err != nil {
-		return nil, err
+	runErr := c.runScript(ctx, string(body), stdin, &sw)
+	if runErr == nil {
+		return &sw, nil
 	}
-	return &sw, nil
+	if !errors.Is(runErr, connection.ErrSessionDropped) {
+		return nil, runErr
+	}
+	return c.recoverVMSwitchNewOnDrop(ctx, in.Name, runErr)
+}
+
+// recoverVMSwitchNewOnDrop polls GetVMSwitch up to N times with a short
+// delay, returning the read shape on the first successful Get (the
+// cmdlet succeeded; the SSH session just blinked). Returns the original
+// drop error if Get reports NotFound (the cmdlet did not take effect)
+// OR if the verify loop runs out of attempts.
+//
+// ctx.Done is honored between attempts: a canceled apply unblocks
+// without consuming the full delay budget.
+func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name string, original error) (*VMSwitch, error) {
+	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w (verify aborted: %v)", original, ctx.Err())
+		case <-time.After(vmSwitchVerifyDelay):
+		}
+		sw, getErr := c.GetVMSwitch(ctx, name)
+		if getErr == nil {
+			return sw, nil
+		}
+		if errors.Is(getErr, ErrNotFound) {
+			return nil, fmt.Errorf("%w (verified switch %q absent post-drop; cmdlet did not take effect)", original, name)
+		}
+	}
+	return nil, fmt.Errorf("%w (verify exhausted %d attempts)", original, vmSwitchVerifyAttempts)
 }
 
 // SetVMSwitch applies a partial update and returns the post-mutation read
@@ -140,11 +196,11 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
 // ctx.Done is honored between attempts: a canceled apply unblocks
 // without consuming the full delay budget.
 func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, original error) error {
-	for attempt := 0; attempt < removeVMSwitchVerifyAttempts; attempt++ {
+	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("%w (verify aborted: %v)", original, ctx.Err())
-		case <-time.After(removeVMSwitchVerifyDelay):
+		case <-time.After(vmSwitchVerifyDelay):
 		}
 		_, getErr := c.GetVMSwitch(ctx, name)
 		if errors.Is(getErr, ErrNotFound) {
@@ -154,5 +210,5 @@ func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, o
 			return fmt.Errorf("%w (verified switch %q still exists post-drop)", original, name)
 		}
 	}
-	return fmt.Errorf("%w (verify exhausted %d attempts)", original, removeVMSwitchVerifyAttempts)
+	return fmt.Errorf("%w (verify exhausted %d attempts)", original, vmSwitchVerifyAttempts)
 }
