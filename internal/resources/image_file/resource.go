@@ -469,16 +469,19 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Update is reached when the runner-side bytes change (local_path /
-// literal_bytes mode, ModifyPlan-recomputed SHA differs from state) or
-// when a non-RequiresReplace flag toggles (replace_while_mounted /
-// keep_on_destroy). The bytes-changed path re-streams; the flag-only
-// path takes the SHA-equality shortcut and skips the wire entirely so
-// a cidata-seed flag flip doesn't re-stream the full ISO over WinRM.
+// Update is reached for two reasons: local_path-mode bytes changed
+// (ModifyPlan-recomputed SHA differs from state) or a non-RequiresReplace
+// flag toggled (replace_while_mounted / keep_on_destroy). Only local_path
+// bytes-changed actually re-streams; the flag-only path takes the
+// SHA-equality shortcut and skips the wire entirely so a cidata-seed
+// flag flip doesn't re-stream the full ISO over WinRM.
 //
-// For url-mode and host_path-mode, every user-settable source field is
-// RequiresReplace, so the bytes-changed path is unreachable -- the
-// shortcut handles the flag-only case there too.
+// literal_bytes-mode bytes-changed never enters Update -- content_base64
+// is RequiresReplace, so a byte change triggers Destroy+Create. A
+// literal_bytes flag toggle reaches Update with plan.Sha256 ==
+// state.Sha256 and exits via the shortcut. Same shape for url-mode and
+// host_path-mode: every user-settable source field is RequiresReplace,
+// so only the flag-only path is reachable.
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -536,45 +539,6 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		// In local_path mode plan.URL and plan.ContentBase64 are null
 		// (mutually exclusive); pass them through unchanged so the round-
 		// trip preserves that nullness.
-		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
-		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
-		return
-	}
-
-	if !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown() {
-		tflog.Debug(ctx, "updating hyperv_image_file (literal_bytes mode -- re-streaming)", map[string]any{
-			"destination_path":      plan.DestinationPath.ValueString(),
-			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
-		})
-		decoded, decodeErr := base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
-		if decodeErr != nil {
-			resp.Diagnostics.AddAttributeError(
-				path.Root("content_base64"),
-				"Cannot decode content_base64",
-				fmt.Sprintf("base64.StdEncoding.DecodeString failed: %v", decodeErr),
-			)
-			return
-		}
-		f, err := r.client.NewImageFileFromBytes(ctx, hyperv.NewImageFileFromBytesInput{
-			DestinationPath:     plan.DestinationPath.ValueString(),
-			Bytes:               decoded,
-			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
-		})
-		if err != nil {
-			if errors.Is(err, hyperv.ErrChecksumMismatch) {
-				resp.Diagnostics.AddAttributeError(
-					path.Root("content_base64"),
-					"Streamed bytes checksum mismatch",
-					"The bytes that landed on the host during re-stream don't match the "+
-						"runner-side hash. This signals transport corruption between runner "+
-						"and host. Re-running `terraform apply` typically clears it.\n\n"+
-						err.Error(),
-				)
-				return
-			}
-			resp.Diagnostics.AddError("Update hyperv_image_file failed (literal_bytes mode)", err.Error())
-			return
-		}
 		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
