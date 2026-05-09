@@ -141,10 +141,12 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
 // without consuming the full delay budget.
 func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, original error) error {
 	for attempt := 0; attempt < removeVMSwitchVerifyAttempts; attempt++ {
+		timer := time.NewTimer(removeVMSwitchVerifyDelay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("%w (verify aborted: %v)", original, ctx.Err())
-		case <-time.After(removeVMSwitchVerifyDelay):
+		case <-timer.C:
 		}
 		_, getErr := c.GetVMSwitch(ctx, name)
 		if errors.Is(getErr, ErrNotFound) {
