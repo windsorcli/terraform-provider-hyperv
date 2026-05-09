@@ -162,22 +162,47 @@ func (c *Client) SetVMSwitch(ctx context.Context, in SetVMSwitchInput) (*VMSwitc
 // RemoveVMSwitch deletes a virtual switch by name. Resource Delete should
 // treat ErrNotFound as success (the switch is already gone).
 //
-// Recovers from connection.ErrSessionDropped via a verify-on-drop loop:
-// destroying an External switch on the very NIC the SSH session traverses
-// makes the host re-bind that NIC for a few seconds, which can blink the
-// session long enough that session.Wait() returns ExitMissingError before
-// the cmdlet's exit status reaches the runner. The cmdlet itself almost
-// always succeeded -- the response just got stranded. Rather than surface
-// a false-failure, retry-loop a Get and if the switch is gone, treat the
-// drop as a successful remove. Each Get goes through c.runScript, which
-// in turn pays the SSH backend's reconnect cost on its first call after
-// the drop (alive flag flipped in the SSH backend).
+// External switches with AllowManagementOS=true get a two-step destroy:
+// first Set-VMSwitch -AllowManagementOS $false to migrate the host's IP
+// off the vNIC and back to the physical NIC, then Remove-VMSwitch -Force
+// once the host is on a stable connection. The naive single-step
+// Remove-VMSwitch on the same kind of switch causes a NIC rebind
+// concurrent with the cmdlet's own teardown, and the resulting SSH-
+// session blink can land mid-destroy -- leaving the switch in a
+// transitional state Hyper-V's Get-VMSwitch still reports as "exists"
+// and a subsequent terraform-destroy retry re-triggers from scratch.
+// Splitting the operation lets the destabilizing event (IP migration)
+// happen in a small property-toggle that the bench-side cmdlet
+// completes quickly, then runs the destructive Remove against an
+// already-stabilized host.
 //
-// If the verify ultimately can't confirm the switch is gone (Get keeps
-// failing with transport errors or returns a real switch), the original
-// ErrSessionDropped surfaces -- the operator can re-run terraform destroy
-// once the host is healthy and the resource's Read path will reconcile.
+// Internal / Private switches and External switches with
+// AllowManagementOS=false skip the pre-step -- there's no IP migration
+// concern. The dispatch reads the bench's actual state (not Terraform's
+// last-known state) so a drifted switch type still gets the right path.
+//
+// Recovers from connection.ErrSessionDropped on the actual Remove via
+// the existing recoverVMSwitchRemoveOnDrop verify-loop. After the
+// pre-step the SSH path is on the physical NIC and Remove typically
+// completes cleanly without triggering recovery; the recovery is
+// belt-and-suspenders for transient drops unrelated to the migration.
 func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
+	// Pre-step gate: read the switch's current shape. NotFound is a
+	// success path (already gone); other errors propagate.
+	current, err := c.GetVMSwitch(ctx, name)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	if current.SwitchType == "External" && current.AllowManagementOS {
+		if err := c.prepareVMSwitchExternalForRemove(ctx, name); err != nil {
+			return err
+		}
+	}
+
 	body, err := scripts.VswitchScript("remove")
 	if err != nil {
 		return fmt.Errorf("load vswitch/remove.ps1: %w", err)
@@ -194,6 +219,78 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
 		return runErr
 	}
 	return c.recoverVMSwitchRemoveOnDrop(ctx, name, runErr)
+}
+
+// prepareVMSwitchExternalForRemove flips the switch's AllowManagementOS
+// to false so the host's IP migrates from the vEthernet (windsor-X)
+// vNIC back to the physical NIC. Hyper-V handles this as a graceful
+// migration -- the cmdlet completes quickly on the bench even when the
+// SSH session itself blinks during the IP move, because the cmdlet's
+// work is a single property toggle (not a tear-and-rebuild). When the
+// session does drop, recovery polls GetVMSwitch until AllowManagementOS
+// reads as false, then returns nil -- the host is now on the physical
+// NIC and a follow-up Remove-VMSwitch will run against a stable
+// connection.
+//
+// Failure modes:
+//   - Set-VMSwitch fails for a non-drop reason (vmms unavailable, etc.):
+//     propagate. RemoveVMSwitch surfaces the typed error to the caller.
+//   - Verify-after-drop exhausts attempts without seeing
+//     AllowManagementOS=false: surface the original drop. The operator
+//     can re-run terraform destroy; the Get pre-step will reconcile.
+func (c *Client) prepareVMSwitchExternalForRemove(ctx context.Context, name string) error {
+	disable := false
+	_, err := c.SetVMSwitch(ctx, SetVMSwitchInput{
+		Name:              name,
+		SwitchType:        "External",
+		AllowManagementOS: &disable,
+	})
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, connection.ErrSessionDropped) {
+		return fmt.Errorf("pre-remove Set-VMSwitch -AllowManagementOS $false: %w", err)
+	}
+	return c.verifyVMSwitchAllowManagementOSDisabled(ctx, name, err)
+}
+
+// verifyVMSwitchAllowManagementOSDisabled polls GetVMSwitch up to N
+// times waiting for AllowManagementOS=false to take effect. Returns nil
+// on the first read that confirms the property is disabled (the cmdlet
+// completed on the bench despite the SSH blink), or wraps the original
+// drop error if the verify loop runs out of attempts.
+//
+// ctx.Done is honored between attempts: a canceled apply unblocks
+// without consuming the full delay budget.
+func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, name string, original error) error {
+	var lastVerifyErr error
+	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (pre-remove verify aborted: %v)", original, ctx.Err())
+		case <-time.After(vmSwitchVerifyDelay):
+		}
+		sw, getErr := c.GetVMSwitch(ctx, name)
+		if getErr == nil {
+			if !sw.AllowManagementOS {
+				return nil
+			}
+			// Host re-stabilized but the property toggle didn't take.
+			// Surface the original drop so the operator can re-attempt
+			// rather than silently proceeding to the destructive Remove
+			// against a still-AllowManagementOS=true switch.
+			return fmt.Errorf("%w (pre-remove verify: switch %q still has AllowManagementOS=true)",
+				original, name)
+		}
+		if errors.Is(getErr, ErrNotFound) {
+			// Switch vanished during the migration -- treat as success
+			// because the destroy goal is already achieved.
+			return nil
+		}
+		lastVerifyErr = getErr
+	}
+	return fmt.Errorf("%w (pre-remove verify exhausted %d attempts; last verify error: %v)",
+		original, vmSwitchVerifyAttempts, lastVerifyErr)
 }
 
 // recoverVMSwitchRemoveOnDrop polls GetVMSwitch up to N times with a
