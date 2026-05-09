@@ -32,7 +32,7 @@ func resourceSchema() schema.Schema {
 			"primitive single-responsibility lets seed-ISO synthesis grow features (additional volume " +
 			"labels, future content sources) without rippling into `hyperv_image_file`'s schema.\n\n" +
 			"**Canonical use cases:**\n\n" +
-			"  * **NoCloud cidata** for cloud-init guests (Flow B in [PLAN.md §7.1](../../docs/PLAN.md)). " +
+			"  * **NoCloud cidata** for cloud-init guests. " +
 			"`volume_label = \"CIDATA\"` and `files = { \"meta-data\" = ..., \"user-data\" = ..., " +
 			"\"network-config\" = ... }` produces a seed cloud-init mounts on first boot.\n" +
 			"  * **autounattend.xml** for Windows installer Flow A. `volume_label = \"AUTOUNATTEND\"` " +
