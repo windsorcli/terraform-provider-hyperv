@@ -288,6 +288,134 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	}
 }
 
+// NewImageFileFromLocalPath always emits replace_while_mounted on the
+// wire; the value is whatever the caller set on the input (default
+// false). The flag's host-side semantics are gated inside new.ps1, so
+// always sending it -- even with the false-default -- keeps the wire
+// contract uniform across modes and makes the schema-attribute round-
+// trip honest. A regression that started omitting the field would
+// surface here, and a regression that hard-coded true would land the
+// detach dance on every vhdx write.
+func TestClient_NewImageFileFromLocalPath_StdinForwardsReplaceWhileMounted(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "fixture.iso")
+	if err := os.WriteFile(localPath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		in   bool
+		want string
+	}{
+		{name: "default false", in: false, want: `"replace_while_mounted":false`},
+		{name: "explicit true", in: true, want: `"replace_while_mounted":true`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := testutil.NewFakeRunner().
+				On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+			c := NewClient(fr)
+
+			if _, err := c.NewImageFileFromLocalPath(t.Context(), NewImageFileFromLocalPathInput{
+				DestinationPath:     "C:/hyperv/iso/fixture.iso",
+				LocalPath:           localPath,
+				ReplaceWhileMounted: tc.in,
+			}); err != nil {
+				t.Fatalf("NewImageFileFromLocalPath: %v", err)
+			}
+
+			stdin := string(fr.Calls()[0].StdinJSON)
+			if !strings.Contains(stdin, tc.want) {
+				t.Errorf("stdin missing %q\nfull stdin: %s", tc.want, stdin)
+			}
+		})
+	}
+}
+
+// NewImageFileFromBytes lands an in-memory payload via the same
+// local_path wire shape -- runner writes the bytes to a tmpfile,
+// streams to a sibling .part of DestinationPath, dispatches new.ps1
+// in source_mode=local_path. The host script doesn't know whether
+// the staged bytes came from a runner-side file or a literal payload.
+// Locks the wire contract: source_mode + expected_sha256 (computed
+// from in.Bytes) + replace_while_mounted (forwarded from input).
+func TestClient_NewImageFileFromBytes_StdinMatchesLocalPathContract(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	payload := []byte("literal bytes seed payload")
+	wantHash := sha256.Sum256(payload)
+	wantHex := hex.EncodeToString(wantHash[:])
+
+	if _, err := c.NewImageFileFromBytes(t.Context(), NewImageFileFromBytesInput{
+		DestinationPath:     "C:/hyperv/seeds/cidata.iso",
+		Bytes:               payload,
+		ReplaceWhileMounted: true,
+	}); err != nil {
+		t.Fatalf("NewImageFileFromBytes: %v", err)
+	}
+
+	streams := fr.StreamCalls()
+	if len(streams) != 1 {
+		t.Fatalf("StreamCalls = %d, want 1", len(streams))
+	}
+	if !strings.HasPrefix(streams[0].RemotePath, "C:/hyperv/seeds/cidata.iso.part-") {
+		t.Errorf("stream.RemotePath = %q, want a `<destination>.part-*` sibling",
+			streams[0].RemotePath)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls = %d, want 1", len(calls))
+	}
+	stdin := string(calls[0].StdinJSON)
+	for _, want := range []string{
+		`"destination_path":"C:/hyperv/seeds/cidata.iso"`,
+		`"source_mode":"local_path"`,
+		`"expected_sha256":"` + wantHex + `"`,
+		`"replace_while_mounted":true`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+	// staging_path on the wire must equal the path StreamFile wrote to.
+	var got struct {
+		StagingPath string `json:"staging_path"`
+	}
+	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.StagingPath != streams[0].RemotePath {
+		t.Errorf("stdin.staging_path = %q, want %q", got.StagingPath, streams[0].RemotePath)
+	}
+}
+
+// NewImageFileFromBytes maps ErrChecksumMismatch on the host-side
+// hash failure -- same shape as local_path mode (transport corruption).
+func TestClient_NewImageFileFromBytes_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{"category":"InvalidData","fullyQualifiedErrorId":"ImageFileChecksumMismatch","message":"checksum mismatch","cmdlet":""}`
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromBytes(t.Context(), NewImageFileFromBytesInput{
+		DestinationPath: "C:/hyperv/seeds/cidata.iso",
+		Bytes:           []byte("payload"),
+	})
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("err = %v, want ErrChecksumMismatch", err)
+	}
+}
+
 // NewImageFileFromLocalPath maps the InvalidData + ImageFileChecksumMismatch
 // envelope to ErrChecksumMismatch -- same shape as url-mode so the
 // resource layer's diagnostic can use one rule for both source modes.

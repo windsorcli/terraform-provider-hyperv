@@ -17,19 +17,31 @@ import (
 // align with schema.go attribute names; conversion to/from the typed
 // hyperv.ImageFile DTO lives in resource.go.
 //
-// Three source modes, discriminated by which of URL / LocalPath is set:
+// Four source modes, discriminated by which of URL / LocalPath /
+// ContentBase64 is set:
 //
-//   - URL non-nil                     => url mode (HttpClient fetch)
-//   - URL nil, LocalPath non-null     => local_path mode (runner streams
-//     bytes via Connection.StreamFile)
-//   - URL nil, LocalPath null         => host_path mode (verify only)
+//   - URL non-nil                              => url mode (HttpClient fetch)
+//   - URL nil, LocalPath non-null              => local_path mode (runner streams
+//     bytes from a runner-side file via Connection.StreamFile)
+//   - URL nil, LocalPath null, ContentBase64
+//     non-null                                 => literal_bytes mode (runner
+//     decodes base64, writes to a tmpfile, streams via the same wire path
+//     local_path mode uses)
+//   - all three nil/null                       => host_path mode (verify only)
 //
-// URL and LocalPath are mutually exclusive; the ConfigValidator on the
-// resource rejects configs that set both. Both URL and LocalPath carry
-// RequiresReplace at the schema layer, so any mode switch destroys
-// and recreates. The Delete path keys on the same discriminators to
-// gate the host-side remove (host_path mode never removes, since the
-// user attested the file already existed).
+// All three placement-mode discriminators (URL, LocalPath, ContentBase64)
+// are mutually exclusive; the ConfigValidator on the resource rejects
+// configs that set more than one. All three carry RequiresReplace at
+// the schema layer, so any mode switch destroys and recreates. The
+// Delete path keys on the same discriminators to gate the host-side
+// remove (host_path mode never removes, since the user attested the
+// file already existed).
+//
+// ReplaceWhileMounted is the opt-in escape hatch for re-streaming over
+// a destination that's currently mounted as a DVD on a running VM. Only
+// honored in local_path and literal_bytes modes -- the modes with a
+// re-stream Update path; url-mode forces replacement on any change, and
+// host_path-mode never writes the destination.
 //
 // DestinationPath uses the pathtype.Path custom type so users can
 // write either `C:/foo` or `C:\foo` without the framework rejecting
@@ -41,13 +53,15 @@ import (
 // typically write forward slashes for the local path even when the
 // destination is a Windows-form path.
 type Model struct {
-	ID              pathtype.Path `tfsdk:"id"`
-	DestinationPath pathtype.Path `tfsdk:"destination_path"`
-	URL             types.Object  `tfsdk:"url"`
-	LocalPath       pathtype.Path `tfsdk:"local_path"`
-	Sha256          types.String  `tfsdk:"sha256"`
-	SizeBytes       types.Int64   `tfsdk:"size_bytes"`
-	KeepOnDestroy   types.Bool    `tfsdk:"keep_on_destroy"`
+	ID                  pathtype.Path `tfsdk:"id"`
+	DestinationPath     pathtype.Path `tfsdk:"destination_path"`
+	URL                 types.Object  `tfsdk:"url"`
+	LocalPath           pathtype.Path `tfsdk:"local_path"`
+	ContentBase64       types.String  `tfsdk:"content_base64"`
+	ReplaceWhileMounted types.Bool    `tfsdk:"replace_while_mounted"`
+	Sha256              types.String  `tfsdk:"sha256"`
+	SizeBytes           types.Int64   `tfsdk:"size_bytes"`
+	KeepOnDestroy       types.Bool    `tfsdk:"keep_on_destroy"`
 }
 
 // URLConfig is the user-supplied URL-mode source configuration.

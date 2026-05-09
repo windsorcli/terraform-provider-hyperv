@@ -3,22 +3,23 @@
 page_title: "hyperv_image_file Resource - hyperv"
 subcategory: ""
 description: |-
-  Manages a file (typically a VHDX or ISO) on the Hyper-V host. Three source modes:
-  url-mode -- the provider downloads the file via a streamed HTTP GET (System.Net.Http.HttpClient), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at destination_path.local_path-mode -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.host_path-mode -- the user attests the file already exists at destination_path. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.
-  The mode is implicit: if the url block is present, the resource operates in url-mode; if local_path is set, local_path-mode; otherwise host_path-mode. url and local_path are mutually exclusive (the resource validator rejects configs that set both). Switching modes between applies forces replacement.
+  Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:
+  url-mode -- the provider downloads the file via a streamed HTTP GET (System.Net.Http.HttpClient), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at destination_path.local_path-mode -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.literal_bytes-mode -- the provider takes a base64-encoded byte payload from content_base64 (typically wired from data.hyperv_iso_volume.content_base64 or another runner-side data source), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. Same host-side wire path as local_path-mode -- the runner writes the bytes to a tmpfile and streams from there. Use this for synthesized seeds (cidata, autounattend, Talos machineconfig) so a local_file middleman isn't required.host_path-mode -- the user attests the file already exists at destination_path. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.
+  The mode is implicit: if the url block is present, the resource operates in url-mode; if local_path is set, local_path-mode; if content_base64 is set, literal_bytes-mode; otherwise host_path-mode. The three placement modes (url, local_path, content_base64) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.
   Drift detection: SHA-256 is recomputed on every Read. Out-of-band file changes surface as a sha256 change during refresh; large-file refreshes are correspondingly slow (Get-FileHash on a 5 GiB VHDX is ~30 s on spinning disk). In local_path-mode, the runner-side file is also hashed during plan so a content change since the last apply surfaces as a sha256 diff that triggers Update.
   Recovery from partial-create: if the download/stream succeeds and the SHA-256 verifies but the atomic rename fails (e.g., destination path is on a different volume than the staging .part file), the file is left at the staging path with no Terraform state. Re-run terraform apply -- the next attempt re-streams to a fresh staging path. The PowerShell layer cleans up its own .part files on every failure path.
 ---
 
 # hyperv_image_file (Resource)
 
-Manages a file (typically a VHDX or ISO) on the Hyper-V host. Three source modes:
+Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:
 
   * **`url`-mode** -- the provider downloads the file via a streamed HTTP GET (`System.Net.Http.HttpClient`), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at `destination_path`.
   * **`local_path`-mode** -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.
+  * **`literal_bytes`-mode** -- the provider takes a base64-encoded byte payload from `content_base64` (typically wired from `data.hyperv_iso_volume.content_base64` or another runner-side data source), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. Same host-side wire path as `local_path`-mode -- the runner writes the bytes to a tmpfile and streams from there. Use this for synthesized seeds (cidata, autounattend, Talos machineconfig) so a `local_file` middleman isn't required.
   * **`host_path`-mode** -- the user attests the file already exists at `destination_path`. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.
 
-The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; otherwise `host_path`-mode. `url` and `local_path` are mutually exclusive (the resource validator rejects configs that set both). Switching modes between applies forces replacement.
+The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; if `content_base64` is set, `literal_bytes`-mode; otherwise `host_path`-mode. The three placement modes (`url`, `local_path`, `content_base64`) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.
 
 **Drift detection:** SHA-256 is recomputed on every `Read`. Out-of-band file changes surface as a `sha256` change during refresh; large-file refreshes are correspondingly slow (Get-FileHash on a 5 GiB VHDX is ~30 s on spinning disk). In `local_path`-mode, the *runner-side* file is also hashed during plan so a content change since the last apply surfaces as a `sha256` diff that triggers Update.
 
@@ -84,6 +85,11 @@ resource "hyperv_image_file" "preplaced_iso" {
 
 ### Optional
 
+- `content_base64` (String, Sensitive) Base64-encoded byte payload to land at `destination_path`. When set, the resource operates in `literal_bytes`-mode: the provider decodes the base64, writes the bytes to a runner-side tmpfile, computes a SHA-256, and streams through the active connection backend to a `.part` sibling of `destination_path`. The host-side script verifies the streamed bytes' SHA against the runner-computed value and atomic-renames into place.
+
+Mutually exclusive with `url` and `local_path` (the resource validator rejects more than one set together). **Forces replacement** when changed -- swapping the payload is conceptually a different resource. Content changes to the *bytes* with the same `destination_path` and matching SHA do NOT replace; they pass through as a Read no-op.
+
+**Typical wiring:** `content_base64 = data.hyperv_iso_volume.cidata.content_base64` composes the runner-side ISO9660 synthesizer (data source) with this resource's placement primitive in two HCL blocks instead of three (no `local_file` middleman).
 - `keep_on_destroy` (Boolean) When `true`, `terraform destroy` removes this resource from state but leaves the file at `destination_path` on the host. Useful for large vendor artifacts (multi-GiB ISOs, sysprepped VHDXs) where the destroy/apply cycle would otherwise re-stream the same bytes every iteration. Re-creating with the same `destination_path` is a SHA-skip no-op when the file content matches.
 
 **No-op for `host_path`-mode** -- destroy was already a no-op in that mode (the user attested the file pre-existed, so the provider never deleted it). Setting the flag is harmless on `host_path` but communicates intent.
@@ -96,6 +102,11 @@ resource "hyperv_image_file" "preplaced_iso" {
 Forward and back slashes are accepted equivalently. The path is resolved relative to the Terraform working directory if not absolute, but absolute paths (or `${path.module}/...`) are recommended for portability.
 
 **Performance:** the runner reads the file twice per apply -- once for plan-time hashing, once for the stream itself. The OS page cache typically makes the second read effectively free for files that fit in RAM. WinRM is empirically ~10x slower than SSH for the same payload; for multi-GiB files prefer `url`-mode pointed at a self-hosted artifact.
+- `replace_while_mounted` (Boolean) When `true`, in-place Update operations (re-stream of new bytes at the same `destination_path`) use a swap-via-pivot dance that handles the case where the destination is currently mounted as a DVD on a running VM. Hyper-V holds an exclusive open handle on a DVD-mounted ISO; without this flag, `Move-Item -Force` surfaces "Cannot create a file when that file already exists" because the locked destination can't be deleted before the rename.
+
+Opt-in (default `false`) because vhdx files attached as VM HardDiskController disks don't hot-swap and don't hit the same lock pattern; only DVDs do. Set to `true` for any image_file whose destination may be referenced by a `dvd_drive.iso_path` on a running VM (the canonical case is cidata seeds for cloud-init / Talos machineconfig).
+
+**Honored only in `local_path` and `literal_bytes` modes** -- those are the modes with a re-stream Update path. `url` mode forces replacement on any change so the flag is moot; `host_path` mode never writes to `destination_path` at all. Setting the flag in those modes is harmless: the value is silently ignored.
 - `url` (Attributes) URL-mode source configuration. When present, the file is downloaded via a streamed HTTP GET and the SHA-256 is verified against `checksum` before the atomic rename. Mutually exclusive with `local_path` (a config validator rejects both set together). **Forces replacement** when changed -- the file is re-fetched, not patched in place. (see [below for nested schema](#nestedatt--url))
 
 ### Read-Only

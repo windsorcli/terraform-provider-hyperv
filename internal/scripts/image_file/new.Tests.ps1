@@ -411,4 +411,304 @@ Describe 'New-HypervImageFileFromLocalPath' {
             Should -Invoke Remove-Item -Times 0 -Exactly
         }
     }
+
+    Context 'replace-while-mounted mode (ReplaceWhileMounted switch)' {
+        # iso_volume sets this flag because cidata seeds may be mounted as
+        # a DVD on a running VM. Move-Item -Force against a destination
+        # Hyper-V holds an exclusive open handle on surfaces "Cannot
+        # create a file when that file already exists." The fix is the
+        # swap-via-pivot dance in Invoke-HypervDvdSafeReplace: rename
+        # staging to a sibling pivot, point each matching DVD slot at the
+        # pivot (releasing the lock on the destination), Copy-Item the
+        # pivot bytes to the destination, point each slot back, remove
+        # the pivot. Every Set-VMDvdDrive call has a real existing path,
+        # which avoids the bench-observed "object not found" failure
+        # mode of Set-VMDvdDrive -Path $null.
+        #
+        # All cases stub Get-FileHash to match expected_sha256 so the
+        # dance under test runs; the hash-mismatch path stays in the
+        # previous context and is not duplicated here.
+
+        It 'when no VM mounts the destination: Move-Item runs once, no DVD calls' {
+            # No-attachment branch must be a uniform fall-through to the
+            # plain Move-Item path -- this is the case for an iso_volume
+            # whose seed has not yet been wired into any VM (a Create on
+            # an unattached path). Both no-VMs and VMs-with-no-DVDs land
+            # here; the empty Get-VMDvdDrive return covers both.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Copy-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM { @() }
+            Mock Get-VMDvdDrive { @() }
+            Mock Set-VMDvdDrive { }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
+                -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
+                -ExpectedSha256                  'expected' `
+                -ReplaceWhileMounted | Out-Null
+
+            Should -Invoke Get-VM         -Times 1 -Exactly
+            Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
+            Should -Invoke Copy-Item      -Times 0 -Exactly
+            Should -Invoke Move-Item      -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -eq 'C:\hyperv\seeds\cidata.iso.part-abc' -and
+                $Destination -eq 'C:\hyperv\seeds\cidata.iso' -and
+                $Force -eq $true
+            }
+        }
+
+        It 'swaps DVD media via pivot in the documented order' {
+            # The load-bearing assertion: each Set-VMDvdDrive points at a
+            # real existing path (never $null), the Copy-Item lands on
+            # $DestinationPath after the slots are pointed at the pivot,
+            # and the slots are pointed back at $DestinationPath after
+            # the copy. A regression that broke the ordering would
+            # either (a) try to copy onto a still-locked destination
+            # (collision returns), or (b) leave VMs mounting the pivot
+            # after the script returns (cleanup deletes the pivot, VMs
+            # see a missing-file error on next read).
+            $script:order = @()
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item {
+                $script:order += "move:$LiteralPath->$Destination"
+            }
+            Mock Copy-Item {
+                $script:order += "copy:$LiteralPath->$Destination"
+            }
+            Mock Remove-Item { $script:order += "remove:$LiteralPath" }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM {
+                @(
+                    New-HypervImageFileVMSample -Name 'vm-a'
+                    New-HypervImageFileVMSample -Name 'vm-b'
+                )
+            }
+            Mock Get-VMDvdDrive {
+                if ($VMName -eq 'vm-a') {
+                    @( New-HypervImageFileVMDvdDriveSample `
+                        -VMName 'vm-a' -ControllerNumber 0 -ControllerLocation 1 `
+                        -Path   'C:\hyperv\seeds\cidata.iso' )
+                } elseif ($VMName -eq 'vm-b') {
+                    @( New-HypervImageFileVMDvdDriveSample `
+                        -VMName 'vm-b' -ControllerNumber 1 -ControllerLocation 0 `
+                        -Path   'C:\hyperv\seeds\cidata.iso' )
+                }
+            }
+            Mock Set-VMDvdDrive {
+                # The mock records the slot identifier and the path's
+                # role: 'pivot' if the path matches the .swap- pattern,
+                # 'dest' if it matches $DestinationPath. A regression
+                # that called Set-VMDvdDrive with $null (or no path)
+                # would record 'unknown' and fail the order match.
+                $role = if ($Path -like '*.swap-*') { 'pivot' }
+                        elseif ($Path -eq 'C:\hyperv\seeds\cidata.iso') { 'dest' }
+                        else { "unknown:$Path" }
+                $script:order += "set:${VMName}:${ControllerNumber}:${ControllerLocation}:$role"
+            }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
+                -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
+                -ExpectedSha256                  'expected' `
+                -ReplaceWhileMounted | Out-Null
+
+            # Strip the random pivot guid (and the trailing .iso the
+            # cmdlet validator requires) from move/copy entries before
+            # comparing so the assertion is stable across runs. The
+            # ordering check is what the test is for; the pivot's exact
+            # name is an implementation detail.
+            $cleaned = $script:order | ForEach-Object { $_ -replace '\.swap-[0-9a-f]+\.iso', '.swap-XXX' }
+
+            $cleaned | Should -Be @(
+                'move:C:\hyperv\seeds\cidata.iso.part-abc->C:\hyperv\seeds\cidata.iso.swap-XXX'
+                'set:vm-a:0:1:pivot'
+                'set:vm-b:1:0:pivot'
+                'copy:C:\hyperv\seeds\cidata.iso.swap-XXX->C:\hyperv\seeds\cidata.iso'
+                'set:vm-a:0:1:dest'
+                'set:vm-b:1:0:dest'
+                'remove:C:\hyperv\seeds\cidata.iso.swap-XXX'
+                # Trailing remove is the outer New-HypervImageFileFromLocalPath
+                # finally block sweeping the staging file. Test-Path is mocked
+                # to always return $true, so Remove-Item runs even though in
+                # production the successful Move-Item already consumed the
+                # staging file. Keeping this entry in the assertion makes the
+                # test honest about what calls land.
+                'remove:C:\hyperv\seeds\cidata.iso.part-abc'
+            )
+        }
+
+        It 'Set-VMDvdDrive restore uses backslash-normalized destination form' {
+            # Hyper-V canonicalizes -Path into its storage layer; passing
+            # the user's forward-slash form (e.g. C:/hyperv/...) has been
+            # observed to land as an empty Path on the slot. Lock the
+            # backslash form here so a regression that drops the
+            # normalization surfaces in unit tests, not on the bench.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Copy-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM { @( New-HypervImageFileVMSample -Name 'vm-a' ) }
+            Mock Get-VMDvdDrive {
+                @( New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'vm-a' -ControllerNumber 0 -ControllerLocation 1 `
+                    -Path   'C:\hyperv\seeds\cidata.iso' )
+            }
+            Mock Set-VMDvdDrive { }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath                 'C:/hyperv/seeds/cidata.iso' `
+                -StagingPath                     'C:/hyperv/seeds/cidata.iso.part-abc' `
+                -ExpectedSha256                  'expected' `
+                -ReplaceWhileMounted | Out-Null
+
+            # Final restore must use backslash form (C:\...), not the
+            # user-supplied forward-slash form.
+            Should -Invoke Set-VMDvdDrive -Times 1 -Exactly -ParameterFilter {
+                $Path -eq 'C:\hyperv\seeds\cidata.iso'
+            }
+        }
+
+        It 'restores attachments to destination even when Copy-Item throws' {
+            # If Copy-Item fails after the slots are pointed at the pivot
+            # (disk full, transient AV scan, antivirus quarantine),
+            # the finally block must still re-target the slots back to
+            # $DestinationPath -- otherwise the post-failure VM has its
+            # DVD pointed at a soon-deleted pivot. The restore is
+            # SilentlyContinue so a missing destination doesn't shadow
+            # the original Copy-Item error.
+            $script:restoreToDest = 0
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Copy-Item { throw 'simulated copy failure' }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM { @( New-HypervImageFileVMSample -Name 'vm-a' ) }
+            Mock Get-VMDvdDrive {
+                @( New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'vm-a' -ControllerNumber 0 -ControllerLocation 1 `
+                    -Path   'C:\hyperv\seeds\cidata.iso' )
+            }
+            Mock Set-VMDvdDrive {
+                if ($Path -eq 'C:\hyperv\seeds\cidata.iso') {
+                    $script:restoreToDest++
+                }
+            }
+
+            { New-HypervImageFileFromLocalPath `
+                -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
+                -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
+                -ExpectedSha256                  'expected' `
+                -ReplaceWhileMounted } | Should -Throw -ExpectedMessage '*simulated copy failure*'
+
+            # The single slot got pointed back at the destination once
+            # via the finally block. Without that, the post-fail VM
+            # would mount the about-to-be-removed pivot.
+            $script:restoreToDest | Should -Be 1
+        }
+
+        It 'matches paths case-insensitively and normalizes forward slashes' {
+            # Hyper-V returns canonical backslash form, but a forward-
+            # slash destination_path (HCL ergonomics on the user side)
+            # plus a mixed-case path comparison must still find the
+            # attachment. Match failure here would silently skip the
+            # swap and the apply would hit the original lock failure.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Copy-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM { @( New-HypervImageFileVMSample -Name 'vm-a' ) }
+            Mock Get-VMDvdDrive {
+                @( New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'vm-a' -ControllerNumber 0 -ControllerLocation 1 `
+                    -Path   'C:\HyperV\Seeds\CIDATA.iso' )
+            }
+            Mock Set-VMDvdDrive { }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath                 'C:/hyperv/seeds/cidata.iso' `
+                -StagingPath                     'C:/hyperv/seeds/cidata.iso.part-abc' `
+                -ExpectedSha256                  'expected' `
+                -ReplaceWhileMounted | Out-Null
+
+            # Two Set-VMDvdDrive calls: one to pivot, one back to dest.
+            Should -Invoke Set-VMDvdDrive -Times 2 -Exactly
+        }
+
+        It 'skips DVDs whose Path is null or empty (unmounted slot)' {
+            # A VM with a DvdDrive controller location that has no media
+            # mounted has Path=$null. Treating that as a match would call
+            # Set-VMDvdDrive on a slot the user did not reference, which
+            # would then attach our destination after the swap -- a
+            # silent footgun.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Copy-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM {
+                @(
+                    New-HypervImageFileVMSample -Name 'vm-empty-slot'
+                    New-HypervImageFileVMSample -Name 'vm-other-iso'
+                )
+            }
+            Mock Get-VMDvdDrive {
+                if ($VMName -eq 'vm-empty-slot') {
+                    @( New-HypervImageFileVMDvdDriveSample `
+                        -VMName 'vm-empty-slot' -ControllerNumber 0 -ControllerLocation 1 `
+                        -Path   $null )
+                } elseif ($VMName -eq 'vm-other-iso') {
+                    @( New-HypervImageFileVMDvdDriveSample `
+                        -VMName 'vm-other-iso' -ControllerNumber 0 -ControllerLocation 1 `
+                        -Path   'C:\hyperv\seeds\unrelated.iso' )
+                }
+            }
+            Mock Set-VMDvdDrive { }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath                 'C:\hyperv\seeds\cidata.iso' `
+                -StagingPath                     'C:\hyperv\seeds\cidata.iso.part-abc' `
+                -ExpectedSha256                  'expected' `
+                -ReplaceWhileMounted | Out-Null
+
+            Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
+        }
+
+        It 'when the switch is absent (default): Move-Item runs directly, no DVD enumeration' {
+            # The flag must be opt-in. image_file's url and local_path
+            # paths do not set it; their callers should see exactly the
+            # legacy behavior (no Get-VM, no Get-VMDvdDrive, no
+            # Set-VMDvdDrive, no Copy-Item -- just Move-Item).
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Copy-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-VM { }
+            Mock Get-VMDvdDrive { }
+            Mock Set-VMDvdDrive { }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath 'C:\images\ubuntu.vhdx' `
+                -StagingPath     'C:\images\ubuntu.vhdx.part-abc' `
+                -ExpectedSha256  'expected' | Out-Null
+
+            Should -Invoke Get-VM         -Times 0 -Exactly
+            Should -Invoke Get-VMDvdDrive -Times 0 -Exactly
+            Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
+            Should -Invoke Copy-Item      -Times 0 -Exactly
+            Should -Invoke Move-Item      -Times 1 -Exactly
+        }
+    }
 }
