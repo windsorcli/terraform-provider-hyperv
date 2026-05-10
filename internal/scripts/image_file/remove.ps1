@@ -83,8 +83,14 @@ function Remove-HypervImageFile {
         Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
     }
     catch {
-        $isSharingViolation = ($_.Exception.HResult -eq -2147024864) -or
-                              ($_.Exception.Message -match 'being used by another process')
+        # HResult is the canonical cross-locale signal: -2147024864 is
+        # Win32 0x80070020 (ERROR_SHARING_VIOLATION) and .NET populates
+        # it on every IOException regardless of OS language. Don't fall
+        # back to message-text matching -- "being used by another
+        # process" is the English wording, and the fallback would
+        # silently miss localized hosts and re-throw the bare error
+        # without our diagnostic.
+        $isSharingViolation = $_.Exception.HResult -eq -2147024864
         if (-not $isSharingViolation) { throw }
 
         # Wrap in @(...) at the call site: PowerShell's pipeline
