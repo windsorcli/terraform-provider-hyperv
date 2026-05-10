@@ -3,31 +3,52 @@
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : {
-#                   "name":                "<string>",                      # required
-#                   "switch_type":         "External"|"Internal"|"Private", # required
-#                   "net_adapter_names":   ["<string>", ...],               # External only
-#                   "allow_management_os": <bool>,                          # External/Internal only
-#                   "notes":               "<string>"                       # optional
+#                   "name":                        "<string>",                              # required
+#                   "switch_type":                 "External"|"Internal"|"Private"|"NAT",   # required
+#                   "net_adapter_names":           ["<string>", ...],                       # External only
+#                   "allow_management_os":         <bool>,                                  # External only
+#                   "notes":                       "<string>",                              # optional
+#                   "nat_name":                    "<string>",                              # NAT only, required when NAT
+#                   "nat_internal_address_prefix": "<CIDR>",                                # NAT only, required when NAT
+#                   "nat_host_address":            "<IPv4>"                                 # NAT only, required when NAT
 #                 }
-#   stdout JSON : the created switch in the canonical read shape (same fields
-#                 as get.ps1 -- create round-trips through the same contract
-#                 as Read).
+#   stdout JSON : the created switch in the canonical nine-field read shape
+#                 (six base + three NAT). NAT fields are empty strings for
+#                 non-NAT switches.
 #
 # Validation strategy: trust the Go-side TF schema validators. Cmdlet errors
 # (e.g. -SwitchType External requires -NetAdapterName) propagate through the
 # PLAN.md S5 envelope on the catch.
+#
+# NAT branch -- Hyper-V has no "NAT" switch_type natively. A NAT switch is
+# an Internal VMSwitch + a New-NetIPAddress on the host vNIC + a New-NetNat
+# tying the prefix to that vNIC. The script orchestrates all three. Windows
+# allows exactly one NetNat instance per host; the singleton check fires
+# BEFORE creating the VMSwitch so a conflict doesn't leave a half-
+# provisioned NAT-less Internal switch behind.
 
 # New-HypervSwitch builds the parameter splat for New-VMSwitch from typed
-# inputs, runs the cmdlet, and emits the canonical read shape.
+# inputs, runs the cmdlet, and emits the canonical read shape. For NAT
+# switches it additionally provisions NetIPAddress + NetNat.
 function New-HypervSwitch {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [ValidateSet('External', 'Internal', 'Private')] [string] $SwitchType,
+        [Parameter(Mandatory)] [ValidateSet('External', 'Internal', 'Private', 'NAT')] [string] $SwitchType,
         [string[]]       $NetAdapterNames,
         [Nullable[bool]] $AllowManagementOS,
-        [string]         $Notes
+        [string]         $Notes,
+        [string]         $NatName,
+        [string]         $NatInternalAddressPrefix,
+        [string]         $NatHostAddress
     )
+
+    if ($SwitchType -eq 'NAT') {
+        return New-HypervNatSwitch -Name $Name -Notes:($PSBoundParameters['Notes']) `
+            -NatName $NatName `
+            -NatInternalAddressPrefix $NatInternalAddressPrefix `
+            -NatHostAddress $NatHostAddress
+    }
 
     $newArgs = @{
         Name        = $Name
@@ -67,7 +88,152 @@ function New-HypervSwitch {
             AllowManagementOS,
             NetAdapterInterfaceDescription,
             Notes,
-            @{ N = 'Id';                              E = { $_.Id.ToString() } } |
+            @{ N = 'Id';                              E = { $_.Id.ToString() } },
+            @{ N = 'NatName';                         E = { '' } },
+            @{ N = 'NatInternalAddressPrefix';        E = { '' } },
+            @{ N = 'NatHostAddress';                  E = { '' } } |
+        Write-HypervResult
+}
+
+# New-HypervNatSwitch provisions an Internal VMSwitch + NetIPAddress on the
+# host vNIC + NetNat tying the prefix to that vNIC. Singleton-checks the
+# host's NetNat before creating the switch so a conflict doesn't leave a
+# half-provisioned Internal switch behind.
+#
+# Adoption: if a NetNat with the planned name already exists (idempotent
+# re-apply or terraform import), New-NetNat is skipped and the existing
+# instance is reused. A NetNat with a DIFFERENT name fails the singleton
+# guard.
+function New-HypervNatSwitch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [string] $Notes,
+        [Parameter(Mandatory)] [string] $NatName,
+        [Parameter(Mandatory)] [string] $NatInternalAddressPrefix,
+        [Parameter(Mandatory)] [string] $NatHostAddress
+    )
+
+    # Singleton precondition: Windows allows exactly one NetNat per host. If
+    # one already exists with a different name, we must abort BEFORE creating
+    # the VMSwitch (otherwise we'd strand a NAT-less Internal switch on the
+    # host that the operator would have to clean up by hand).
+    $existingNat = Get-NetNat -ErrorAction SilentlyContinue | Select-Object -First 1
+    $adoptNat = $false
+    if ($null -ne $existingNat) {
+        if ($existingNat.Name -ne $NatName) {
+            throw "A NetNat instance named '$($existingNat.Name)' already exists on this host. " +
+                "Windows allows exactly one NetNat per host -- remove the existing instance, " +
+                "or set nat_name = '$($existingNat.Name)' to adopt it."
+        }
+        # Same name: adopt -- but only if the prefix matches. Adopting a
+        # NetNat whose prefix differs from the plan would let Create emit
+        # the plan's prefix (this script's projection), then Read see the
+        # host's actual prefix on the next refresh, then the diff force
+        # replacement (nat_internal_address_prefix is RequiresReplace),
+        # then the replacement Create hit the same adoption path with the
+        # same mismatch -- a permanent plan-loop. Throwing here surfaces
+        # the misconfiguration with a clear remediation path: align the
+        # plan's prefix with the existing NetNat, or remove the NetNat
+        # and let this resource create a fresh one.
+        if ($existingNat.InternalIPInterfaceAddressPrefix -ne $NatInternalAddressPrefix) {
+            throw "A NetNat named '$NatName' already exists with prefix " +
+                "'$($existingNat.InternalIPInterfaceAddressPrefix)', but the plan asks for " +
+                "'$NatInternalAddressPrefix'. Set nat_internal_address_prefix to " +
+                "'$($existingNat.InternalIPInterfaceAddressPrefix)' to adopt the existing " +
+                "instance, or remove the existing NetNat to let this resource create a fresh one."
+        }
+        $adoptNat = $true
+    }
+
+    # Derive PrefixLength from the CIDR. The Go-side schema validator
+    # already shape-checked this string, so split-and-int is safe.
+    $prefixLength = [int]($NatInternalAddressPrefix.Split('/')[1])
+
+    $vmsArgs = @{
+        Name        = $Name
+        SwitchType  = 'Internal'
+        ErrorAction = 'Stop'
+    }
+    if ($PSBoundParameters.ContainsKey('Notes')) {
+        $vmsArgs.Notes = $Notes
+    }
+    $sw = New-VMSwitch @vmsArgs
+
+    # Rollback on partial-failure: once New-VMSwitch succeeds, any failure
+    # in the subsequent NetIPAddress / NetNat steps would otherwise leave
+    # an orphan VMSwitch on the host. Terraform records no state because
+    # New returns an error, so the next apply tries to create the same
+    # switch and fails with "already exists" -- blocking all further
+    # applies until the operator manually runs Remove-VMSwitch. Wrap the
+    # post-VMSwitch sequence in a try/catch that tears down whatever
+    # landed (in remove.ps1's order: NetNat -> NetIPAddress -> VMSwitch),
+    # then re-throws so the typed envelope still surfaces to Go.
+    $ipCreated = $false
+    $natCreated = $false
+    try {
+        New-NetIPAddress `
+            -InterfaceAlias "vEthernet ($Name)" `
+            -IPAddress $NatHostAddress `
+            -PrefixLength $prefixLength `
+            -AddressFamily 'IPv4' `
+            -ErrorAction Stop | Out-Null
+        $ipCreated = $true
+
+        if (-not $adoptNat) {
+            New-NetNat `
+                -Name $NatName `
+                -InternalIPInterfaceAddressPrefix $NatInternalAddressPrefix `
+                -ErrorAction Stop | Out-Null
+            $natCreated = $true
+        }
+    }
+    catch {
+        # Best-effort rollback. Capture the original failure first so a
+        # subsequent throw from a cleanup step (which bypasses -ErrorAction
+        # SilentlyContinue because it's a terminating error from within a
+        # cmdlet's body) doesn't overwrite it. The caller must see the
+        # ORIGINAL failure (e.g. "address already in use"), not the
+        # cleanup chatter -- the typed envelope on the Go side keys on
+        # the original error's category / FullyQualifiedErrorId. Order
+        # mirrors remove.ps1: NetNat -> NetIPAddress -> VMSwitch.
+        #
+        # The explicit `$null = $_` discard inside each cleanup catch
+        # mirrors vm/new.ps1's orphan-cleanup pattern -- it satisfies
+        # PSScriptAnalyzer's PSAvoidUsingEmptyCatchBlock and makes the
+        # intent literal: cleanup failures are deliberately swallowed
+        # so the caller sees the original create-side failure.
+        $original = $_
+        if ($natCreated) {
+            try { Remove-NetNat -Name $NatName -Confirm:$false -ErrorAction Stop }
+            catch { $null = $_ }
+        }
+        if ($ipCreated) {
+            try {
+                Remove-NetIPAddress `
+                    -InterfaceAlias "vEthernet ($Name)" `
+                    -IPAddress $NatHostAddress `
+                    -Confirm:$false `
+                    -ErrorAction Stop
+            }
+            catch { $null = $_ }
+        }
+        try { Remove-VMSwitch -Name $Name -Force -ErrorAction Stop }
+        catch { $null = $_ }
+        throw $original
+    }
+
+    $sw |
+        Select-Object `
+            Name,
+            @{ N = 'SwitchType';                      E = { 'NAT' } },
+            AllowManagementOS,
+            NetAdapterInterfaceDescription,
+            Notes,
+            @{ N = 'Id';                              E = { $_.Id.ToString() } },
+            @{ N = 'NatName';                         E = { $NatName } },
+            @{ N = 'NatInternalAddressPrefix';        E = { $NatInternalAddressPrefix } },
+            @{ N = 'NatHostAddress';                  E = { $NatHostAddress } } |
         Write-HypervResult
 }
 
@@ -88,6 +254,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         if ($params.PSObject.Properties.Name -contains 'notes' -and $null -ne $params.notes) {
             $callArgs.Notes = $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'nat_name' -and $null -ne $params.nat_name) {
+            $callArgs.NatName = $params.nat_name
+        }
+        if ($params.PSObject.Properties.Name -contains 'nat_internal_address_prefix' -and $null -ne $params.nat_internal_address_prefix) {
+            $callArgs.NatInternalAddressPrefix = $params.nat_internal_address_prefix
+        }
+        if ($params.PSObject.Properties.Name -contains 'nat_host_address' -and $null -ne $params.nat_host_address) {
+            $callArgs.NatHostAddress = $params.nat_host_address
         }
 
         New-HypervSwitch @callArgs

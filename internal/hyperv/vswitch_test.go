@@ -22,7 +22,7 @@ func TestClient_GetVMSwitch_HappyPath(t *testing.T) {
 		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	sw, err := c.GetVMSwitch(t.Context(), "external-switch")
+	sw, err := c.GetVMSwitch(t.Context(), "external-switch", "")
 	if err != nil {
 		t.Fatalf("GetVMSwitch: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestClient_GetVMSwitch_ForwardsNameInStdin(t *testing.T) {
 		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	if _, err := c.GetVMSwitch(t.Context(), "lookup-target"); err != nil {
+	if _, err := c.GetVMSwitch(t.Context(), "lookup-target", ""); err != nil {
 		t.Fatalf("GetVMSwitch: %v", err)
 	}
 
@@ -68,6 +68,70 @@ func TestClient_GetVMSwitch_ForwardsNameInStdin(t *testing.T) {
 	}
 }
 
+// GetVMSwitch forwards nat_name when supplied so the script's NAT
+// augmentation kicks in. Empty natName must round-trip as omitted (the
+// `omitempty` JSON tag) so non-NAT callers never trip the NAT branch.
+func TestClient_GetVMSwitch_ForwardsNatNameInStdin(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchNATFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	sw, err := c.GetVMSwitch(t.Context(), "windsor-nat", "windsor-nat")
+	if err != nil {
+		t.Fatalf("GetVMSwitch: %v", err)
+	}
+	if sw.SwitchType != "NAT" {
+		t.Errorf("SwitchType = %q, want NAT", sw.SwitchType)
+	}
+	if sw.NatName != "windsor-nat" {
+		t.Errorf("NatName = %q, want windsor-nat", sw.NatName)
+	}
+	if sw.NatInternalAddressPrefix != "192.168.100.0/24" {
+		t.Errorf("NatInternalAddressPrefix = %q, want 192.168.100.0/24", sw.NatInternalAddressPrefix)
+	}
+	if sw.NatHostAddress != "192.168.100.1" {
+		t.Errorf("NatHostAddress = %q, want 192.168.100.1", sw.NatHostAddress)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	var got map[string]any
+	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got["nat_name"] != "windsor-nat" {
+		t.Errorf("stdin.nat_name = %v, want windsor-nat", got["nat_name"])
+	}
+}
+
+// GetVMSwitch with empty natName omits the field from stdin entirely
+// (omitempty), so the script doesn't take the NAT branch for non-NAT
+// switches. Locks the wire-level shape -- absent vs explicit empty
+// matters because the script uses key presence as the discriminator.
+func TestClient_GetVMSwitch_EmptyNatNameOmitsField(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.GetVMSwitch(t.Context(), "external-switch", ""); err != nil {
+		t.Fatalf("GetVMSwitch: %v", err)
+	}
+
+	calls := fr.Calls()
+	if !strings.Contains(string(calls[0].StdinJSON), `"name"`) {
+		t.Errorf("stdin must include name: %s", string(calls[0].StdinJSON))
+	}
+	if strings.Contains(string(calls[0].StdinJSON), `"nat_name"`) {
+		t.Errorf("stdin must omit nat_name when empty: %s", string(calls[0].StdinJSON))
+	}
+}
+
 // GetVMSwitch maps ObjectNotFound to ErrNotFound so resource Read can
 // RemoveResource. Locking this here AND in errors_test.go guards against
 // the vmms-stopped collapse the previous PR (ErrUnavailable split) fixed.
@@ -79,7 +143,7 @@ func TestClient_GetVMSwitch_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	_, err := c.GetVMSwitch(t.Context(), "missing")
+	_, err := c.GetVMSwitch(t.Context(), "missing", "")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -95,7 +159,7 @@ func TestClient_GetVMSwitch_ResourceUnavailableMapsToErrUnavailable(t *testing.T
 		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	_, err := c.GetVMSwitch(t.Context(), "external-switch")
+	_, err := c.GetVMSwitch(t.Context(), "external-switch", "")
 	if !errors.Is(err, ErrUnavailable) {
 		t.Errorf("err = %v, want ErrUnavailable", err)
 	}
@@ -229,7 +293,7 @@ func TestClient_RemoveVMSwitch_HappyPath_Private(t *testing.T) {
 		On("function Remove-HypervSwitch").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveVMSwitch(t.Context(), "private-switch"); err != nil {
+	if err := c.RemoveVMSwitch(t.Context(), "private-switch", ""); err != nil {
 		t.Fatalf("RemoveVMSwitch: %v", err)
 	}
 	// The Remove call's stdin must still forward the name -- verify that
@@ -259,7 +323,7 @@ func TestClient_RemoveVMSwitch_HappyPath_ExternalAllowManagementOS(t *testing.T)
 		On("function Remove-HypervSwitch").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveVMSwitch(t.Context(), "external-switch"); err != nil {
+	if err := c.RemoveVMSwitch(t.Context(), "external-switch", ""); err != nil {
 		t.Fatalf("RemoveVMSwitch: %v", err)
 	}
 	calls := fr.Calls()
@@ -288,7 +352,7 @@ func TestClient_RemoveVMSwitch_AlreadyGone(t *testing.T) {
 		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	if err := c.RemoveVMSwitch(t.Context(), "already-gone"); err != nil {
+	if err := c.RemoveVMSwitch(t.Context(), "already-gone", ""); err != nil {
 		t.Errorf("RemoveVMSwitch: expected nil for already-gone switch, got %v", err)
 	}
 	// No Remove call should have run -- the early return short-circuits.
@@ -312,7 +376,7 @@ func TestClient_RemoveVMSwitch_RemoveReturnsNotFound(t *testing.T) {
 		On("function Remove-HypervSwitch").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	err := c.RemoveVMSwitch(t.Context(), "racy")
+	err := c.RemoveVMSwitch(t.Context(), "racy", "")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -341,7 +405,7 @@ func TestClient_RemoveVMSwitch_ExternalNoManagementOS_SkipsPreStep(t *testing.T)
 		On("function Remove-HypervSwitch").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveVMSwitch(t.Context(), "external-no-mgmt"); err != nil {
+	if err := c.RemoveVMSwitch(t.Context(), "external-no-mgmt", ""); err != nil {
 		t.Fatalf("RemoveVMSwitch: %v", err)
 	}
 	for _, call := range fr.Calls() {
@@ -376,7 +440,7 @@ func TestClient_RemoveVMSwitch_PreStepDropSurfacesWhenStillManagementOS(t *testi
 		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	err := c.RemoveVMSwitch(t.Context(), "external-switch")
+	err := c.RemoveVMSwitch(t.Context(), "external-switch", "")
 	if err == nil {
 		t.Fatal("expected error when pre-step verify shows AllowManagementOS still true")
 	}

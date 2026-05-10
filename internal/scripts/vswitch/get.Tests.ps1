@@ -12,7 +12,11 @@ Describe 'Get-HypervSwitch' {
 
     Context 'happy path' {
 
-        It 'emits the canonical six-field shape' {
+        It 'emits the canonical nine-field shape (six base + three NAT)' {
+            # The wire shape is constant across switch types: NAT fields
+            # are always present, populated only when SwitchType=NAT and
+            # nat_name is supplied, empty strings otherwise. Keeps the
+            # typed-client decode path branch-free.
             Mock Get-VMSwitch { New-HypervSwitchSample -Name 'sw0' -SwitchType 'External' }
             $parsed = Get-HypervSwitch -Name 'sw0' | ConvertFrom-Json
 
@@ -20,10 +24,21 @@ Describe 'Get-HypervSwitch' {
                 'AllowManagementOS',
                 'Id',
                 'Name',
+                'NatHostAddress',
+                'NatInternalAddressPrefix',
+                'NatName',
                 'NetAdapterInterfaceDescription',
                 'Notes',
                 'SwitchType'
             )
+        }
+
+        It 'emits empty NAT fields for non-NAT switches' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name 'sw0' -SwitchType 'Private' }
+            $parsed = Get-HypervSwitch -Name 'sw0' | ConvertFrom-Json
+            $parsed.NatName | Should -Be ''
+            $parsed.NatInternalAddressPrefix | Should -Be ''
+            $parsed.NatHostAddress | Should -Be ''
         }
 
         It 'stringifies the SwitchType enum' {
@@ -126,6 +141,44 @@ Describe 'Get-HypervSwitch' {
             $captured | Should -Not -BeNullOrEmpty
             $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
             $captured.FullyQualifiedErrorId | Should -Match 'VMSwitchNotFound'
+        }
+
+        It 'NAT switch reports SwitchType=NAT and populates NAT fields when nat_name is supplied' {
+            # When the caller passes nat_name (Read pulls it from prior state
+            # for NAT-typed resources), the script reads NetIPAddress + NetNat
+            # and synthesizes SwitchType=NAT in the output -- Hyper-V itself
+            # only knows the underlying Internal type.
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat { New-HypervNetNatSample }
+
+            $parsed = Get-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat' |
+                ConvertFrom-Json
+
+            $parsed.SwitchType | Should -Be 'NAT'
+            $parsed.NatName | Should -Be 'windsor-nat'
+            $parsed.NatInternalAddressPrefix | Should -Be '192.168.100.0/24'
+            $parsed.NatHostAddress | Should -Be '192.168.100.1'
+        }
+
+        It 'NAT switch with missing NetNat surfaces ObjectNotFound (out-of-band teardown)' {
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat { $null }
+
+            $captured = $null
+            try {
+                Get-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat'
+            } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
         }
 
         It 'still handles the documented ObjectNotFound shape (defensive: older Hyper-V versions)' {

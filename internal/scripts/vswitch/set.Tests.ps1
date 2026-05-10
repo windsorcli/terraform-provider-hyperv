@@ -191,7 +191,7 @@ Describe 'Set-HypervSwitch' {
             }
         }
 
-        It 'emits the same six-field read shape as get.ps1' {
+        It 'emits the same nine-field read shape as get.ps1' {
             Mock Set-VMSwitch { }
             Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name -SwitchType 'External' }
 
@@ -201,10 +201,75 @@ Describe 'Set-HypervSwitch' {
                 'AllowManagementOS',
                 'Id',
                 'Name',
+                'NatHostAddress',
+                'NatInternalAddressPrefix',
+                'NatName',
                 'NetAdapterInterfaceDescription',
                 'Notes',
                 'SwitchType'
             )
+        }
+    }
+
+    Context 'NAT switch updates' {
+        # Every NAT-specific input is RequiresReplace at the schema layer:
+        # nat_name, nat_internal_address_prefix, and nat_host_address all
+        # force replacement. Set-NetNat does not accept
+        # -InternalIPInterfaceAddressPrefix (verified on the bench), so
+        # the only mutation that reaches Update for a NAT switch is Notes.
+        # The read-back joins Get-NetNat + Get-NetIPAddress to synthesize
+        # SwitchType=NAT.
+
+        It 'NAT update with notes routes through Set-VMSwitch (notes lives on the underlying VMSwitch)' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat { New-HypervNetNatSample }
+
+            Set-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -Notes 'updated' | Out-Null
+
+            Should -Invoke Set-VMSwitch -Times 1 -Exactly -ParameterFilter {
+                $Notes -eq 'updated'
+            }
+        }
+
+        It 'NAT update without Notes throws (no other in-place mutable attribute exists for NAT)' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat { New-HypervNetNatSample }
+
+            { Set-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' } |
+                Should -Throw -ExpectedMessage '*requires at least one mutable attribute*'
+
+            Should -Invoke Set-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'NAT update read-back synthesizes SwitchType=NAT and populates NAT fields' {
+            Mock Set-VMSwitch { }
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Get-NetNat { New-HypervNetNatSample }
+
+            $parsed = Set-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' -Notes 'updated' | ConvertFrom-Json
+
+            $parsed.SwitchType | Should -Be 'NAT'
+            $parsed.NatName | Should -Be 'windsor-nat'
+            $parsed.NatInternalAddressPrefix | Should -Be '192.168.100.0/24'
+            $parsed.NatHostAddress | Should -Be '192.168.100.1'
         }
     }
 

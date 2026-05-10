@@ -52,6 +52,70 @@ function Remove-VMSwitch {
     )
 }
 
+# NetNat / NetIPAddress cmdlet stubs for the NAT switch_type branch. Same
+# rationale as the Hyper-V stubs above: define unconditionally so Pester
+# parameter-filter binding works consistently across PS 5.1 / 7.x even
+# when the NetNat / NetTCPIP modules aren't installed (macOS dev hosts).
+function Get-NetNat {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] [string] $Name
+    )
+}
+
+function New-NetNat {
+    [CmdletBinding()]
+    param(
+        [string] $Name,
+        [string] $InternalIPInterfaceAddressPrefix
+    )
+}
+
+function Set-NetNat {
+    [CmdletBinding()]
+    param(
+        [string] $Name,
+        [string] $InternalIPInterfaceAddressPrefix
+    )
+}
+
+function Remove-NetNat {
+    [CmdletBinding()]
+    param(
+        [string] $Name,
+        [switch] $Confirm
+    )
+}
+
+function Get-NetIPAddress {
+    [CmdletBinding()]
+    param(
+        [string] $InterfaceAlias,
+        [string] $IPAddress,
+        [int]    $PrefixLength,
+        [string] $AddressFamily
+    )
+}
+
+function New-NetIPAddress {
+    [CmdletBinding()]
+    param(
+        [string] $InterfaceAlias,
+        [string] $IPAddress,
+        [int]    $PrefixLength,
+        [string] $AddressFamily
+    )
+}
+
+function Remove-NetIPAddress {
+    [CmdletBinding()]
+    param(
+        [string] $InterfaceAlias,
+        [string] $IPAddress,
+        [switch] $Confirm
+    )
+}
+
 # New-HypervSwitchSample builds a PSCustomObject shaped like a real
 # Get-VMSwitch result, used as the canned return value from Mock blocks. The
 # shape mirrors what spike #2 captured on Server 2022 + PS 5.1.
@@ -72,5 +136,40 @@ function New-HypervSwitchSample {
         NetAdapterInterfaceDescription = $NetAdapterInterfaceDescription
         Notes                          = $Notes
         Id                             = [guid]$Id
+    }
+}
+
+# New-HypervNetNatSample builds a PSCustomObject shaped like a real
+# Get-NetNat result. Only the two fields the canonical read shape exposes
+# (Name, InternalIPInterfaceAddressPrefix) are populated -- Get-NetNat
+# returns more, but the typed contract only consumes these.
+function New-HypervNetNatSample {
+    [CmdletBinding()]
+    param(
+        [string] $Name = 'windsor-nat',
+        [string] $InternalIPInterfaceAddressPrefix = '192.168.100.0/24'
+    )
+    [pscustomobject]@{
+        Name                             = $Name
+        InternalIPInterfaceAddressPrefix = $InternalIPInterfaceAddressPrefix
+    }
+}
+
+# New-HypervNetIPAddressSample builds a PSCustomObject shaped like a real
+# Get-NetIPAddress result for the host vNIC of an Internal/NAT switch. The
+# canonical read consumes IPAddress + PrefixLength.
+function New-HypervNetIPAddressSample {
+    [CmdletBinding()]
+    param(
+        [string] $InterfaceAlias = 'vEthernet (windsor-nat)',
+        [string] $IPAddress = '192.168.100.1',
+        [int]    $PrefixLength = 24,
+        [string] $AddressFamily = 'IPv4'
+    )
+    [pscustomobject]@{
+        InterfaceAlias = $InterfaceAlias
+        IPAddress      = $IPAddress
+        PrefixLength   = $PrefixLength
+        AddressFamily  = $AddressFamily
     }
 }

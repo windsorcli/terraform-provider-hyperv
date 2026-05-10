@@ -36,14 +36,22 @@ var (
 // GetVMSwitch fetches a virtual switch by name. Returns ErrNotFound when the
 // switch doesn't exist (resource Read should call RemoveResource), or
 // ErrUnavailable when vmms is stopped / cluster node fenced (transient).
-func (c *Client) GetVMSwitch(ctx context.Context, name string) (*VMSwitch, error) {
+//
+// natName is optional. When non-empty, the script joins Get-NetNat +
+// Get-NetIPAddress with the underlying VMSwitch read and synthesizes
+// SwitchType="NAT" -- callers managing NAT-typed resources pass the
+// nat_name from state so Read round-trips correctly. Empty natName
+// returns the bare six-field shape with empty NAT fields and SwitchType
+// reflecting Hyper-V's underlying enum (External/Internal/Private).
+func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwitch, error) {
 	body, err := scripts.VswitchScript("get")
 	if err != nil {
 		return nil, fmt.Errorf("load vswitch/get.ps1: %w", err)
 	}
 	stdin, err := json.Marshal(struct {
-		Name string `json:"name"`
-	}{Name: name})
+		Name    string `json:"name"`
+		NatName string `json:"nat_name,omitempty"`
+	}{Name: name, NatName: natName})
 	if err != nil {
 		return nil, fmt.Errorf("marshal get.ps1 input: %w", err)
 	}
@@ -96,7 +104,7 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 	if !errors.Is(runErr, connection.ErrSessionDropped) {
 		return nil, runErr
 	}
-	return c.recoverVMSwitchNewOnDrop(ctx, in.Name, runErr)
+	return c.recoverVMSwitchNewOnDrop(ctx, in.Name, in.NatName, runErr)
 }
 
 // recoverVMSwitchNewOnDrop polls GetVMSwitch up to N times with a short
@@ -113,7 +121,7 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 //
 // ctx.Done is honored between attempts: a canceled apply unblocks
 // without consuming the full delay budget.
-func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name string, original error) (*VMSwitch, error) {
+func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name, natName string, original error) (*VMSwitch, error) {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
 		select {
@@ -121,7 +129,7 @@ func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name string, orig
 			return nil, fmt.Errorf("%w (verify aborted: %v)", original, ctx.Err())
 		case <-time.After(vmSwitchVerifyDelay):
 		}
-		sw, getErr := c.GetVMSwitch(ctx, name)
+		sw, getErr := c.GetVMSwitch(ctx, name, natName)
 		if getErr == nil {
 			return sw, nil
 		}
@@ -181,15 +189,20 @@ func (c *Client) SetVMSwitch(ctx context.Context, in SetVMSwitchInput) (*VMSwitc
 // concern. The dispatch reads the bench's actual state (not Terraform's
 // last-known state) so a drifted switch type still gets the right path.
 //
+// natName is forwarded so remove.ps1 can run the multi-phase NAT
+// teardown (Remove-NetNat -> Remove-NetIPAddress -> Remove-VMSwitch).
+// Empty natName runs the bare Remove-VMSwitch path. Each NAT step
+// tolerates ObjectNotFound -- best-effort destroy.
+//
 // Recovers from connection.ErrSessionDropped on the actual Remove via
 // the existing recoverVMSwitchRemoveOnDrop verify-loop. After the
 // pre-step the SSH path is on the physical NIC and Remove typically
 // completes cleanly without triggering recovery; the recovery is
 // belt-and-suspenders for transient drops unrelated to the migration.
-func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
+func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error {
 	// Pre-step gate: read the switch's current shape. NotFound is a
 	// success path (already gone); other errors propagate.
-	current, err := c.GetVMSwitch(ctx, name)
+	current, err := c.GetVMSwitch(ctx, name, natName)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -208,8 +221,9 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
 		return fmt.Errorf("load vswitch/remove.ps1: %w", err)
 	}
 	stdin, err := json.Marshal(struct {
-		Name string `json:"name"`
-	}{Name: name})
+		Name    string `json:"name"`
+		NatName string `json:"nat_name,omitempty"`
+	}{Name: name, NatName: natName})
 	if err != nil {
 		return fmt.Errorf("marshal remove.ps1 input: %w", err)
 	}
@@ -218,7 +232,7 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name string) error {
 	if runErr == nil || !errors.Is(runErr, connection.ErrSessionDropped) {
 		return runErr
 	}
-	return c.recoverVMSwitchRemoveOnDrop(ctx, name, runErr)
+	return c.recoverVMSwitchRemoveOnDrop(ctx, name, natName, runErr)
 }
 
 // prepareVMSwitchExternalForRemove flips the switch's AllowManagementOS
@@ -272,7 +286,7 @@ func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, na
 			return fmt.Errorf("%w (pre-remove verify aborted: %v)", original, ctx.Err())
 		case <-timer.C:
 		}
-		sw, getErr := c.GetVMSwitch(ctx, name)
+		sw, getErr := c.GetVMSwitch(ctx, name, "")
 		if getErr == nil {
 			if !sw.AllowManagementOS {
 				return nil
@@ -303,7 +317,7 @@ func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, na
 //
 // ctx.Done is honored between attempts: a canceled apply unblocks
 // without consuming the full delay budget.
-func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, original error) error {
+func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name, natName string, original error) error {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
 		timer := time.NewTimer(vmSwitchVerifyDelay)
@@ -313,7 +327,7 @@ func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name string, o
 			return fmt.Errorf("%w (verify aborted: %v)", original, ctx.Err())
 		case <-timer.C:
 		}
-		_, getErr := c.GetVMSwitch(ctx, name)
+		_, getErr := c.GetVMSwitch(ctx, name, natName)
 		if errors.Is(getErr, ErrNotFound) {
 			return nil
 		}

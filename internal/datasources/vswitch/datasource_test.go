@@ -25,11 +25,14 @@ func TestDataSource_Schema(t *testing.T) {
 	}
 	wantAttrs := []string{
 		"name",
+		"nat_name",
 		"id",
 		"switch_type",
 		"allow_management_os",
 		"notes",
 		"net_adapter_interface_description",
+		"nat_internal_address_prefix",
+		"nat_host_address",
 	}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -108,7 +111,7 @@ func TestReadVSwitch_HappyPath(t *testing.T) {
 		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := hyperv.NewClient(fr)
 
-	state, diags := readVSwitch(t.Context(), c, "external-switch")
+	state, diags := readVSwitch(t.Context(), c, "external-switch", "")
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %v", diags)
 	}
@@ -129,6 +132,64 @@ func TestReadVSwitch_HappyPath(t *testing.T) {
 	}
 }
 
+// readVSwitch with a non-empty natName threads it through GetVMSwitch
+// so the script's joined read populates the NAT fields and reports
+// SwitchType=NAT. Pins the data-source path users will follow when
+// they want the NAT-augmented view rather than the bare Internal one.
+func TestReadVSwitch_NATAugmentedRead(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchNATFixtureJSON, "", 0)
+	c := hyperv.NewClient(fr)
+
+	state, diags := readVSwitch(t.Context(), c, "windsor-nat", "windsor-nat")
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if state.SwitchType.ValueString() != "NAT" {
+		t.Errorf("SwitchType = %q, want NAT", state.SwitchType.ValueString())
+	}
+	if state.NatInternalAddressPrefix.ValueString() != "192.168.100.0/24" {
+		t.Errorf("NatInternalAddressPrefix = %q", state.NatInternalAddressPrefix.ValueString())
+	}
+	if state.NatHostAddress.ValueString() != "192.168.100.1" {
+		t.Errorf("NatHostAddress = %q", state.NatHostAddress.ValueString())
+	}
+	// readVSwitch leaves NatName at its zero value -- the caller (Read)
+	// echoes config.NatName back into state. Pin that here so a future
+	// refactor that populates NatName from the wire shape doesn't slip
+	// through the round-trip contract.
+	if !state.NatName.IsNull() {
+		t.Errorf("NatName should be null (echoed by Read, not readVSwitch); got %q",
+			state.NatName.ValueString())
+	}
+}
+
+// readVSwitch with empty natName returns the bare VMSwitch shape and
+// leaves nat_* fields null. Locks the "non-NAT switches don't get
+// NAT augmentation" half of the contract.
+func TestReadVSwitch_NoNatNameLeavesNATFieldsNull(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
+	c := hyperv.NewClient(fr)
+
+	state, diags := readVSwitch(t.Context(), c, "external-switch", "")
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if !state.NatInternalAddressPrefix.IsNull() {
+		t.Errorf("NatInternalAddressPrefix should be null for non-NAT switch; got %q",
+			state.NatInternalAddressPrefix.ValueString())
+	}
+	if !state.NatHostAddress.IsNull() {
+		t.Errorf("NatHostAddress should be null for non-NAT switch; got %q",
+			state.NatHostAddress.ValueString())
+	}
+}
+
 // ErrNotFound from the typed client surfaces as an attribute-anchored
 // diagnostic so the operator sees which `name` value didn't resolve. Data
 // sources don't have RemoveResource semantics -- a missing switch is a
@@ -141,7 +202,7 @@ func TestReadVSwitch_NotFoundIsAttributeAnchoredDiagnostic(t *testing.T) {
 		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := hyperv.NewClient(fr)
 
-	_, diags := readVSwitch(t.Context(), c, "missing")
+	_, diags := readVSwitch(t.Context(), c, "missing", "")
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}
@@ -164,7 +225,7 @@ func TestReadVSwitch_UnavailableIsTransientDiagnostic(t *testing.T) {
 		On("function Get-HypervSwitch").Return("", envelope, 1)
 	c := hyperv.NewClient(fr)
 
-	_, diags := readVSwitch(t.Context(), c, "any-name")
+	_, diags := readVSwitch(t.Context(), c, "any-name", "")
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}
@@ -184,7 +245,7 @@ func TestReadVSwitch_GenericClientErrorBecomesDiagnostic(t *testing.T) {
 		On("function Get-HypervSwitch").ReturnErr(errors.New("connection refused"))
 	c := hyperv.NewClient(fr)
 
-	_, diags := readVSwitch(t.Context(), c, "any-name")
+	_, diags := readVSwitch(t.Context(), c, "any-name", "")
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}

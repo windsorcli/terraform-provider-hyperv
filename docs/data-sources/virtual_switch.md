@@ -4,11 +4,14 @@ page_title: "hyperv_virtual_switch Data Source - hyperv"
 subcategory: ""
 description: |-
   Reads metadata for an existing Hyper-V virtual switch by name. Useful when the switch was created out-of-band (Hyper-V Manager, DSC, manual New-VMSwitch) and a Terraform resource needs to reference it as a dependency.
+  NAT switches require nat_name to read with switch_type = "NAT" and the joined nat_* fields populated; without it, NAT switches return as their underlying Internal type with empty NAT fields.
 ---
 
 # hyperv_virtual_switch (Data Source)
 
 Reads metadata for an existing Hyper-V virtual switch by name. Useful when the switch was created out-of-band (Hyper-V Manager, DSC, manual `New-VMSwitch`) and a Terraform resource needs to reference it as a dependency.
+
+**NAT switches** require `nat_name` to read with `switch_type = "NAT"` and the joined `nat_*` fields populated; without it, NAT switches return as their underlying `Internal` type with empty NAT fields.
 
 ## Example Usage
 
@@ -37,10 +40,16 @@ output "default_switch_nic" {
 
 - `name` (String) Switch name. The lookup key.
 
+### Optional
+
+- `nat_name` (String) NAT instance name. Set this when reading a NAT-typed switch so the data source joins `Get-NetNat` and `Get-NetIPAddress` with the underlying `Get-VMSwitch` and reports `switch_type = "NAT"`. Omit for non-NAT switches; passing a `nat_name` that doesn't match an existing `NetNat` makes the read fail with `Hyper-V virtual switch not found`.
+
 ### Read-Only
 
-- `allow_management_os` (Boolean) Whether the host OS shares the bound NIC. Always `false` for `Private` switches.
+- `allow_management_os` (Boolean) Whether the host OS shares the bound NIC. Always `false` for `Private` and `NAT` switches.
 - `id` (String) Resource identifier. Mirrors `name`.
-- `net_adapter_interface_description` (String) Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private. For NIC-teamed External switches this is the team adapter's description.
+- `nat_host_address` (String) Host-side gateway IPv4 assigned to the host vNIC. Populated only when `nat_name` was supplied and the switch is NAT-typed.
+- `nat_internal_address_prefix` (String) Internal subnet (CIDR) the NAT instance routes for, e.g. `192.168.100.0/24`. Populated only when `nat_name` was supplied and the switch is NAT-typed.
+- `net_adapter_interface_description` (String) Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private/NAT. For NIC-teamed External switches this is the team adapter's description.
 - `notes` (String) Free-form description stored on the switch.
-- `switch_type` (String) Switch type: `External`, `Internal`, or `Private`.
+- `switch_type` (String) Switch type. `External`, `Internal`, or `Private` for the underlying VMSwitch types; `NAT` only when `nat_name` was supplied AND the corresponding NetNat + NetIPAddress are present on the host.

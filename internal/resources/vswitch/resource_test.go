@@ -322,7 +322,7 @@ func TestModelFromVMSwitch_PreservesNetAdapterNames(t *testing.T) {
 	priorList, _ := types.ListValueFrom(t.Context(), types.StringType, []string{"Ethernet"})
 
 	var diags diag.Diagnostics
-	got := modelFromVMSwitch(t.Context(), sw, priorList, &diags)
+	got := modelFromVMSwitch(t.Context(), sw, priorList, types.BoolNull(), &diags)
 	if diags.HasError() {
 		t.Fatalf("diags: %v", diags)
 	}
@@ -362,7 +362,7 @@ func TestModelFromVMSwitch_FillsEmptyListForUnknownNames(t *testing.T) {
 	}
 
 	var diags diag.Diagnostics
-	got := modelFromVMSwitch(t.Context(), sw, types.ListUnknown(types.StringType), &diags)
+	got := modelFromVMSwitch(t.Context(), sw, types.ListUnknown(types.StringType), types.BoolNull(), &diags)
 	if diags.HasError() {
 		t.Fatalf("diags: %v", diags)
 	}
@@ -371,5 +371,165 @@ func TestModelFromVMSwitch_FillsEmptyListForUnknownNames(t *testing.T) {
 	}
 	if !got.NetAdapterNames.IsNull() && len(got.NetAdapterNames.Elements()) != 0 {
 		t.Errorf("NetAdapterNames should be empty; got %d elements", len(got.NetAdapterNames.Elements()))
+	}
+}
+
+// NAT plan threads nat_name / nat_internal_address_prefix / nat_host_address
+// into the wire shape. The script-side NAT branch reads each by snake_case
+// key; missing any of the three for a NAT switch is a contract violation
+// the Go-side validator already catches at plan time.
+func TestBuildNewInput_NATForwardsAllNATFields(t *testing.T) {
+	t.Parallel()
+
+	plan := Model{
+		Name:                     types.StringValue("windsor-nat"),
+		SwitchType:               types.StringValue("NAT"),
+		NetAdapterNames:          types.ListNull(types.StringType),
+		AllowManagementOS:        types.BoolNull(),
+		Notes:                    types.StringNull(),
+		NatName:                  types.StringValue("windsor-nat"),
+		NatInternalAddressPrefix: types.StringValue("192.168.100.0/24"),
+		NatHostAddress:           types.StringValue("192.168.100.1"),
+	}
+
+	in, diags := buildNewInput(t.Context(), plan)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if in.SwitchType != "NAT" {
+		t.Errorf("SwitchType = %q, want NAT", in.SwitchType)
+	}
+	if in.NatName != "windsor-nat" {
+		t.Errorf("NatName = %q, want windsor-nat", in.NatName)
+	}
+	if in.NatInternalAddressPrefix != "192.168.100.0/24" {
+		t.Errorf("NatInternalAddressPrefix = %q, want 192.168.100.0/24", in.NatInternalAddressPrefix)
+	}
+	if in.NatHostAddress != "192.168.100.1" {
+		t.Errorf("NatHostAddress = %q, want 192.168.100.1", in.NatHostAddress)
+	}
+}
+
+// NAT updates carry nat_name from state purely as read-back routing
+// context for set.ps1 (so it can synthesize SwitchType=NAT). Every
+// NAT-specific input is RequiresReplace at the schema layer:
+// nat_internal_address_prefix forces replacement because Set-NetNat does
+// not accept -InternalIPInterfaceAddressPrefix on the bench (verified
+// against Server 2022 + PS 5.1), so the only in-place mutation that
+// reaches Update for a NAT switch is Notes.
+func TestBuildSetInput_NATForwardsNameForReadback(t *testing.T) {
+	t.Parallel()
+
+	state := Model{
+		Name:                     types.StringValue("windsor-nat"),
+		SwitchType:               types.StringValue("NAT"),
+		NatName:                  types.StringValue("windsor-nat"),
+		NatInternalAddressPrefix: types.StringValue("192.168.100.0/24"),
+		NatHostAddress:           types.StringValue("192.168.100.1"),
+	}
+	plan := state
+	plan.Notes = types.StringValue("updated notes")
+
+	in, diags := buildSetInput(t.Context(), plan, state)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if in.NatName != "windsor-nat" {
+		t.Errorf("NatName = %q, want windsor-nat (from state)", in.NatName)
+	}
+	if in.Notes == nil || *in.Notes != "updated notes" {
+		t.Errorf("Notes = %v, want pointer to \"updated notes\"", in.Notes)
+	}
+	if in.AllowManagementOS != nil {
+		t.Errorf("AllowManagementOS should be nil for NAT switch; got %v", in.AllowManagementOS)
+	}
+}
+
+// NAT switches must not forward allow_management_os on Update. Mirrors the
+// Private-switch case: the attribute is Optional+Computed, so plan carries
+// the prior-state false value even when the user never set it; forwarding
+// it would trip the script-side guard on every Update of a NAT switch.
+func TestBuildSetInput_OmitsAllowManagementOSForNAT(t *testing.T) {
+	t.Parallel()
+
+	state := Model{
+		Name:       types.StringValue("windsor-nat"),
+		SwitchType: types.StringValue("NAT"),
+		NatName:    types.StringValue("windsor-nat"),
+	}
+	plan := Model{
+		Name:              types.StringValue("windsor-nat"),
+		SwitchType:        types.StringValue("NAT"),
+		NatName:           types.StringValue("windsor-nat"),
+		AllowManagementOS: types.BoolValue(false), // Computed read-back
+		Notes:             types.StringValue("updated notes"),
+	}
+
+	in, diags := buildSetInput(t.Context(), plan, state)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if in.AllowManagementOS != nil {
+		t.Errorf("AllowManagementOS must not forward for NAT switch; got %v", in.AllowManagementOS)
+	}
+}
+
+// modelFromVMSwitch hydrates NAT fields when the wire shape carries them
+// (NAT switches), and leaves them null for non-NAT switches (empty wire
+// strings). Locking this round-trip keeps the schema's Optional+Computed
+// NAT attributes from drifting between the typed-client and resource
+// layers.
+func TestModelFromVMSwitch_PopulatesNatFieldsForNATSwitch(t *testing.T) {
+	t.Parallel()
+
+	sw := &hyperv.VMSwitch{
+		Name:                     "windsor-nat",
+		SwitchType:               "NAT",
+		ID:                       "guid-here",
+		NatName:                  "windsor-nat",
+		NatInternalAddressPrefix: "192.168.100.0/24",
+		NatHostAddress:           "192.168.100.1",
+	}
+
+	var diags diag.Diagnostics
+	got := modelFromVMSwitch(t.Context(), sw, types.ListNull(types.StringType), types.BoolNull(), &diags)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if got.NatName.ValueString() != "windsor-nat" {
+		t.Errorf("NatName = %q, want windsor-nat", got.NatName.ValueString())
+	}
+	if got.NatInternalAddressPrefix.ValueString() != "192.168.100.0/24" {
+		t.Errorf("NatInternalAddressPrefix = %q, want 192.168.100.0/24", got.NatInternalAddressPrefix.ValueString())
+	}
+	if got.NatHostAddress.ValueString() != "192.168.100.1" {
+		t.Errorf("NatHostAddress = %q, want 192.168.100.1", got.NatHostAddress.ValueString())
+	}
+}
+
+func TestModelFromVMSwitch_NullsNatFieldsForNonNAT(t *testing.T) {
+	t.Parallel()
+
+	sw := &hyperv.VMSwitch{
+		Name:       "ext0",
+		SwitchType: "External",
+		ID:         "guid-here",
+		// NAT fields all empty (the script emits empty strings for
+		// non-NAT switches).
+	}
+
+	var diags diag.Diagnostics
+	got := modelFromVMSwitch(t.Context(), sw, types.ListNull(types.StringType), types.BoolNull(), &diags)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if !got.NatName.IsNull() {
+		t.Errorf("NatName must be null for non-NAT switch; got %q", got.NatName.ValueString())
+	}
+	if !got.NatInternalAddressPrefix.IsNull() {
+		t.Errorf("NatInternalAddressPrefix must be null for non-NAT switch; got %q", got.NatInternalAddressPrefix.ValueString())
+	}
+	if !got.NatHostAddress.IsNull() {
+		t.Errorf("NatHostAddress must be null for non-NAT switch; got %q", got.NatHostAddress.ValueString())
 	}
 }

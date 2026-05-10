@@ -26,10 +26,11 @@ function Set-HypervSwitch {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [ValidateSet('External', 'Internal', 'Private')] [string] $SwitchType,
+        [ValidateSet('External', 'Internal', 'Private', 'NAT')] [string] $SwitchType,
         [string[]]       $NetAdapterNames,
         [Nullable[bool]] $AllowManagementOS,
-        [string]         $Notes
+        [string]         $Notes,
+        [string]         $NatName
     )
 
     # Existence pre-check. Symmetric with get.ps1 / remove.ps1: Set-VMSwitch
@@ -76,6 +77,51 @@ function Set-HypervSwitch {
         throw "allow_management_os is not valid for switch_type '$($existing.SwitchType)' (External only)"
     }
 
+    # NAT branch. Every NAT-specific input is RequiresReplace at the
+    # schema layer (nat_name, nat_internal_address_prefix, and
+    # nat_host_address all force replacement -- Set-NetNat does not
+    # accept -InternalIPInterfaceAddressPrefix, so prefix changes can
+    # only be expressed as a teardown + recreate). The only mutation
+    # that reaches Update for a NAT switch is Notes, applied to the
+    # underlying VMSwitch. The read-back joins Get-NetNat +
+    # Get-NetIPAddress to synthesize SwitchType=NAT in the output.
+    if ($SwitchType -eq 'NAT') {
+        if (-not $PSBoundParameters.ContainsKey('Notes')) {
+            throw "Set-HypervSwitch requires at least one mutable attribute (notes)"
+        }
+        Set-VMSwitch -Name $Name -Notes $Notes -ErrorAction Stop
+
+        # Read-back. Mirrors get.ps1's NAT augmentation: pull the underlying
+        # VMSwitch, the NetIPAddress, the NetNat, then synthesize the
+        # SwitchType=NAT shape.
+        $sw = Get-VMSwitch -Name $Name -ErrorAction Stop
+        $natIp = Get-NetIPAddress `
+            -InterfaceAlias "vEthernet ($Name)" `
+            -AddressFamily 'IPv4' `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $netNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+        $natNameOut = if ($null -ne $netNat) { $netNat.Name } else { '' }
+        $natPrefixOut = if ($null -ne $netNat) { $netNat.InternalIPInterfaceAddressPrefix } else { '' }
+        $natHostOut = if ($null -ne $natIp) { $natIp.IPAddress } else { '' }
+
+        $sw |
+            Select-Object `
+                Name,
+                @{ N = 'SwitchType';                      E = { 'NAT' } },
+                AllowManagementOS,
+                NetAdapterInterfaceDescription,
+                Notes,
+                @{ N = 'Id';                              E = { $_.Id.ToString() } },
+                @{ N = 'NatName';                         E = { $natNameOut } },
+                @{ N = 'NatInternalAddressPrefix';        E = { $natPrefixOut } },
+                @{ N = 'NatHostAddress';                  E = { $natHostOut } } |
+            Write-HypervResult
+        return
+    }
+
     $setArgs = @{
         Name        = $Name
         ErrorAction = 'Stop'
@@ -118,7 +164,10 @@ function Set-HypervSwitch {
             AllowManagementOS,
             NetAdapterInterfaceDescription,
             Notes,
-            @{ N = 'Id';                              E = { $_.Id.ToString() } } |
+            @{ N = 'Id';                              E = { $_.Id.ToString() } },
+            @{ N = 'NatName';                         E = { '' } },
+            @{ N = 'NatInternalAddressPrefix';        E = { '' } },
+            @{ N = 'NatHostAddress';                  E = { '' } } |
         Write-HypervResult
 }
 
@@ -141,6 +190,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         if ($params.PSObject.Properties.Name -contains 'notes' -and $null -ne $params.notes) {
             $callArgs.Notes = $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'nat_name' -and $null -ne $params.nat_name -and $params.nat_name -ne '') {
+            $callArgs.NatName = $params.nat_name
         }
 
         Set-HypervSwitch @callArgs

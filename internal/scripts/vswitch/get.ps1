@@ -2,16 +2,26 @@
 #
 # Wire contract (locked in by Tests.ps1):
 #
-#   stdin JSON  : { "name": "<switch-name>" }
+#   stdin JSON  : { "name": "<switch-name>", "nat_name": "<string>"? }
+#                 nat_name is optional; the Go-side resource Read passes it
+#                 from prior state for NAT-typed resources so the script
+#                 can join Get-NetIPAddress + Get-NetNat into the read shape.
 #   stdout JSON : single VMSwitch object with the keys
 #                   Name, SwitchType, AllowManagementOS,
-#                   NetAdapterInterfaceDescription, Notes, Id.
+#                   NetAdapterInterfaceDescription, Notes, Id,
+#                   NatName, NatInternalAddressPrefix, NatHostAddress.
 #                 SwitchType is the enum stringified ("External"/"Internal"/
-#                 "Private"); Id is the Guid stringified.
+#                 "Private") OR synthesized "NAT" when nat_name is supplied
+#                 and Get-NetNat + Get-NetIPAddress both succeed; Id is the
+#                 Guid stringified. NAT fields are empty strings for non-NAT
+#                 switches.
 #   stderr/exit : missing switch -> Write-HypervError envelope with
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side (resource Read calls RemoveResource).
 #                 vmms-stopped surfaces as ResourceUnavailable -> ErrUnavailable.
+#                 For NAT switches, missing NetNat or missing NetIPAddress
+#                 also surfaces as ObjectNotFound -- partial NAT teardown
+#                 means the resource as a whole is gone.
 #
 # Tests dot-source this file (`. ./get.ps1`); the entry block is guarded so it
 # only runs when the script is invoked directly. The select-block shape is
@@ -26,7 +36,8 @@
 function Get-HypervSwitch {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string] $Name
+        [Parameter(Mandatory)] [string] $Name,
+        [string] $NatName
     )
     # Stop + selective catch instead of SilentlyContinue: a transient WMI
     # fault, permission error, or cluster-connectivity blip would otherwise
@@ -69,14 +80,51 @@ function Get-HypervSwitch {
             [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
         throw $errorRecord
     }
+
+    # NAT augmentation. Hyper-V reports SwitchType=Internal for the
+    # underlying VMSwitch; we synthesize SwitchType=NAT when the caller
+    # passes -NatName and the matching NetNat + NetIPAddress are both
+    # present on the host. Either piece missing means the NAT triple has
+    # been partially torn down out-of-band -- treat as resource-gone so
+    # the Go side's RemoveResource fires and the next apply can recreate
+    # cleanly rather than reporting drift on a half-broken state.
+    $synthesizedType = $sw.SwitchType.ToString()
+    $natNameOut = ''
+    $natPrefixOut = ''
+    $natHostOut = ''
+    if ($PSBoundParameters.ContainsKey('NatName') -and $NatName -ne '') {
+        $natIp = Get-NetIPAddress `
+            -InterfaceAlias "vEthernet ($Name)" `
+            -AddressFamily 'IPv4' `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $netNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($null -eq $netNat -or $null -eq $natIp) {
+            $exception = [System.Management.Automation.ItemNotFoundException]::new(
+                "NAT switch '$Name' is missing its NetNat ('$NatName') or NetIPAddress (vEthernet ($Name)). Treating the resource as gone.")
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                $exception, 'VMSwitchNATPartial',
+                [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+            throw $errorRecord
+        }
+        $synthesizedType = 'NAT'
+        $natNameOut = $netNat.Name
+        $natPrefixOut = $netNat.InternalIPInterfaceAddressPrefix
+        $natHostOut = $natIp.IPAddress
+    }
+
     $sw |
         Select-Object `
             Name,
-            @{ N = 'SwitchType';                      E = { $_.SwitchType.ToString() } },
+            @{ N = 'SwitchType';                      E = { $synthesizedType } },
             AllowManagementOS,
             NetAdapterInterfaceDescription,
             Notes,
-            @{ N = 'Id';                              E = { $_.Id.ToString() } } |
+            @{ N = 'Id';                              E = { $_.Id.ToString() } },
+            @{ N = 'NatName';                         E = { $natNameOut } },
+            @{ N = 'NatInternalAddressPrefix';        E = { $natPrefixOut } },
+            @{ N = 'NatHostAddress';                  E = { $natHostOut } } |
         Write-HypervResult
 }
 
@@ -84,7 +132,11 @@ function Get-HypervSwitch {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-        Get-HypervSwitch -Name $params.name
+        $callArgs = @{ Name = $params.name }
+        if ($params.PSObject.Properties.Name -contains 'nat_name' -and $null -ne $params.nat_name -and $params.nat_name -ne '') {
+            $callArgs.NatName = $params.nat_name
+        }
+        Get-HypervSwitch @callArgs
     }
     catch {
         Write-HypervError $_
