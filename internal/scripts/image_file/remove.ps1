@@ -91,7 +91,22 @@ function Remove-HypervImageFile {
         # unrolls an empty-array return to $null, which trips
         # Set-StrictMode -Version 3.0's null-property-access check on
         # the following .Count read.
-        $holders = @(Get-HypervImageFileDvdHolder -Path $Path)
+        #
+        # try/catch the lookup itself: Get-HypervImageFileDvdHolder
+        # walks Get-VM / Get-VMDvdDrive with -ErrorAction Stop, so
+        # VMMS-down / WMI-flap / perms errors there would propagate
+        # out of THIS catch and replace the sharing-violation
+        # diagnostic with an unrelated Hyper-V management error. The
+        # holder name is supplementary; the actionable message is the
+        # "another process is holding it" the operator needs. Fall
+        # back to the no-holders branch so that message still surfaces
+        # when Hyper-V management is degraded.
+        try {
+            $holders = @(Get-HypervImageFileDvdHolder -Path $Path)
+        }
+        catch {
+            $holders = @()
+        }
         if ($holders.Count -eq 0) {
             $detail = "No Hyper-V DVD attachment matches this path; another process " +
                 "(antivirus scan, Explorer preview, etc.) is holding the file."

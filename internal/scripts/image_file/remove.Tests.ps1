@@ -134,6 +134,34 @@ Describe 'Remove-HypervImageFile' {
             $captured.Exception.Message | Should -Match 'No Hyper-V DVD attachment matches'
         }
 
+        It 'still surfaces ImageFileLocked when the holder lookup itself fails (degraded VMMS)' {
+            # Regression: Get-HypervImageFileDvdHolder uses
+            # Get-VM -ErrorAction Stop, so a VMMS-unavailable / WMI-flap /
+            # permissions failure during the lookup would propagate out of
+            # the sharing-violation catch and replace the actionable
+            # diagnostic with an unrelated Hyper-V management error. The
+            # call site wraps the lookup in its own try/catch so that
+            # path falls back to the non-Hyper-V message and the operator
+            # still sees the "another process is holding it" they need.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { throw "The Virtual Machine Management Service is not available." }
+            Mock Get-VMDvdDrive { @() }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'No Hyper-V DVD attachment matches'
+            $captured.Exception.Message | Should -Not -Match 'Virtual Machine Management Service'
+        }
+
         It 'does NOT call Get-VMDvdDrive for non-sharing-violation IO errors (cheap path)' {
             # Disk full, permission denied, etc. shouldn't trigger the VM
             # enumeration -- those holders are irrelevant and the
