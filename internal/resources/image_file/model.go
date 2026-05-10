@@ -65,12 +65,11 @@ type Model struct {
 }
 
 // URLConfig is the user-supplied URL-mode source configuration.
-// `url` and `checksum` are required when the block is present; the
-// schema-layer Required flag enforces this without a separate config
-// validator. `compression` is optional -- absence means "no
-// decompression, host fetches directly"; presence flips the typed
-// client to a runner-pipelined fetch (download + decompress on the
-// runner, then stream decompressed bytes to the host).
+// `url` is required when the block is present; `checksum` is optional
+// (when omitted, the download is trusted TLS-only). `compression` is
+// optional -- absence means "no decompression, host fetches directly";
+// presence flips the typed client to a runner-pipelined fetch (download +
+// decompress on the runner, then stream decompressed bytes to the host).
 //
 // The Model carries `url` as types.Object rather than *URLConfig because
 // the framework's pointer-to-struct shape can represent null (nil) but

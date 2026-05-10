@@ -45,14 +45,10 @@
 # non-2xx so transport-level failures surface through the catch in the
 # entry block.
 #
-# TLS 1.2 is OR'd into the protocol set as a floor because PS 5.1 / .NET
-# Framework 4.7.2 on older Server 2019 builds can default to TLS 1.0/1.1,
-# which most modern HTTPS endpoints reject. -bor (rather than =) preserves
-# TLS 1.3 on .NET 4.8+ hosts where the enum already includes it, so we
-# raise the floor without capping the ceiling. The assignment is process-
-# global, but each verb script runs in a fresh PowerShell process per
-# -EncodedCommand, so leakage to unrelated calls is bounded to this one
-# invocation.
+# SslProtocols.None on the handler delegates protocol selection to the OS
+# (Schannel), which picks TLS 1.3 first on Server 2022 and falls back to
+# TLS 1.2 on older hosts. This bypasses the legacy ServicePointManager
+# global, which HttpClient ignores on .NET 5+/PS 7 anyway.
 function Save-HypervHttpFile {
     [CmdletBinding()]
     param(
@@ -63,10 +59,9 @@ function Save-HypervHttpFile {
     # Server 2019 floor); Add-Type with -AssemblyName is a no-op when the
     # assembly is already loaded (PS 7+) so it's safe to call unconditionally.
     Add-Type -AssemblyName System.Net.Http
-    [System.Net.ServicePointManager]::SecurityProtocol = `
-        [System.Net.ServicePointManager]::SecurityProtocol -bor `
-        [System.Net.SecurityProtocolType]::Tls12
-    $client = [System.Net.Http.HttpClient]::new()
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.SslProtocols = [System.Security.Authentication.SslProtocols]::None
+    $client = [System.Net.Http.HttpClient]::new($handler)
     try {
         $response = $client.GetAsync(
             $Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
@@ -110,20 +105,26 @@ function New-HypervImageFileFromUrl {
     param(
         [Parameter(Mandatory)] [string] $DestinationPath,
         [Parameter(Mandatory)] [string] $Url,
-        [Parameter(Mandatory)] [string] $ExpectedSha256
+        [Parameter()]          [string] $ExpectedSha256 = ''
     )
     $tempPath = "$DestinationPath.part-$([guid]::NewGuid().ToString('n'))"
     try {
         Save-HypervHttpFile -Url $Url -OutFile $tempPath
-        $actualHash   = (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $expectedHash = $ExpectedSha256.ToLowerInvariant()
-        if ($actualHash -ne $expectedHash) {
-            $exception = [System.IO.InvalidDataException]::new(
-                "Checksum mismatch for '$Url': expected sha256=$expectedHash, got sha256=$actualHash.")
-            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-                $exception, 'ImageFileChecksumMismatch',
-                [System.Management.Automation.ErrorCategory]::InvalidData, $Url)
-            throw $errorRecord
+        # ExpectedSha256 may be empty when the caller didn't supply a publisher
+        # checksum (TLS-only trust). Skip verification in that case; the on-disk
+        # SHA computed by Read-HypervImageFileResult still surfaces as the
+        # `sha256` computed attribute for drift detection.
+        if ($ExpectedSha256) {
+            $actualHash   = (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expectedHash = $ExpectedSha256.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+                $exception = [System.IO.InvalidDataException]::new(
+                    "Checksum mismatch for '$Url': expected sha256=$expectedHash, got sha256=$actualHash.")
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'ImageFileChecksumMismatch',
+                    [System.Management.Automation.ErrorCategory]::InvalidData, $Url)
+                throw $errorRecord
+            }
         }
         Move-Item -LiteralPath $tempPath -Destination $DestinationPath -Force -ErrorAction Stop
     }

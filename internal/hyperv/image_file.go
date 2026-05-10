@@ -136,10 +136,15 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 		return nil, err
 	}
 
-	expectedCompressed := strings.ToLower(in.ExpectedSha256)
-	if compressedSHA != expectedCompressed {
-		return nil, fmt.Errorf("%w: expected sha256=%s of compressed bytes from %s, got sha256=%s",
-			ErrChecksumMismatch, expectedCompressed, in.URL, compressedSHA)
+	// Empty ExpectedSha256 means the caller didn't supply a publisher checksum
+	// (TLS-only trust); skip the compressed-bytes verification. The decompressed
+	// SHA still rides through to new.ps1 as the runner->host transport check, so
+	// drift between the runner's view and the on-disk bytes is still caught.
+	if expectedCompressed := strings.ToLower(in.ExpectedSha256); expectedCompressed != "" {
+		if compressedSHA != expectedCompressed {
+			return nil, fmt.Errorf("%w: expected sha256=%s of compressed bytes from %s, got sha256=%s",
+				ErrChecksumMismatch, expectedCompressed, in.URL, compressedSHA)
+		}
 	}
 
 	// Close the file before StreamFile reads it from the same path -- on
