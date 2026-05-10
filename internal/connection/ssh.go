@@ -580,8 +580,16 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 	if err != nil {
 		return fmt.Errorf("ssh: scp stdout pipe: %w", err)
 	}
-	stderrPipe, err := session.StderrPipe()
-	if err != nil {
+	// StderrPipe is called for its side effect only: it sets the
+	// session's stderrpipe flag, which suppresses the default
+	// io.Copy(io.Discard, channel.Stderr()) goroutine the library
+	// would otherwise spawn. That goroutine reads until EOF; on the
+	// Windows-OpenSSH wedge (no EOF after exit-status) it parks
+	// forever -- the same deadlock pattern we just dismantled for
+	// stdout. Returning the channel directly here means no goroutine
+	// gets created, and the unread bytes just sit in the channel
+	// buffer until the deferred session.Close drops them.
+	if _, err := session.StderrPipe(); err != nil {
 		return fmt.Errorf("ssh: scp stderr pipe: %w", err)
 	}
 
@@ -653,14 +661,6 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 		return err
 	}
 	_ = stdinPipe.Close()
-
-	// Drain any stderr the server emitted alongside the ACKs (fatal
-	// SCP errors duplicate the message there). io.ReadAll honors the
-	// pipe's underlying channel close; we cap the buffer the same way
-	// readAck caps the per-ACK message body. Returning a stderr-only
-	// surface keeps the error envelope informative without depending
-	// on session.Wait completing.
-	_ = stderrPipe // bound for symmetry; intentionally unread on the happy path
 	return nil
 }
 
