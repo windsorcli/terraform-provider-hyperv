@@ -43,9 +43,9 @@ func (c *Client) GetPortForward(ctx context.Context, in GetPortForwardInput) (*P
 // "missing NetNat" error if it doesn't, mapped here through the
 // typed-error path.
 func (c *Client) NewPortForward(ctx context.Context, in NewPortForwardInput) (*PortForward, error) {
-	body, err := scripts.PortForwardScript("new")
+	body, err := loadPortForwardWithRetry("new")
 	if err != nil {
-		return nil, fmt.Errorf("load port_forward/new.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
@@ -53,7 +53,7 @@ func (c *Client) NewPortForward(ctx context.Context, in NewPortForwardInput) (*P
 	}
 
 	var pf PortForward
-	if err := c.runScript(ctx, string(body), stdin, &pf); err != nil {
+	if err := c.runScript(ctx, body, stdin, &pf); err != nil {
 		return nil, err
 	}
 	return &pf, nil
@@ -65,9 +65,9 @@ func (c *Client) NewPortForward(ctx context.Context, in NewPortForwardInput) (*P
 // Returns the post-mutation read shape -- the StaticMappingID may
 // change because Hyper-V re-numbers mappings on Add.
 func (c *Client) SetPortForward(ctx context.Context, in SetPortForwardInput) (*PortForward, error) {
-	body, err := scripts.PortForwardScript("set")
+	body, err := loadPortForwardWithRetry("set")
 	if err != nil {
-		return nil, fmt.Errorf("load port_forward/set.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
@@ -75,7 +75,7 @@ func (c *Client) SetPortForward(ctx context.Context, in SetPortForwardInput) (*P
 	}
 
 	var pf PortForward
-	if err := c.runScript(ctx, string(body), stdin, &pf); err != nil {
+	if err := c.runScript(ctx, body, stdin, &pf); err != nil {
 		return nil, err
 	}
 	return &pf, nil
@@ -107,4 +107,22 @@ func (c *Client) RemovePortForward(ctx context.Context, in RemovePortForwardInpu
 		return err
 	}
 	return nil
+}
+
+// loadPortForwardWithRetry loads a port_forward verb script (new/set)
+// and prepends the canonical Invoke-WithDupNameRetry body from
+// port_forward/_retry.ps1 so the verb's call to that function
+// resolves. Mirrors loadVMReadEmitter's prepend pattern; reduces the
+// drift surface between new.ps1 and set.ps1 at the cost of one extra
+// fs read per RunScript.
+func loadPortForwardWithRetry(verb string) (string, error) {
+	body, err := scripts.PortForwardScript(verb)
+	if err != nil {
+		return "", fmt.Errorf("load port_forward/%s.ps1: %w", verb, err)
+	}
+	retry, err := scripts.PortForwardRetry()
+	if err != nil {
+		return "", fmt.Errorf("load port_forward/_retry.ps1: %w", err)
+	}
+	return string(retry) + "\n" + string(body), nil
 }

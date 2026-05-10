@@ -10,6 +10,7 @@
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
     . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/_retry.ps1
     . $PSScriptRoot/set.ps1
 }
 

@@ -44,18 +44,28 @@ func VswitchScript(verb string) ([]byte, error) {
 	return Vswitch.ReadFile("vswitch/" + verb + ".ps1")
 }
 
-// PortForward holds the four verb scripts for hyperv_port_forward.
-// Mirrors the Vswitch FS shape -- four CRUD verbs, Pester *.Tests.ps1
+// PortForward holds the four verb scripts for hyperv_port_forward
+// plus the shared _retry.ps1 helper prepended to new/set on the Go
+// side (mirror of the vm/read-result.ps1 pattern). Pester *.Tests.ps1
 // and the _test_helpers.ps1 stub file are deliberately excluded from
 // the embed glob.
 //
 //go:embed port_forward/get.ps1 port_forward/new.ps1 port_forward/set.ps1 port_forward/remove.ps1
+//go:embed port_forward/_retry.ps1
 var PortForward embed.FS
 
 // PortForwardScript returns the contents of port_forward/<verb>.ps1
 // (verb in {get, new, set, remove}).
 func PortForwardScript(verb string) ([]byte, error) {
 	return PortForward.ReadFile("port_forward/" + verb + ".ps1")
+}
+
+// PortForwardRetry returns port_forward/_retry.ps1, the shared
+// Invoke-WithDupNameRetry helper. The Go-side hyperv.Client prepends
+// its body to the new and set verb scripts at runtime, replacing what
+// used to be two inline copies of the same function.
+func PortForwardRetry() ([]byte, error) {
+	return PortForward.ReadFile("port_forward/_retry.ps1")
 }
 
 // ImageFile holds the verb scripts for hyperv_image_file (M4). No "set"
