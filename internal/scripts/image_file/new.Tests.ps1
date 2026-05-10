@@ -73,6 +73,28 @@ Describe 'New-HypervImageFileFromUrl' {
             Should -Invoke Move-Item -Times 1 -Exactly
         }
 
+        It 'skips checksum verification and renames when ExpectedSha256 is empty' {
+            # Empty ExpectedSha256 is the TLS-only-trust path: no compare against
+            # the .part file's hash. Get-FileHash is still called once by
+            # Read-HypervImageFileResult to surface the on-disk SHA for drift
+            # detection -- but not a *second* time for verification, which is
+            # the path being skipped.
+            Mock Save-HypervHttpFile { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'whatever' }
+            Mock Move-Item { }
+            Mock Test-Path { $false }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            { New-HypervImageFileFromUrl `
+                -DestinationPath 'C:\images\ubuntu.vhdx' `
+                -Url 'https://example.com/ubuntu.vhdx' `
+                -ExpectedSha256 '' } | Should -Not -Throw
+
+            Should -Invoke Get-FileHash -Times 1 -Exactly
+            Should -Invoke Move-Item    -Times 1 -Exactly
+        }
+
         It 'emits the canonical three-field shape after rename (matches get.ps1)' {
             Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }

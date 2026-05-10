@@ -78,10 +78,10 @@ func resourceSchema() schema.Schema {
 			"url": schema.SingleNestedAttribute{
 				Optional: true,
 				MarkdownDescription: "URL-mode source configuration. When present, the file is downloaded via " +
-					"a streamed HTTP GET and the SHA-256 is verified against `checksum` before the atomic " +
-					"rename. Mutually exclusive with `local_path` (a config validator rejects both set " +
-					"together). **Forces replacement** when changed -- the file is re-fetched, not patched " +
-					"in place.",
+					"a streamed HTTP GET; SHA-256 is verified against `checksum` before the atomic rename when " +
+					"`checksum` is set, or the bytes are trusted (TLS-only) when it isn't. Mutually exclusive " +
+					"with `local_path` (a config validator rejects both set together). **Forces replacement** " +
+					"when changed -- the file is re-fetched, not patched in place.",
 				PlanModifiers: []planmodifier.Object{
 					objectplanmodifier.RequiresReplace(),
 				},
@@ -97,16 +97,19 @@ func resourceSchema() schema.Schema {
 						},
 					},
 					"checksum": schema.StringAttribute{
-						Required: true,
-						MarkdownDescription: "Expected `sha256:<64-hex>` checksum. When `compression` is " +
-							"unset the host downloads directly and verifies the on-the-wire bytes " +
-							"against this value before the atomic rename; mismatch fails the apply " +
-							"with a clean diagnostic and the partial file is removed.\n\n" +
-							"When `compression` is set this is the SHA-256 of the **compressed** " +
-							"bytes (the form publishers ship in `SHA256SUMS` next to a `.gz` / " +
-							"`.xz` artifact). The provider verifies against the bytes the runner " +
-							"downloads, then decompresses; the on-disk sha256 you read back from " +
-							"`sha256` reflects the decompressed payload, not this value.",
+						Optional: true,
+						MarkdownDescription: "Optional `sha256:<64-hex>` checksum. When set and " +
+							"`compression` is unset, the host downloads directly and verifies the " +
+							"on-the-wire bytes against this value before the atomic rename; " +
+							"mismatch fails the apply with a clean diagnostic and the partial file " +
+							"is removed. When set and `compression` is set, this is the SHA-256 of " +
+							"the **compressed** bytes (the form publishers ship in `SHA256SUMS` " +
+							"next to a `.gz` / `.xz` artifact); the provider verifies against the " +
+							"bytes the runner downloads, then decompresses.\n\n" +
+							"When omitted the download is trusted (TLS-only) and the on-disk " +
+							"`sha256` computed attribute reports the actual hash for drift " +
+							"detection. Use this when no published checksum exists (e.g. Talos " +
+							"Image Factory's checksum endpoint is enterprise-tier only).",
 						Validators: []validator.String{
 							stringvalidator.RegexMatches(
 								regexp.MustCompile(`^sha256:[0-9a-fA-F]{64}$`),

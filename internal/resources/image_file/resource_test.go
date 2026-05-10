@@ -140,8 +140,9 @@ func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	}
 }
 
-// The url nested block requires both sub-attributes when present. The
-// schema-layer Required flag enforces this without a separate validator.
+// The url nested block requires its `url` sub-attribute when present.
+// `checksum` is optional -- when omitted the download is trusted (TLS-only)
+// and on-disk SHA still surfaces via the computed `sha256` attribute.
 func TestResource_Schema_URLSubAttributesRequired(t *testing.T) {
 	t.Parallel()
 
@@ -153,20 +154,24 @@ func TestResource_Schema_URLSubAttributesRequired(t *testing.T) {
 	if !ok {
 		t.Fatalf("url is not a SingleNestedAttribute (got %T)", resp.Schema.Attributes["url"])
 	}
-	for _, sub := range []string{"url", "checksum"} {
-		raw, ok := url.Attributes[sub]
-		if !ok {
-			t.Errorf("url block missing sub-attribute %q", sub)
-			continue
-		}
-		strAttr, ok := raw.(schema.StringAttribute)
-		if !ok {
-			t.Errorf("url.%s is not a StringAttribute (got %T)", sub, raw)
-			continue
-		}
-		if !strAttr.Required {
-			t.Errorf("url.%s must be Required (regex validators key on its presence)", sub)
-		}
+
+	urlAttr, ok := url.Attributes["url"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("url.url is not a StringAttribute (got %T)", url.Attributes["url"])
+	}
+	if !urlAttr.Required {
+		t.Errorf("url.url must be Required")
+	}
+
+	checksumAttr, ok := url.Attributes["checksum"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("url.checksum is not a StringAttribute (got %T)", url.Attributes["checksum"])
+	}
+	if !checksumAttr.Optional {
+		t.Errorf("url.checksum must be Optional (TLS-only trust when omitted)")
+	}
+	if checksumAttr.Required {
+		t.Errorf("url.checksum must not be Required")
 	}
 }
 
