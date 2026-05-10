@@ -96,6 +96,48 @@ Describe 'Set-HypervPortForward' {
                 $Profile -eq 'Domain'
             }
         }
+
+        It 'recreates the rule when firewall.enabled=true and the rule is absent (out-of-band delete recovery)' {
+            # Closes the loop the reviewer flagged: without this branch,
+            # Read reports enabled=false, terraform plans an Update,
+            # Update silently skips (because no rule existed to mutate),
+            # and the next refresh re-detects the same diff forever.
+            # Mocks: mapping reconciliation proceeds as usual; the
+            # firewall probe returns $null on the first call (rule
+            # absent), then a freshly-created rule on the read-back.
+            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Remove-NetNatStaticMapping { }
+            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Set-NetFirewallRule { }
+            $script:fwCallCount = 0
+            Mock Get-NetFirewallRule {
+                $script:fwCallCount++
+                if ($script:fwCallCount -eq 1) { return $null }
+                return New-HypervFirewallRuleSample -Profile 'Any'
+            }
+            Mock New-NetFirewallRule { }
+
+            Set-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' | Out-Null
+
+            Should -Invoke Set-NetFirewallRule -Times 0 -Exactly
+            Should -Invoke New-NetFirewallRule -Times 1 -Exactly -ParameterFilter {
+                $DisplayName -eq 'windsor-pf-tcp-80' -and
+                $Direction -eq 'Inbound' -and
+                $Action -eq 'Allow' -and
+                $Protocol -eq 'TCP' -and
+                $LocalPort -eq 80 -and
+                $Profile -eq 'Any'
+            }
+        }
     }
 
     Context 'Add-NetNatStaticMapping ERROR_DUP_NAME retry' {

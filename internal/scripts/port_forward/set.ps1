@@ -76,13 +76,20 @@ function Set-HypervPortForward {
             -ErrorAction Stop
     }
 
-    # Firewall rule mutation: Set-NetFirewallRule for in-place. The
-    # rule may not exist (firewall.enabled = false at create time, or
-    # removed out-of-band); Set fails with an opaque error in that
-    # case, so we probe with Get first and skip if absent. Creating
-    # the rule on first Set is out of scope -- if the user wants the
-    # rule, they should opt in at create time and Update can then
-    # mutate it.
+    # Firewall rule reconciliation:
+    #
+    #   firewall_enabled  rule exists  action
+    #   ----------------  -----------  ------------------------------
+    #   true              yes          Set-NetFirewallRule (mutate)
+    #   true              no           New-NetFirewallRule (recreate)
+    #   false             yes          Set -Enabled False (disable)
+    #   false             no           skip
+    #
+    # The "true + absent" branch is what closes the out-of-band-delete
+    # loop: without it, Read reports enabled=false, terraform plans an
+    # Update, Update silently skips, and the next refresh re-detects
+    # the same diff forever. Recreating mirrors new.ps1's create path
+    # parameter-for-parameter so the host-side shape stays uniform.
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -ne $existingFw) {
@@ -97,6 +104,21 @@ function Set-HypervPortForward {
             -Enabled $enabledValue `
             -Profile $FirewallProfile `
             -ErrorAction Stop
+    }
+    elseif ($FirewallEnabled) {
+        # No rollback on failure: set.ps1 has no rollback path for any
+        # of its operations (the mapping Remove+Add above also bubbles
+        # raw failures), and inventing one for just this branch would
+        # be inconsistent. A failed recreate surfaces an error to the
+        # operator and the next refresh re-detects the missing rule.
+        New-NetFirewallRule `
+            -DisplayName $FirewallName `
+            -Direction 'Inbound' `
+            -Action 'Allow' `
+            -Protocol $protocolUpper `
+            -LocalPort $ExternalPort `
+            -Profile $FirewallProfile `
+            -ErrorAction Stop | Out-Null
     }
 
     # Read-back. Re-probe the firewall to get the post-Set state.
