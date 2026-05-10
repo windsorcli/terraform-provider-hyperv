@@ -25,6 +25,7 @@ import (
 	dsvswitch "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vswitch"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/port_forward"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vhd"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vm"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
@@ -315,6 +316,13 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
+	// Enroll for signal-driven shutdown in main. The Configure ctx
+	// can't carry the cleanup hook itself -- it cancels when this
+	// handler returns, which would close the connection we just
+	// opened. The package-level registry survives the handler and is
+	// drained by CloseActive on SIGINT/SIGTERM.
+	registerActive(conn)
+
 	tflog.Info(ctx, "provider configured", map[string]any{
 		"backend": conn.Backend(),
 	})
@@ -333,6 +341,7 @@ func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource
 		image_file.New,
 		vhd.New,
 		vm.New,
+		port_forward.New,
 	}
 }
 

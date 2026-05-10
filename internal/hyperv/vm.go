@@ -25,7 +25,7 @@ func (c *Client) GetVM(ctx context.Context, name string) (*VM, error) {
 	}
 
 	var v VM
-	if err := c.runScript(ctx, body, stdin, &v); err != nil {
+	if err := c.runReadScript(ctx, body, stdin, &v); err != nil {
 		return nil, err
 	}
 	return &v, nil

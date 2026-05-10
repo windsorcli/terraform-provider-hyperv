@@ -58,15 +58,18 @@ func TestProvider_Resources(t *testing.T) {
 	// slice: url + host_path + local_path + literal_bytes source modes) +
 	// hyperv_vhd (PLAN M4: fixed/dynamic/differencing) + hyperv_vm
 	// (PLAN M4 minimal: name/generation/vcpu/memory_bytes/secure_boot/
-	// notes). Pin the count so accidental wiring of additional resources
-	// doesn't slip in unnoticed before their schema is reviewed.
+	// notes) + hyperv_port_forward (PLAN M6: NetNatStaticMapping +
+	// optional NetFirewallRule, paired with hyperv_virtual_switch's
+	// NAT type). Pin the count so accidental wiring of additional
+	// resources doesn't slip in unnoticed before their schema is
+	// reviewed.
 	//
 	// Iso9660 synthesis lives in `data.hyperv_iso_volume` (a data source,
 	// not a managed resource); the placement primitive is image_file's
 	// literal_bytes mode. This split happened mid-PR after the original
 	// hyperv_iso_volume managed resource was judged a hacky workaround.
-	if len(got) != 4 {
-		t.Errorf("got %d resources, want 4 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm)", len(got))
+	if len(got) != 5 {
+		t.Errorf("got %d resources, want 5 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm, hyperv_port_forward)", len(got))
 	}
 }
 

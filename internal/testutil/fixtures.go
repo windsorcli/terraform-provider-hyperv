@@ -44,6 +44,26 @@ const VMSwitchPrivateFixtureJSON = `{
 	"NatHostAddress": ""
 }`
 
+// PortForwardTCPFixtureJSON is the canonical eleven-field shape that
+// port_forward/{get,new,set}.ps1 emit. Locked by the Pester contract;
+// single source of truth across the typed-client and resource-layer
+// suites. Composite Id encodes (NatName:Protocol:ExternalIP:ExternalPort)
+// with lowercase protocol; the structured Protocol field is uppercase
+// because that's what Get-NetNatStaticMapping reports natively.
+const PortForwardTCPFixtureJSON = `{
+	"Id": "windsor-nat:tcp:0.0.0.0:80",
+	"StaticMappingId": 1,
+	"NatName": "windsor-nat",
+	"Protocol": "TCP",
+	"ExternalIPAddress": "0.0.0.0",
+	"ExternalPort": 80,
+	"InternalIPAddress": "192.168.100.10",
+	"InternalPort": 30080,
+	"FirewallRulePresent": true,
+	"FirewallRuleName": "windsor-pf-tcp-80",
+	"FirewallRuleProfile": "Any"
+}`
+
 // VMSwitchNATFixtureJSON is the NAT-switch variant. SwitchType is the
 // synthesized "NAT" string (not Hyper-V's underlying Internal enum value);
 // NatName / NatInternalAddressPrefix / NatHostAddress are populated. Used

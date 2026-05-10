@@ -65,14 +65,26 @@ type SSHOptions struct {
 	// "powershell.exe" -- universally available on Windows. Set to "pwsh"
 	// or "pwsh.exe" to prefer PS 7+ if installed.
 	PwshPath string
+
+	// MaxConcurrentSessions caps the number of in-flight RunScript calls
+	// against the persistent ssh.Client. OpenSSH's per-connection
+	// MaxSessions limit (default 10, often 4-6 on hardened Windows
+	// builds) rejects late session opens with "rejected: connect failed
+	// (open failed)" once exceeded. Default 4 stays well under typical
+	// Windows OpenSSH caps; raise it on hosts with sshd_config tuned
+	// upward, lower it if the bench surfaces the error under heavier
+	// fanout. Set to 0 to use the default; negative values disable the
+	// cap entirely (not recommended).
+	MaxConcurrentSessions int
 }
 
 const (
-	defaultSSHPort              = 22
-	defaultSSHTimeout           = 30 * time.Second
-	defaultSSHCommandTimeout    = 5 * time.Minute
-	defaultSSHKeepaliveInterval = 30 * time.Second
-	defaultSSHPwshPath          = "powershell.exe"
+	defaultSSHPort                  = 22
+	defaultSSHTimeout               = 30 * time.Second
+	defaultSSHCommandTimeout        = 5 * time.Minute
+	defaultSSHKeepaliveInterval     = 30 * time.Second
+	defaultSSHPwshPath              = "powershell.exe"
+	defaultSSHMaxConcurrentSessions = 4
 )
 
 // sshBackend implements Connection over a single persistent ssh.Client. The
@@ -94,6 +106,13 @@ type sshBackend struct {
 	// entry and lazy-reconnects. Atomic so the keepalive goroutine
 	// can update without acquiring mu.
 	alive atomic.Bool
+
+	// sem caps in-flight RunScript calls so the SSH backend stays
+	// under OpenSSH's per-connection MaxSessions limit. Acquired at
+	// the top of RunScript, released on return -- bounds both the
+	// SCP staging session and the main exec session within one slot.
+	// nil means uncapped (MaxConcurrentSessions < 0).
+	sem chan struct{}
 }
 
 // Compile-time assertion.
@@ -145,6 +164,15 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 		pwshPath = defaultSSHPwshPath
 	}
 
+	maxSessions := opts.MaxConcurrentSessions
+	if maxSessions == 0 {
+		maxSessions = defaultSSHMaxConcurrentSessions
+	}
+	var sem chan struct{}
+	if maxSessions > 0 {
+		sem = make(chan struct{}, maxSessions)
+	}
+
 	cfg := &ssh.ClientConfig{
 		User:            opts.Username,
 		Auth:            auths,
@@ -154,16 +182,18 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 
 	return &sshBackend{
 		opts: SSHOptions{
-			Host:              opts.Host,
-			Port:              port,
-			Username:          opts.Username,
-			PwshPath:          pwshPath,
-			Timeout:           timeout,
-			CommandTimeout:    commandTimeout,
-			KeepaliveInterval: keepalive,
+			Host:                  opts.Host,
+			Port:                  port,
+			Username:              opts.Username,
+			PwshPath:              pwshPath,
+			Timeout:               timeout,
+			CommandTimeout:        commandTimeout,
+			KeepaliveInterval:     keepalive,
+			MaxConcurrentSessions: maxSessions,
 		},
 		config: cfg,
 		addr:   net.JoinHostPort(opts.Host, strconv.Itoa(port)),
+		sem:    sem,
 	}, nil
 }
 
@@ -283,6 +313,58 @@ func (b *sshBackend) reconnect(ctx context.Context) error {
 	return b.Open(ctx)
 }
 
+// newSessionWithRetry opens an ssh.Session with bounded retry on the
+// transient "rejected: connect failed (open failed)" failure that
+// OpenSSH returns when the per-connection MaxSessions cap is reached.
+// The cap is concurrent, not cumulative, so a short backoff usually
+// finds free capacity once peer sessions close. Backoff schedule
+// 250ms, 500ms, 1s, 2s -- 5 attempts total cap at ~3.75s of waiting
+// before the failure bubbles. NewSession itself is read-only on the
+// remote (no cmdlet executes until Start/Run is called), so retry is
+// safe regardless of script idempotency. ctx cancellation aborts the
+// wait promptly.
+func newSessionWithRetry(ctx context.Context, client *ssh.Client) (*ssh.Session, error) {
+	delays := []time.Duration{
+		250 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+		2 * time.Second,
+	}
+	var lastErr error
+	for attempt := 0; attempt <= len(delays); attempt++ {
+		s, err := client.NewSession()
+		if err == nil {
+			return s, nil
+		}
+		if !isSessionRejected(err) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt == len(delays) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("ssh: wait for session capacity: %w", ctx.Err())
+		case <-time.After(delays[attempt]):
+		}
+	}
+	return nil, fmt.Errorf("ssh: open session after %d attempts: %w", len(delays)+1, lastErr)
+}
+
+// isSessionRejected returns true for the OpenSSH "rejected: connect
+// failed (open failed)" error that surfaces from NewSession when the
+// server hits its MaxSessions cap. Match on the error-string
+// substring rather than the concrete *ssh.OpenChannelError type --
+// crypto/ssh has shifted the wrapping shape across releases, and the
+// "open failed" suffix is the stable signal across all of them.
+func isSessionRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "open failed")
+}
+
 // Healthcheck runs a trivial PowerShell round-trip to confirm the dial
 // succeeded, the auth worked, and pwsh launches on the remote.
 func (b *sshBackend) Healthcheck(ctx context.Context) error {
@@ -314,6 +396,21 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 		return Result{}, errors.New("ssh: backend not open -- call Open first")
 	}
 
+	// Cap in-flight sessions so the backend stays under the bench's
+	// per-connection MaxSessions limit. The slot covers SCP staging,
+	// the main exec session, and the deferred cleanup -- they run
+	// sequentially within one RunScript, so one slot = one concurrent
+	// SSH session against the server. Honor ctx so a canceled apply
+	// doesn't wedge waiting on a slot.
+	if b.sem != nil {
+		select {
+		case b.sem <- struct{}{}:
+			defer func() { <-b.sem }()
+		case <-ctx.Done():
+			return Result{}, fmt.Errorf("ssh: wait for session slot: %w", ctx.Err())
+		}
+	}
+
 	// Lazy reconnect if keepalive saw a dead client. Never retry
 	// mid-call -- see reconnect's docstring.
 	if !b.alive.Load() {
@@ -340,7 +437,7 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 	}
 	defer cleanup()
 
-	session, err := client.NewSession()
+	session, err := newSessionWithRetry(ctx, client)
 	if err != nil {
 		return Result{}, fmt.Errorf("ssh: open session: %w", err)
 	}
@@ -460,26 +557,99 @@ func stageScript(ctx context.Context, client *ssh.Client, script string) (string
 // serves (multi-MB to multi-GB files), an io.Copy chunk completes well
 // inside any user-perceptible delay.
 func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName string, size int64, body io.Reader) error {
-	session, err := client.NewSession()
+	session, err := newSessionWithRetry(ctx, client)
 	if err != nil {
 		return fmt.Errorf("ssh: open scp session: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
+	// Use *Pipe accessors rather than session.Stdin/Stdout/Stderr
+	// assignment. The library only spawns its internal copy goroutines
+	// for the latter; with all three fields bound to pipes there is
+	// nothing to drain, so we never call session.Wait (and don't hit
+	// the Windows-OpenSSH wedge where the server occasionally fails to
+	// send SSH_MSG_CHANNEL_EOF after exit-status). Reading the SCP
+	// protocol's ACK bytes synchronously gives us the same delivery
+	// guarantee Wait would have, without needing the channel to be
+	// torn down by the server.
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("ssh: scp stdin pipe: %w", err)
 	}
-	var scpStderr bytes.Buffer
-	session.Stderr = &scpStderr
+	stdoutPipe, err := session.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("ssh: scp stdout pipe: %w", err)
+	}
+	// StderrPipe is called for its side effect only: it sets the
+	// session's stderrpipe flag, which suppresses the default
+	// io.Copy(io.Discard, channel.Stderr()) goroutine the library
+	// would otherwise spawn. That goroutine reads until EOF; on the
+	// Windows-OpenSSH wedge (no EOF after exit-status) it parks
+	// forever -- the same deadlock pattern we just dismantled for
+	// stdout. Returning the channel directly here means no goroutine
+	// gets created, and the unread bytes just sit in the channel
+	// buffer until the deferred session.Close drops them.
+	if _, err := session.StderrPipe(); err != nil {
+		return fmt.Errorf("ssh: scp stderr pipe: %w", err)
+	}
 
 	if err := session.Start(scpStartCmd(remoteDir)); err != nil {
 		return fmt.Errorf("ssh: scp start: %w", err)
 	}
 
+	// Each ACK read is wrapped against ctx so a wedged SCP never
+	// blocks the goroutine indefinitely -- closing the session on
+	// ctx-fire causes the read to return EOF/error promptly. scp -t
+	// emits three ACKs in sequence: initial-ready, post-header,
+	// post-body terminator. 0x00 = OK, 0x01 = warning + textual
+	// message until \n, 0x02 = fatal + textual message.
+	readAck := func(stage string) error {
+		var b [1]byte
+		ackErr := make(chan error, 1)
+		go func() {
+			_, err := io.ReadFull(stdoutPipe, b[:])
+			ackErr <- err
+		}()
+		select {
+		case err := <-ackErr:
+			if err != nil {
+				return fmt.Errorf("ssh: scp %s ack read: %w", stage, err)
+			}
+		case <-ctx.Done():
+			_ = session.Close()
+			return fmt.Errorf("ssh: scp %s canceled: %w", stage, ctx.Err())
+		}
+		if b[0] == 0 {
+			return nil
+		}
+		// Read the textual error message (warning/fatal) up to \n.
+		// Bound the message length so a misbehaving server can't
+		// stream gigabytes into our memory.
+		const maxMsg = 4096
+		msg := make([]byte, 0, 64)
+		for len(msg) < maxMsg {
+			var c [1]byte
+			if _, err := io.ReadFull(stdoutPipe, c[:]); err != nil {
+				break
+			}
+			if c[0] == '\n' {
+				break
+			}
+			msg = append(msg, c[0])
+		}
+		return fmt.Errorf("ssh: scp %s ack=0x%02x msg=%q", stage, b[0], string(msg))
+	}
+
+	if err := readAck("initial"); err != nil {
+		return err
+	}
+
 	// SCP sink protocol: `Cmmmm <size> <name>\n` then bytes then `\0`.
 	if _, err := fmt.Fprintf(stdinPipe, "C0644 %d %s\n", size, remoteName); err != nil {
 		return fmt.Errorf("ssh: scp header: %w", err)
+	}
+	if err := readAck("header"); err != nil {
+		return err
 	}
 	if _, err := io.Copy(stdinPipe, body); err != nil {
 		return fmt.Errorf("ssh: scp body: %w", err)
@@ -487,20 +657,10 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 	if _, err := stdinPipe.Write([]byte{0}); err != nil {
 		return fmt.Errorf("ssh: scp eof: %w", err)
 	}
-	_ = stdinPipe.Close()
-
-	waitErr := make(chan error, 1)
-	go func() { waitErr <- session.Wait() }()
-	select {
-	case err := <-waitErr:
-		if err != nil {
-			return fmt.Errorf("ssh: scp wait: %w (stderr=%s)", err, scpStderr.String())
-		}
-	case <-ctx.Done():
-		_ = session.Close()
-		<-waitErr
-		return fmt.Errorf("ssh: scp canceled: %w", ctx.Err())
+	if err := readAck("body"); err != nil {
+		return err
 	}
+	_ = stdinPipe.Close()
 	return nil
 }
 
