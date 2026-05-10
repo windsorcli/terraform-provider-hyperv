@@ -83,7 +83,12 @@ function Set-NetFirewallRule {
     [CmdletBinding()]
     param(
         [string] $DisplayName,
-        [bool]   $Enabled,
+        # Production cmdlet's -Enabled binds to the
+        # Microsoft.PowerShell.Cmdletization.GeneratedTypes.NetSecurity.Enabled
+        # enum whose string values are "True" and "False" -- NOT to
+        # [bool]. Stub mirrors the string surface so production code's
+        # `-Enabled "True"` form binds cleanly under Pester.
+        [string] $Enabled,
         [string] $Profile
     )
 }

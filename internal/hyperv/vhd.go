@@ -55,7 +55,7 @@ func (c *Client) GetVHD(ctx context.Context, path string) (*VHD, error) {
 	}
 
 	var v VHD
-	if err := c.runScript(ctx, string(body), stdin, &v); err != nil {
+	if err := c.runReadScript(ctx, string(body), stdin, &v); err != nil {
 		return nil, err
 	}
 	return &v, nil

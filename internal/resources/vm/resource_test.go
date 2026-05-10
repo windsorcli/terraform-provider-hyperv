@@ -1244,6 +1244,83 @@ func TestModelFromVM_BootOrderRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReconcileBootOrderState pins the rule that state-after-apply
+// reflects the user's planned set of boot entries, not whatever extras
+// Hyper-V's Get-VMFirmware happens to emit. Without this filter, the
+// framework raises "Provider produced inconsistent result after apply:
+// .boot_order: new element N has appeared" when the host enumerates a
+// Drive/Network entry the user didn't declare (auto-added on first
+// boot, residual from a prior order, etc.).
+func TestReconcileBootOrderState(t *testing.T) {
+	t.Parallel()
+
+	hdd := func(num, loc int64) BootOrderEntryModel {
+		return BootOrderEntryModel{
+			Type:               types.StringValue("hard_disk_drive"),
+			ControllerType:     types.StringValue("SCSI"),
+			ControllerNumber:   types.Int64Value(num),
+			ControllerLocation: types.Int64Value(loc),
+			Name:               types.StringNull(),
+		}
+	}
+	nic := func(name string) BootOrderEntryModel {
+		return BootOrderEntryModel{
+			Type:               types.StringValue("network_adapter"),
+			ControllerType:     types.StringNull(),
+			ControllerNumber:   types.Int64Null(),
+			ControllerLocation: types.Int64Null(),
+			Name:               types.StringValue(name),
+		}
+	}
+
+	cases := []struct {
+		name string
+		plan []BootOrderEntryModel
+		host []BootOrderEntryModel
+		want []BootOrderEntryModel
+	}{
+		{
+			name: "empty plan collapses host to empty (user not managing)",
+			plan: nil,
+			host: []BootOrderEntryModel{hdd(0, 0), nic("primary")},
+			want: nil,
+		},
+		{
+			name: "host has extra entry the user did not declare -- drop it",
+			plan: []BootOrderEntryModel{hdd(0, 0), nic("primary")},
+			host: []BootOrderEntryModel{hdd(0, 0), nic("primary"), hdd(0, 1)},
+			want: []BootOrderEntryModel{hdd(0, 0), nic("primary")},
+		},
+		{
+			name: "host order differs from plan -- preserve host order so drift surfaces",
+			plan: []BootOrderEntryModel{hdd(0, 0), nic("primary")},
+			host: []BootOrderEntryModel{nic("primary"), hdd(0, 0)},
+			want: []BootOrderEntryModel{nic("primary"), hdd(0, 0)},
+		},
+		{
+			name: "user-declared entry vanished from host -- drop from state, next plan re-adds",
+			plan: []BootOrderEntryModel{hdd(0, 0), nic("primary")},
+			host: []BootOrderEntryModel{hdd(0, 0)},
+			want: []BootOrderEntryModel{hdd(0, 0)},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := reconcileBootOrderState(tc.plan, tc.host)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d entries, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if !bootOrderEntryEquals(got[i], tc.want[i]) {
+					t.Errorf("entry %d: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestModelFromVM_DvdDrivesEmptyPathBecomesNull: cmdlet's "" Path on a
 // drive with no medium loaded collapses to schema-null IsoPath, so a
 // user's plan that omits iso_path matches state cleanly.

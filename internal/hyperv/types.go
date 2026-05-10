@@ -85,6 +85,90 @@ type SetVMSwitchInput struct {
 	NatName           string   `json:"nat_name,omitempty"`
 }
 
+// PortForward is the canonical eleven-field read shape emitted by
+// port_forward/{get,new,set}.ps1. Composite Id encodes the lookup
+// tuple (NatName:Protocol:ExternalIPAddress:ExternalPort) lowercase
+// for stable cross-tool interop; Protocol on the rest of the struct
+// is uppercase (TCP / UDP) because that's what Get-NetNatStaticMapping
+// reports natively. StaticMappingID is the Hyper-V-assigned opaque
+// identifier; it changes whenever the mapping is recreated (Set on
+// internal_ip/internal_port is Remove + Add under the hood).
+type PortForward struct {
+	ID                  string `json:"Id"`
+	StaticMappingID     int    `json:"StaticMappingId"`
+	NatName             string `json:"NatName"`
+	Protocol            string `json:"Protocol"`
+	ExternalIPAddress   string `json:"ExternalIPAddress"`
+	ExternalPort        int    `json:"ExternalPort"`
+	InternalIPAddress   string `json:"InternalIPAddress"`
+	InternalPort        int    `json:"InternalPort"`
+	FirewallRulePresent bool   `json:"FirewallRulePresent"`
+	FirewallRuleName    string `json:"FirewallRuleName"`
+	FirewallRuleProfile string `json:"FirewallRuleProfile"`
+}
+
+// PortForwardFirewallInput is the nested firewall block's wire shape
+// for new.ps1 / set.ps1. Defaulting (enabled=true, derived name,
+// profile=Any) lives on the resource layer; this struct carries the
+// already-resolved values to the script.
+type PortForwardFirewallInput struct {
+	Enabled bool   `json:"enabled"`
+	Name    string `json:"name"`
+	Profile string `json:"profile"`
+}
+
+// NewPortForwardInput is the stdin JSON shape for port_forward/new.ps1.
+// All mapping fields are required; firewall is required as a nested
+// object (resource defaults populate it before reaching the wire).
+type NewPortForwardInput struct {
+	NatName           string                   `json:"nat_name"`
+	Protocol          string                   `json:"protocol"`
+	ExternalIPAddress string                   `json:"external_ip"`
+	ExternalPort      int                      `json:"external_port"`
+	InternalIPAddress string                   `json:"internal_ip"`
+	InternalPort      int                      `json:"internal_port"`
+	Firewall          PortForwardFirewallInput `json:"firewall"`
+}
+
+// SetPortForwardInput is the stdin JSON shape for port_forward/set.ps1.
+// Same shape as NewPortForwardInput -- set.ps1 looks up the existing
+// mapping by tuple (nat_name + protocol + external_ip + external_port)
+// then mutates internal_ip/internal_port via Remove + Add and the
+// firewall via Set-NetFirewallRule. The lookup tuple is RequiresReplace
+// at the schema layer; Update only fires when internal_* or firewall.*
+// changes.
+type SetPortForwardInput struct {
+	NatName           string                   `json:"nat_name"`
+	Protocol          string                   `json:"protocol"`
+	ExternalIPAddress string                   `json:"external_ip"`
+	ExternalPort      int                      `json:"external_port"`
+	InternalIPAddress string                   `json:"internal_ip"`
+	InternalPort      int                      `json:"internal_port"`
+	Firewall          PortForwardFirewallInput `json:"firewall"`
+}
+
+// GetPortForwardInput is the stdin JSON shape for port_forward/get.ps1
+// and port_forward/remove.ps1. The lookup tuple uniquely identifies a
+// mapping; firewall_name is needed alongside because the firewall rule
+// is keyed by DisplayName, not derived from the mapping itself.
+type GetPortForwardInput struct {
+	NatName           string `json:"nat_name"`
+	Protocol          string `json:"protocol"`
+	ExternalIPAddress string `json:"external_ip"`
+	ExternalPort      int    `json:"external_port"`
+	FirewallName      string `json:"firewall_name"`
+}
+
+// RemovePortForwardInput mirrors GetPortForwardInput -- destroy needs
+// the same lookup tuple plus the firewall display name.
+type RemovePortForwardInput struct {
+	NatName           string `json:"nat_name"`
+	Protocol          string `json:"protocol"`
+	ExternalIPAddress string `json:"external_ip"`
+	ExternalPort      int    `json:"external_port"`
+	FirewallName      string `json:"firewall_name"`
+}
+
 // ImageFile is the canonical read shape emitted by image_file/{get,new}.ps1.
 // Sha256 is lowercase hex (the wire contract); SizeBytes is int64 because
 // VHDX/ISO files routinely exceed 2^31 bytes.

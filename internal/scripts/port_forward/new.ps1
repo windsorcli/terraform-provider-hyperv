@@ -23,6 +23,33 @@
 # NetNat instance. Without the precondition, Add-NetNatStaticMapping
 # fails with an opaque "no NAT" message that obscures the dependency.
 
+# Invoke-WithDupNameRetry retries $Action on the transient Win32
+# ERROR_DUP_NAME (HRESULT 0x80070034) that Add-NetNatStaticMapping's
+# underlying NetSetup/WMI layer occasionally surfaces under concurrent
+# pressure on Server 2016+. The cmdlet is idempotent on retry -- the
+# duplicate-name signal is layer-below misreporting, not a real
+# collision. Backoff schedule 250ms, 500ms, 1s caps total wait at
+# ~1.75s before bubbling up. Anything not matching the signature
+# re-throws on the first attempt.
+function Invoke-WithDupNameRetry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [scriptblock] $Action
+    )
+    $delays = @(250, 500, 1000)
+    for ($attempt = 0; $attempt -le $delays.Length; $attempt++) {
+        try {
+            return & $Action
+        }
+        catch {
+            $isTransient = ($_.Exception.HResult -eq -2147024844) -or
+                           ($_.Exception.Message -match 'ERROR_DUP_NAME|duplicate name')
+            if (-not $isTransient -or $attempt -ge $delays.Length) { throw }
+            Start-Sleep -Milliseconds $delays[$attempt]
+        }
+    }
+}
+
 # New-HypervPortForward provisions Add-NetNatStaticMapping, then
 # (optionally) New-NetFirewallRule. On firewall failure, the static
 # mapping is rolled back -- otherwise an orphan mapping would survive
@@ -57,15 +84,18 @@ function New-HypervPortForward {
 
     # Add the static mapping. The cmdlet returns the mapping with a
     # fresh StaticMappingID Hyper-V assigns -- we capture it for the
-    # rollback path and the read shape.
-    $mapping = Add-NetNatStaticMapping `
-        -NatName $NatName `
-        -Protocol $protocolUpper `
-        -ExternalIPAddress $ExternalIPAddress `
-        -ExternalPort $ExternalPort `
-        -InternalIPAddress $InternalIPAddress `
-        -InternalPort $InternalPort `
-        -ErrorAction Stop
+    # rollback path and the read shape. Wrapped in dup-name retry to
+    # absorb the Win32 0x34 transient (see Invoke-WithDupNameRetry).
+    $mapping = Invoke-WithDupNameRetry {
+        Add-NetNatStaticMapping `
+            -NatName $NatName `
+            -Protocol $protocolUpper `
+            -ExternalIPAddress $ExternalIPAddress `
+            -ExternalPort $ExternalPort `
+            -InternalIPAddress $InternalIPAddress `
+            -InternalPort $InternalPort `
+            -ErrorAction Stop
+    }
 
     # Rollback on partial-failure. New-NetFirewallRule landing after
     # Add-NetNatStaticMapping, then failing, would otherwise leave an
@@ -76,7 +106,11 @@ function New-HypervPortForward {
     # discard inside each cleanup catch satisfies PSScriptAnalyzer's
     # PSAvoidUsingEmptyCatchBlock the same way vswitch/new.ps1's
     # rollback does.
-    $firewallCreated = $false
+    #
+    # Asymmetry with vswitch/new.ps1's NAT rollback: only the static
+    # mapping needs cleanup. If New-NetFirewallRule throws, the rule
+    # never landed (the cmdlet doesn't partial-create), so there's
+    # nothing to remove on the firewall side.
     try {
         if ($FirewallEnabled) {
             New-NetFirewallRule `
@@ -87,7 +121,6 @@ function New-HypervPortForward {
                 -LocalPort $ExternalPort `
                 -Profile $FirewallProfile `
                 -ErrorAction Stop | Out-Null
-            $firewallCreated = $true
         }
     }
     catch {
@@ -99,33 +132,30 @@ function New-HypervPortForward {
 
     # Read-back: project the canonical eleven-field shape. Composite Id
     # uses lowercase protocol so it matches the schema's `protocol`
-    # attribute and the input the user typed. FirewallRulePresent is
-    # whatever Get-NetFirewallRule actually finds -- captures the
-    # firewall.enabled=false case (rule not created) and the case where
-    # Get-NetFirewallRule disagrees with our $firewallCreated state.
-    $existingFw = if ($FirewallEnabled) {
-        Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-    } else { $null }
+    # attribute and the input the user typed. FirewallRulePresent and
+    # FirewallRuleProfile come from a Get-NetFirewallRule re-probe,
+    # symmetric with get.ps1 / set.ps1 -- the host's actual rule state
+    # is the source of truth, not the input the caller passed. Without
+    # this round-trip the firewall.enabled=false + non-default profile
+    # config produces a state that disagrees with what Read returns on
+    # the next refresh.
+    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
+        Select-Object -First 1
     $firewallPresent = $null -ne $existingFw
-    # Avoid the unused-variable lint hit -- $firewallCreated is
-    # captured for the rollback path, not the read-back. Reading it
-    # here keeps PSReviewUnusedAssignment quiet without changing
-    # behavior.
-    $null = $firewallCreated
+    $firewallProfile = if ($firewallPresent) { $existingFw.Profile.ToString() } else { '' }
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
-        StaticMappingId     = $mapping.StaticMappingID
+        StaticMappingId     = [int]$mapping.StaticMappingID
         NatName             = $NatName
         Protocol            = $protocolUpper
         ExternalIPAddress   = $ExternalIPAddress
-        ExternalPort        = $ExternalPort
+        ExternalPort        = [int]$ExternalPort
         InternalIPAddress   = $InternalIPAddress
-        InternalPort        = $InternalPort
-        FirewallRulePresent = $firewallPresent
+        InternalPort        = [int]$InternalPort
+        FirewallRulePresent = [bool]$firewallPresent
         FirewallRuleName    = $FirewallName
-        FirewallRuleProfile = $FirewallProfile
+        FirewallRuleProfile = $firewallProfile
     } | Write-HypervResult
 }
 

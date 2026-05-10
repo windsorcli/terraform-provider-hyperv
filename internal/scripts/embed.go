@@ -44,6 +44,20 @@ func VswitchScript(verb string) ([]byte, error) {
 	return Vswitch.ReadFile("vswitch/" + verb + ".ps1")
 }
 
+// PortForward holds the four verb scripts for hyperv_port_forward.
+// Mirrors the Vswitch FS shape -- four CRUD verbs, Pester *.Tests.ps1
+// and the _test_helpers.ps1 stub file are deliberately excluded from
+// the embed glob.
+//
+//go:embed port_forward/get.ps1 port_forward/new.ps1 port_forward/set.ps1 port_forward/remove.ps1
+var PortForward embed.FS
+
+// PortForwardScript returns the contents of port_forward/<verb>.ps1
+// (verb in {get, new, set, remove}).
+func PortForwardScript(verb string) ([]byte, error) {
+	return PortForward.ReadFile("port_forward/" + verb + ".ps1")
+}
+
 // ImageFile holds the verb scripts for hyperv_image_file (M4). No "set"
 // verb -- every image_file schema field is RequiresReplace, so Update is a
 // Go-side no-op with no PS round-trip.

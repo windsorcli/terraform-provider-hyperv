@@ -1624,25 +1624,47 @@ func reconcileStateBlock(planState, hostState *StateModel) *StateModel {
 }
 
 // reconcileBootOrderState picks what BootOrder to write to state after
-// Create / Update / Read. Two-rule semantics:
+// Create / Update / Read. Three-rule semantics:
 //
-//   - When the user is managing boot_order (plan is non-empty), state
-//     gets the actual order from the host (live drift detection).
 //   - When the user is not managing (plan empty -- Default applied),
 //     state matches plan (also empty). Without this collapse, the
 //     framework's "inconsistent result after apply" check would fire:
 //     plan = [] but the host always has a non-empty order, so the
 //     fresh modelFromVM result would mismatch.
+//   - When managing, state gets the host's entries filtered to those
+//     that semantically match an entry the user planned. Filtering by
+//     plan (not by raw host) avoids the "Provider produced inconsistent
+//     result after apply" diagnostic on `.boot_order: new element N has
+//     appeared`: Hyper-V's Get-VMFirmware can return Drive/Network
+//     entries we never set (auto-enumerated boot devices, residual
+//     entries the cmdlet didn't drop, or entries added by the guest
+//     firmware on first boot).
+//   - Host order is preserved among the kept entries, so a manual
+//     reorder on the host surfaces as drift on the next refresh; a
+//     user-listed entry that vanished from the host gets dropped from
+//     state (next plan re-adds it from config).
 //
 // The cost: when not managing, terraform refresh / plan don't surface
 // the actual host order. Acceptable trade-off given the cmdlet
 // requires a non-empty list anyway, and most users either manage
-// boot_order or don't care about it.
+// boot_order or don't care about it. Out-of-band entries the user
+// didn't declare are also ignored -- they're not the user's to
+// manage and conflating them with state would re-introduce the
+// inconsistent-result failure.
 func reconcileBootOrderState(planBootOrder, hostBootOrder []BootOrderEntryModel) []BootOrderEntryModel {
 	if !shouldApplyBootOrder(planBootOrder) {
 		return planBootOrder
 	}
-	return hostBootOrder
+	out := make([]BootOrderEntryModel, 0, len(hostBootOrder))
+	for _, h := range hostBootOrder {
+		for _, p := range planBootOrder {
+			if bootOrderEntryEquals(h, p) {
+				out = append(out, h)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // setBootOrderInputFor projects the planned BootOrder list into the

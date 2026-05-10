@@ -67,18 +67,23 @@ function Get-HypervPortForward {
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
     $firewallPresent = $null -ne $existingFw
-    $firewallProfile = if ($firewallPresent) { $existingFw.Profile } else { '' }
+    # Get-NetFirewallRule reports Profile as a flags enum (Any=0,
+    # Domain=1, Private=2, Public=4, or comma-joined for multi-profile
+    # rules). ToString() yields the named form ("Any", "Domain",
+    # "Domain, Private", etc.); without it the projection emits the
+    # numeric int and the typed client fails to decode the string field.
+    $firewallProfile = if ($firewallPresent) { $existingFw.Profile.ToString() } else { '' }
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
-        StaticMappingId     = $mapping.StaticMappingID
+        StaticMappingId     = [int]$mapping.StaticMappingID
         NatName             = $NatName
         Protocol            = $protocolUpper
         ExternalIPAddress   = $mapping.ExternalIPAddress
-        ExternalPort        = $mapping.ExternalPort
+        ExternalPort        = [int]$mapping.ExternalPort
         InternalIPAddress   = $mapping.InternalIPAddress
-        InternalPort        = $mapping.InternalPort
-        FirewallRulePresent = $firewallPresent
+        InternalPort        = [int]$mapping.InternalPort
+        FirewallRulePresent = [bool]$firewallPresent
         FirewallRuleName    = $FirewallName
         FirewallRuleProfile = $firewallProfile
     } | Write-HypervResult

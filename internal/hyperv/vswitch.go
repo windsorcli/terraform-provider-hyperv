@@ -57,7 +57,7 @@ func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwit
 	}
 
 	var sw VMSwitch
-	if err := c.runScript(ctx, string(body), stdin, &sw); err != nil {
+	if err := c.runReadScript(ctx, string(body), stdin, &sw); err != nil {
 		return nil, err
 	}
 	return &sw, nil

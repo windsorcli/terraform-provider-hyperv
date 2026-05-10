@@ -15,6 +15,33 @@
 # The firewall rule, by contrast, has Set-NetFirewallRule for in-place
 # mutation of Enabled / Profile.
 
+# Invoke-WithDupNameRetry retries $Action on the transient Win32
+# ERROR_DUP_NAME (HRESULT 0x80070034) that Add-NetNatStaticMapping's
+# underlying NetSetup/WMI layer occasionally surfaces under concurrent
+# pressure on Server 2016+. The cmdlet is idempotent on retry -- the
+# duplicate-name signal is layer-below misreporting, not a real
+# collision. Backoff schedule 250ms, 500ms, 1s caps total wait at
+# ~1.75s before bubbling up. Anything not matching the signature
+# re-throws on the first attempt.
+function Invoke-WithDupNameRetry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [scriptblock] $Action
+    )
+    $delays = @(250, 500, 1000)
+    for ($attempt = 0; $attempt -le $delays.Length; $attempt++) {
+        try {
+            return & $Action
+        }
+        catch {
+            $isTransient = ($_.Exception.HResult -eq -2147024844) -or
+                           ($_.Exception.Message -match 'ERROR_DUP_NAME|duplicate name')
+            if (-not $isTransient -or $attempt -ge $delays.Length) { throw }
+            Start-Sleep -Milliseconds $delays[$attempt]
+        }
+    }
+}
+
 function Set-HypervPortForward {
     [CmdletBinding()]
     param(
@@ -61,14 +88,16 @@ function Set-HypervPortForward {
     # changes whenever the mapping is recreated.
     Remove-NetNatStaticMapping -StaticMappingID $existing.StaticMappingID `
         -Confirm:$false -ErrorAction Stop
-    $mapping = Add-NetNatStaticMapping `
-        -NatName $NatName `
-        -Protocol $protocolUpper `
-        -ExternalIPAddress $ExternalIPAddress `
-        -ExternalPort $ExternalPort `
-        -InternalIPAddress $InternalIPAddress `
-        -InternalPort $InternalPort `
-        -ErrorAction Stop
+    $mapping = Invoke-WithDupNameRetry {
+        Add-NetNatStaticMapping `
+            -NatName $NatName `
+            -Protocol $protocolUpper `
+            -ExternalIPAddress $ExternalIPAddress `
+            -ExternalPort $ExternalPort `
+            -InternalIPAddress $InternalIPAddress `
+            -InternalPort $InternalPort `
+            -ErrorAction Stop
+    }
 
     # Firewall rule mutation: Set-NetFirewallRule for in-place. The
     # rule may not exist (firewall.enabled = false at create time, or
@@ -80,28 +109,37 @@ function Set-HypervPortForward {
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -ne $existingFw) {
+        # Set-NetFirewallRule's -Enabled parameter binds to
+        # Microsoft.PowerShell.Cmdletization.GeneratedTypes.NetSecurity.Enabled,
+        # an enum whose string members are "True" and "False" -- NOT
+        # to a [bool]. Passing $true / $false directly raises "Invalid
+        # cast from 'System.Boolean' to ... NetSecurity.Enabled" at the
+        # binder. Convert to the enum's string form before forwarding.
+        $enabledValue = if ($FirewallEnabled) { 'True' } else { 'False' }
         Set-NetFirewallRule -DisplayName $FirewallName `
-            -Enabled $FirewallEnabled `
+            -Enabled $enabledValue `
             -Profile $FirewallProfile `
             -ErrorAction Stop
     }
 
     # Read-back. Re-probe the firewall to get the post-Set state.
+    # Profile is a flags enum on the wire; ToString() yields the named
+    # form (see get.ps1 for the full rationale).
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
     $firewallPresent = $null -ne $existingFw
-    $firewallProfile = if ($firewallPresent) { $existingFw.Profile } else { '' }
+    $firewallProfile = if ($firewallPresent) { $existingFw.Profile.ToString() } else { '' }
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
-        StaticMappingId     = $mapping.StaticMappingID
+        StaticMappingId     = [int]$mapping.StaticMappingID
         NatName             = $NatName
         Protocol            = $protocolUpper
         ExternalIPAddress   = $mapping.ExternalIPAddress
-        ExternalPort        = $mapping.ExternalPort
+        ExternalPort        = [int]$mapping.ExternalPort
         InternalIPAddress   = $mapping.InternalIPAddress
-        InternalPort        = $mapping.InternalPort
-        FirewallRulePresent = $firewallPresent
+        InternalPort        = [int]$mapping.InternalPort
+        FirewallRulePresent = [bool]$firewallPresent
         FirewallRuleName    = $FirewallName
         FirewallRuleProfile = $firewallProfile
     } | Write-HypervResult

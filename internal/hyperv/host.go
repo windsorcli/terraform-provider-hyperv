@@ -14,7 +14,7 @@ const getVMHostScript = `try { Get-VMHost | Select-Object ComputerName,LogicalPr
 // internal/scripts/<resource>/<verb>.ps1 with Pester coverage.
 func (c *Client) GetVMHost(ctx context.Context) (*VMHost, error) {
 	var h VMHost
-	if err := c.runScript(ctx, getVMHostScript, nil, &h); err != nil {
+	if err := c.runReadScript(ctx, getVMHostScript, nil, &h); err != nil {
 		return nil, err
 	}
 	return &h, nil

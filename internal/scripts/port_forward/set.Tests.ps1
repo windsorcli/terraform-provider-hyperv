@@ -85,11 +85,80 @@ Describe 'Set-HypervPortForward' {
                 -FirewallName 'windsor-pf-tcp-80' `
                 -FirewallProfile 'Domain' | Out-Null
 
+            # Production cmdlet's -Enabled takes the string form of the
+            # NetSecurity.Enabled enum ("True" / "False"), not a bool.
+            # The script converts the bool input before forwarding, so
+            # the assertion is on the string form here.
             Should -Invoke Set-NetFirewallRule -Times 1 -Exactly -ParameterFilter {
                 $DisplayName -eq 'windsor-pf-tcp-80' -and
-                $Enabled -eq $true -and
+                $Enabled -eq 'True' -and
                 $Profile -eq 'Domain'
             }
+        }
+    }
+
+    Context 'Add-NetNatStaticMapping ERROR_DUP_NAME retry' {
+        # Mirror of new.Tests.ps1's retry context. The Remove + Add
+        # pattern in Set-HypervPortForward is just as exposed to the
+        # transient Win32 0x34 (HRESULT 0x80070034) that NetSetup/WMI
+        # surfaces under concurrent pressure -- the cmdlet is idempotent
+        # on retry, so the same Invoke-WithDupNameRetry helper wraps
+        # the Add call.
+
+        BeforeEach {
+            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Remove-NetNatStaticMapping { }
+            Mock Set-NetFirewallRule { }
+            Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
+            Mock Start-Sleep { }
+        }
+
+        It 'retries Add-NetNatStaticMapping when ERROR_DUP_NAME bubbles transiently' {
+            $script:dupCalls = 0
+            Mock Add-NetNatStaticMapping {
+                $script:dupCalls++
+                if ($script:dupCalls -lt 2) {
+                    # Marshal.GetExceptionForHR yields a COMException whose
+                    # HResult is exactly -2147024844 (0x80070034) on every
+                    # platform, matching what NetSetup/WMI surfaces in prod.
+                    throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
+                }
+                New-HypervPortForwardSample -StaticMappingID 2
+            }
+
+            Set-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.20' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' | Out-Null
+
+            Should -Invoke Add-NetNatStaticMapping -Times 2 -Exactly
+            Should -Invoke Remove-NetNatStaticMapping -Times 1 -Exactly
+        }
+
+        It 'gives up after the retry cap on persistent ERROR_DUP_NAME' {
+            Mock Add-NetNatStaticMapping {
+                throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
+            }
+
+            { Set-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.20' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' } |
+                Should -Throw
+
+            Should -Invoke Add-NetNatStaticMapping -Times 4 -Exactly
         }
     }
 

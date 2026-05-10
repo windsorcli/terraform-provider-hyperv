@@ -145,6 +145,121 @@ Describe 'New-HypervPortForward' {
         }
     }
 
+    Context 'Add-NetNatStaticMapping ERROR_DUP_NAME retry' {
+        # Add-NetNatStaticMapping's underlying NetSetup/WMI layer
+        # surfaces Win32 ERROR_DUP_NAME (HRESULT 0x80070034 / signed
+        # -2147024844) intermittently when several mappings land
+        # concurrently against the same NAT instance, even when no
+        # real collision exists. The cmdlet is idempotent on retry --
+        # Invoke-WithDupNameRetry absorbs up to three retries (250ms,
+        # 500ms, 1s) before bubbling. Tests mock Start-Sleep so the
+        # backoff doesn't slow the suite.
+
+        BeforeEach {
+            Mock Get-NetNat { New-HypervNetNatSample }
+            Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
+            Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
+            Mock Start-Sleep { }
+        }
+
+        It 'retries when Add-NetNatStaticMapping throws Win32 ERROR_DUP_NAME (HResult 0x80070034)' {
+            $script:dupCalls = 0
+            Mock Add-NetNatStaticMapping {
+                $script:dupCalls++
+                if ($script:dupCalls -lt 2) {
+                    # Marshal.GetExceptionForHR returns a COMException whose
+                    # HResult is exactly the canonical -2147024844 (0x80070034)
+                    # on every platform; Win32Exception's HResult mapping
+                    # differs across .NET Framework / .NET 5+ / non-Windows.
+                    throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
+                }
+                New-HypervPortForwardSample
+            }
+
+            New-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' | Out-Null
+
+            Should -Invoke Add-NetNatStaticMapping -Times 2 -Exactly
+        }
+
+        It 'retries when the failure carries the ERROR_DUP_NAME message string' {
+            # Belt-and-suspenders match: HResult check covers the
+            # binary path, message-substring check covers errors
+            # surfaced as plain System.Exception (e.g. cmdlet wraps
+            # the inner Win32Exception in a less specific shell).
+            $script:msgCalls = 0
+            Mock Add-NetNatStaticMapping {
+                $script:msgCalls++
+                if ($script:msgCalls -lt 2) {
+                    throw 'Add-NetNatStaticMapping: ERROR_DUP_NAME (0x34)'
+                }
+                New-HypervPortForwardSample
+            }
+
+            New-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' | Out-Null
+
+            Should -Invoke Add-NetNatStaticMapping -Times 2 -Exactly
+        }
+
+        It 'does NOT retry on errors that do not match the ERROR_DUP_NAME signature' {
+            Mock Add-NetNatStaticMapping { throw 'totally unrelated cmdlet failure' }
+            Mock Remove-NetNatStaticMapping { }
+
+            { New-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' } |
+                Should -Throw -ExpectedMessage '*totally unrelated*'
+
+            Should -Invoke Add-NetNatStaticMapping -Times 1 -Exactly
+        }
+
+        It 'gives up after the retry cap and re-throws the last failure' {
+            # 4 attempts total: initial + 3 retries (delays 250ms,
+            # 500ms, 1s). The final throw bubbles unchanged.
+            Mock Add-NetNatStaticMapping {
+                throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
+            }
+
+            { New-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' } |
+                Should -Throw
+
+            Should -Invoke Add-NetNatStaticMapping -Times 4 -Exactly
+        }
+    }
+
     Context 'rollback on partial failure' {
         # Symmetric with vswitch/new.ps1's NAT branch: once the static
         # mapping lands, a subsequent New-NetFirewallRule failure must

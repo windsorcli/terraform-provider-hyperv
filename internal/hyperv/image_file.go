@@ -38,7 +38,7 @@ func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, err
 	}
 
 	var f ImageFile
-	if err := c.runScript(ctx, string(body), stdin, &f); err != nil {
+	if err := c.runReadScript(ctx, string(body), stdin, &f); err != nil {
 		return nil, err
 	}
 	return &f, nil

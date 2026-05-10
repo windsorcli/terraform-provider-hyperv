@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -254,6 +255,13 @@ func TestNewSSH_AppliesDefaults(t *testing.T) {
 	if b.opts.PwshPath != defaultSSHPwshPath {
 		t.Errorf("PwshPath = %q, want %q (default)", b.opts.PwshPath, defaultSSHPwshPath)
 	}
+	if b.opts.MaxConcurrentSessions != defaultSSHMaxConcurrentSessions {
+		t.Errorf("MaxConcurrentSessions = %d, want %d (default)",
+			b.opts.MaxConcurrentSessions, defaultSSHMaxConcurrentSessions)
+	}
+	if b.sem == nil || cap(b.sem) != defaultSSHMaxConcurrentSessions {
+		t.Errorf("sem cap = %d, want %d (default)", cap(b.sem), defaultSSHMaxConcurrentSessions)
+	}
 	if b.addr != "example.com:22" {
 		t.Errorf("addr = %q, want %q", b.addr, "example.com:22")
 	}
@@ -267,15 +275,16 @@ func TestNewSSH_HonorsExplicitOptions(t *testing.T) {
 
 	knownHosts := writeKnownHostsFile(t)
 	conn, err := NewSSH(SSHOptions{
-		Host:              "10.0.0.5",
-		Port:              2222,
-		Username:          "alice",
-		PrivateKey:        generateTestKey(t),
-		KnownHostsPath:    knownHosts,
-		Timeout:           15 * time.Second,
-		CommandTimeout:    90 * time.Second,
-		KeepaliveInterval: 10 * time.Second,
-		PwshPath:          "pwsh",
+		Host:                  "10.0.0.5",
+		Port:                  2222,
+		Username:              "alice",
+		PrivateKey:            generateTestKey(t),
+		KnownHostsPath:        knownHosts,
+		Timeout:               15 * time.Second,
+		CommandTimeout:        90 * time.Second,
+		KeepaliveInterval:     10 * time.Second,
+		PwshPath:              "pwsh",
+		MaxConcurrentSessions: 8,
 	})
 	if err != nil {
 		t.Fatalf("NewSSH: %v", err)
@@ -299,8 +308,83 @@ func TestNewSSH_HonorsExplicitOptions(t *testing.T) {
 	if b.opts.PwshPath != "pwsh" {
 		t.Errorf("PwshPath = %q, want %q", b.opts.PwshPath, "pwsh")
 	}
+	if b.opts.MaxConcurrentSessions != 8 {
+		t.Errorf("MaxConcurrentSessions = %d, want 8", b.opts.MaxConcurrentSessions)
+	}
+	if b.sem == nil || cap(b.sem) != 8 {
+		t.Errorf("sem cap = %d, want 8", cap(b.sem))
+	}
 	if b.addr != "10.0.0.5:2222" {
 		t.Errorf("addr = %q, want %q", b.addr, "10.0.0.5:2222")
+	}
+}
+
+// MaxConcurrentSessions < 0 disables the cap entirely (sem stays nil
+// so RunScript skips the acquire). Verifying this explicitly keeps a
+// later "lazy zero default" refactor from breaking the escape hatch
+// for hosts with sshd_config tuned to a high MaxSessions.
+func TestNewSSH_NegativeMaxConcurrentSessionsDisablesSemaphore(t *testing.T) {
+	t.Parallel()
+
+	knownHosts := writeKnownHostsFile(t)
+	conn, err := NewSSH(SSHOptions{
+		Host:                  "h",
+		Username:              "u",
+		PrivateKey:            generateTestKey(t),
+		KnownHostsPath:        knownHosts,
+		MaxConcurrentSessions: -1,
+	})
+	if err != nil {
+		t.Fatalf("NewSSH: %v", err)
+	}
+	b := conn.(*sshBackend)
+	if b.sem != nil {
+		t.Errorf("sem = %v, want nil for negative MaxConcurrentSessions", b.sem)
+	}
+}
+
+// isSessionRejected pins the substring match used by the NewSession
+// retry. The "open failed" suffix is the stable signal across crypto/ssh
+// releases for OpenSSH's MaxSessions rejection. Adjacent failure modes
+// (auth, host-key) must not match -- retrying those would mask config
+// errors as transient transport blips.
+func TestIsSessionRejected(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{
+			name: "openssh max-sessions rejection",
+			err:  errors.New("ssh: rejected: connect failed (open failed)"),
+			want: true,
+		},
+		{
+			name: "bare open failed message",
+			err:  errors.New("open failed"),
+			want: true,
+		},
+		{
+			name: "auth failure does not match",
+			err:  errors.New("ssh: handshake failed: ssh: unable to authenticate"),
+			want: false,
+		},
+		{
+			name: "exit error does not match",
+			err:  errors.New("Process exited with status 1"),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isSessionRejected(tc.err); got != tc.want {
+				t.Errorf("isSessionRejected(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -1,10 +1,13 @@
 package hyperv
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
@@ -124,6 +127,50 @@ func TestMinifyPS_PreservesRequiresDirective(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// blockingRunner blocks RunScript on ctx so the test can assert that
+// runReadScript's tighter timeout fires before the connection
+// backend's CommandTimeout would. Returns ctx.Err() once ctx is done.
+type blockingRunner struct{}
+
+func (blockingRunner) RunScript(ctx context.Context, _ string, _ []byte) (connection.Result, error) {
+	<-ctx.Done()
+	return connection.Result{}, ctx.Err()
+}
+
+func (blockingRunner) StreamFile(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// runReadScript caps every Get-* call so a wedged remote cmdlet or
+// stale SSH connection surfaces in seconds rather than at the
+// transport's CommandTimeout. The test uses a runner that blocks on
+// ctx so the only way the call returns is via timeout-driven
+// cancellation. The parent ctx carries a tight (200ms) deadline; the
+// 60s inner cap inherits parent cancellation, so 200ms fires first.
+// That proves both that ctx.Done propagates and that the wrapper
+// hasn't accidentally cleared the parent deadline.
+func TestRunReadScript_PropagatesParentDeadline(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	c := NewClient(blockingRunner{})
+	start := time.Now()
+	err := c.runReadScript(ctx, `$null = 'irrelevant'`, nil, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("runReadScript succeeded; expected ctx-deadline failure")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want wrapped context.DeadlineExceeded", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("runReadScript took %s; expected ~200ms (parent deadline not honored?)", elapsed)
 	}
 }
 
