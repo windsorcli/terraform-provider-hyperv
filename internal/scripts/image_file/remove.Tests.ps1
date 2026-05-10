@@ -79,4 +79,105 @@ Describe 'Remove-HypervImageFile' {
         { Remove-HypervImageFile -Path 'C:\images\foo.vhdx' } |
             Should -Throw -ExpectedMessage '*IO fault*'
     }
+
+    Context 'sharing-violation diagnostic' {
+        # ERROR_SHARING_VIOLATION = Win32 0x20, surfaces as IOException
+        # with HResult -2147024864 (0x80070020 as a signed int32).
+        It 'names the holding VM and slot when Hyper-V holds a lock on the path' {
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'RemoveItemIOException',
+                    [System.Management.Automation.ErrorCategory]::WriteError, $LiteralPath)
+                throw $errorRecord
+            }
+            Mock Get-VM { New-HypervImageFileVMSample -Name 'controlplane' }
+            Mock Get-VMDvdDrive {
+                New-HypervImageFileVMDvdDriveSample `
+                    -Path 'C:\images\seed.iso' `
+                    -ControllerNumber 0 `
+                    -ControllerLocation 1
+            } -ParameterFilter { $VMName -eq 'controlplane' }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ResourceBusy'
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'controlplane'
+            $captured.Exception.Message | Should -Match 'controller 0/1'
+        }
+
+        It 'reports non-Hyper-V holder when no DVD attachment matches' {
+            # Sharing violation can come from AV scan, Explorer preview,
+            # etc. Surface that explicitly so the operator doesn't chase
+            # phantom VM detachments.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { @() }
+            Mock Get-VMDvdDrive { @() }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'No Hyper-V DVD attachment matches'
+        }
+
+        It 'still surfaces ImageFileLocked when the holder lookup itself fails (degraded VMMS)' {
+            # Regression: Get-HypervImageFileDvdHolder uses
+            # Get-VM -ErrorAction Stop, so a VMMS-unavailable / WMI-flap /
+            # permissions failure during the lookup would propagate out of
+            # the sharing-violation catch and replace the actionable
+            # diagnostic with an unrelated Hyper-V management error. The
+            # call site wraps the lookup in its own try/catch so that
+            # path falls back to the non-Hyper-V message and the operator
+            # still sees the "another process is holding it" they need.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { throw "The Virtual Machine Management Service is not available." }
+            Mock Get-VMDvdDrive { @() }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'No Hyper-V DVD attachment matches'
+            $captured.Exception.Message | Should -Not -Match 'Virtual Machine Management Service'
+        }
+
+        It 'does NOT call Get-VMDvdDrive for non-sharing-violation IO errors (cheap path)' {
+            # Disk full, permission denied, etc. shouldn't trigger the VM
+            # enumeration -- those holders are irrelevant and the
+            # enumeration is N+1 cmdlet calls.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new("disk full", -2147024784)
+                throw $exception
+            }
+            Mock Get-VM { @() }
+            Mock Get-VMDvdDrive { @() }
+
+            try { Remove-HypervImageFile -Path 'C:\images\foo.iso' } catch { }
+
+            Should -Invoke Get-VM -Times 0 -Exactly
+            Should -Invoke Get-VMDvdDrive -Times 0 -Exactly
+        }
+    }
 }

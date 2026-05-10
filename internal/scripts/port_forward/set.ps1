@@ -21,6 +21,12 @@
 
 function Set-HypervPortForward {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSReviewUnusedParameter', 'InternalIPAddress',
+        Justification = 'Used inside the Invoke-WithDupNameRetry script block at the Add-NetNatStaticMapping call below; PSScriptAnalyzer cannot trace variable use through custom script-block boundaries (only special-cases known cmdlets like Invoke-Command).')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSReviewUnusedParameter', 'InternalPort',
+        Justification = 'Used inside the Invoke-WithDupNameRetry script block at the Add-NetNatStaticMapping call below; same script-block-boundary limitation as InternalIPAddress.')]
     param(
         [Parameter(Mandatory)] [string] $NatName,
         [Parameter(Mandatory)] [ValidateSet('tcp', 'udp')] [string] $Protocol,
