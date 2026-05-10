@@ -44,7 +44,6 @@ func main() {
 	}
 	out := make(chan result, fanout)
 	for i := 1; i <= fanout; i++ {
-		i := i
 		go func() {
 			start := time.Now()
 			var err error

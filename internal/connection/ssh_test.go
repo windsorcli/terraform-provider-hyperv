@@ -337,7 +337,10 @@ func TestNewSSH_NegativeMaxConcurrentSessionsDisablesSemaphore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSSH: %v", err)
 	}
-	b := conn.(*sshBackend)
+	b, ok := conn.(*sshBackend)
+	if !ok {
+		t.Fatalf("conn is %T, want *sshBackend", conn)
+	}
 	if b.sem != nil {
 		t.Errorf("sem = %v, want nil for negative MaxConcurrentSessions", b.sem)
 	}
