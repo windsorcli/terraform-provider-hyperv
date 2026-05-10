@@ -232,10 +232,36 @@ Describe 'New-HypervSwitch' {
             Should -Invoke New-NetNat -Times 0 -Exactly
         }
 
+        It 'rejects adoption when the existing NetNat has a different prefix (would loop on RequiresReplace otherwise)' {
+            # Same name but different prefix: adopting silently would let
+            # Create emit the plan's prefix in state, then the next Read
+            # would see the host's actual prefix, the diff would force
+            # replacement (nat_internal_address_prefix is RequiresReplace),
+            # and the cycle would repeat forever. Throwing surfaces the
+            # mismatch with a clear remediation path.
+            Mock Get-NetNat { New-HypervNetNatSample -Name 'windsor-nat' `
+                -InternalIPInterfaceAddressPrefix '192.168.100.0/24' }
+            Mock New-VMSwitch { New-HypervSwitchSample }
+            Mock New-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock New-NetNat { New-HypervNetNatSample }
+
+            { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -NatInternalAddressPrefix '10.0.0.0/24' `
+                -NatHostAddress '10.0.0.1' } |
+                Should -Throw -ExpectedMessage '*192.168.100.0/24*10.0.0.0/24*'
+
+            # Reject before any host mutation -- VMSwitch must not land.
+            Should -Invoke New-VMSwitch -Times 0 -Exactly
+            Should -Invoke New-NetIPAddress -Times 0 -Exactly
+            Should -Invoke New-NetNat -Times 0 -Exactly
+        }
+
         It 'adopts a same-named pre-existing NetNat (idempotent re-apply path)' {
-            # If a NetNat with our planned name already exists, treat it as
-            # ours and skip New-NetNat. The VMSwitch + NetIPAddress still
-            # need to be created (they may have been torn down).
+            # If a NetNat with our planned name AND matching prefix already
+            # exists, treat it as ours and skip New-NetNat. The VMSwitch +
+            # NetIPAddress still need to be created (they may have been
+            # torn down).
             Mock Get-NetNat { New-HypervNetNatSample -Name 'windsor-nat' `
                 -InternalIPInterfaceAddressPrefix '192.168.100.0/24' }
             Mock New-VMSwitch { New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `

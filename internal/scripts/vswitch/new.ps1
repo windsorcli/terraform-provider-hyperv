@@ -126,7 +126,23 @@ function New-HypervNatSwitch {
                 "Windows allows exactly one NetNat per host -- remove the existing instance, " +
                 "or set nat_name = '$($existingNat.Name)' to adopt it."
         }
-        # Same name: adopt and skip New-NetNat below.
+        # Same name: adopt -- but only if the prefix matches. Adopting a
+        # NetNat whose prefix differs from the plan would let Create emit
+        # the plan's prefix (this script's projection), then Read see the
+        # host's actual prefix on the next refresh, then the diff force
+        # replacement (nat_internal_address_prefix is RequiresReplace),
+        # then the replacement Create hit the same adoption path with the
+        # same mismatch -- a permanent plan-loop. Throwing here surfaces
+        # the misconfiguration with a clear remediation path: align the
+        # plan's prefix with the existing NetNat, or remove the NetNat
+        # and let this resource create a fresh one.
+        if ($existingNat.InternalIPInterfaceAddressPrefix -ne $NatInternalAddressPrefix) {
+            throw "A NetNat named '$NatName' already exists with prefix " +
+                "'$($existingNat.InternalIPInterfaceAddressPrefix)', but the plan asks for " +
+                "'$NatInternalAddressPrefix'. Set nat_internal_address_prefix to " +
+                "'$($existingNat.InternalIPInterfaceAddressPrefix)' to adopt the existing " +
+                "instance, or remove the existing NetNat to let this resource create a fresh one."
+        }
         $adoptNat = $true
     }
 
