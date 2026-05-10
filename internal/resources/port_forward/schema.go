@@ -101,6 +101,9 @@ func resourceSchema() schema.Schema {
 				MarkdownDescription: "Bench-side listen IPv4 address. Defaults to `0.0.0.0` (any). Set to " +
 					"a specific host IP to scope the mapping to a single NIC. **Forces replacement**.",
 				Default: stringdefault.StaticString("0.0.0.0"),
+				Validators: []validator.String{
+					ipv4Validator{},
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -121,6 +124,9 @@ func resourceSchema() schema.Schema {
 				MarkdownDescription: "Internal IPv4 address of the VM serving the forwarded port. Must be " +
 					"inside the parent NetNat's `internal_address_prefix`. Mutable in place: changing " +
 					"this re-rolls the static mapping (Remove + Add) but the resource ID stays stable.",
+				Validators: []validator.String{
+					ipv4Validator{},
+				},
 			},
 			"internal_port": schema.Int64Attribute{
 				Required: true,
