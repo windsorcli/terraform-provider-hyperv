@@ -107,7 +107,7 @@ Forward and back slashes are accepted equivalently. The path is resolved relativ
 Opt-in (default `false`) because vhdx files attached as VM HardDiskController disks don't hot-swap and don't hit the same lock pattern; only DVDs do. Set to `true` for any image_file whose destination may be referenced by a `dvd_drive.iso_path` on a running VM (the canonical case is cidata seeds for cloud-init / Talos machineconfig).
 
 **Honored only in `local_path` and `literal_bytes` modes** -- those are the modes with a re-stream Update path. `url` mode forces replacement on any change so the flag is moot; `host_path` mode never writes to `destination_path` at all. Setting the flag in those modes is harmless: the value is silently ignored.
-- `url` (Attributes) URL-mode source configuration. When present, the file is downloaded via a streamed HTTP GET and the SHA-256 is verified against `checksum` before the atomic rename. Mutually exclusive with `local_path` (a config validator rejects both set together). **Forces replacement** when changed -- the file is re-fetched, not patched in place. (see [below for nested schema](#nestedatt--url))
+- `url` (Attributes) URL-mode source configuration. When present, the file is downloaded via a streamed HTTP GET; SHA-256 is verified against `checksum` before the atomic rename when `checksum` is set, or the bytes are trusted (TLS-only) when it isn't. Mutually exclusive with `local_path` (a config validator rejects both set together). **Forces replacement** when changed -- the file is re-fetched, not patched in place. (see [below for nested schema](#nestedatt--url))
 
 ### Read-Only
 
@@ -120,13 +120,13 @@ Opt-in (default `false`) because vhdx files attached as VM HardDiskController di
 
 Required:
 
-- `checksum` (String) Expected `sha256:<64-hex>` checksum. When `compression` is unset the host downloads directly and verifies the on-the-wire bytes against this value before the atomic rename; mismatch fails the apply with a clean diagnostic and the partial file is removed.
-
-When `compression` is set this is the SHA-256 of the **compressed** bytes (the form publishers ship in `SHA256SUMS` next to a `.gz` / `.xz` artifact). The provider verifies against the bytes the runner downloads, then decompresses; the on-disk sha256 you read back from `sha256` reflects the decompressed payload, not this value.
 - `url` (String) HTTP or HTTPS URL of the file. The download streams to disk, so multi-GB images don't buffer in memory.
 
 Optional:
 
+- `checksum` (String) Optional `sha256:<64-hex>` checksum. When set and `compression` is unset, the host downloads directly and verifies the on-the-wire bytes against this value before the atomic rename; mismatch fails the apply with a clean diagnostic and the partial file is removed. When set and `compression` is set, this is the SHA-256 of the **compressed** bytes (the form publishers ship in `SHA256SUMS` next to a `.gz` / `.xz` artifact); the provider verifies against the bytes the runner downloads, then decompresses.
+
+When omitted the download is trusted (TLS-only) and the on-disk `sha256` computed attribute reports the actual hash for drift detection. Use this when no published checksum exists (e.g. Talos Image Factory's checksum endpoint is enterprise-tier only).
 - `compression` (String) Optional decompressor. When set, the provider switches `url`-mode from a host-direct fetch to a runner-pipelined fetch: the Terraform runner downloads the URL, decompresses in-process, and streams the decompressed bytes to the Hyper-V host via the active connection backend (SSH or WinRM). The host then verifies the streamed bytes' SHA-256 and atomic-renames into place.
 
 **Why runner-side?** PowerShell 5.1 (the host floor) ships only `gzip` and `zip` decompressors via `System.IO.Compression`. Doing decompression on the runner instead lets every supported codec land without requiring third-party PowerShell modules on the Hyper-V host.
