@@ -13,7 +13,7 @@
 # the user did not ask the provider to put the file there, so removing it on
 # destroy would surprise them.
 
-# Get-HypervImageFileDvdHolders enumerates the Hyper-V DVD drives whose
+# Get-HypervImageFileDvdHolder enumerates the Hyper-V DVD drives whose
 # mounted media path equals $Path. Used by Remove-HypervImageFile's
 # sharing-violation diagnostic to name the holder when Remove-Item fails
 # with "another process." Returns an array of pscustomobjects with
@@ -27,7 +27,7 @@
 # Hyper-V module versions returns objects with the VMName scalar
 # unpopulated, so we iterate Get-VM and Get-VMDvdDrive -VMName <name>
 # per VM. Path normalization handles forward/back slash mix.
-function Get-HypervImageFileDvdHolders {
+function Get-HypervImageFileDvdHolder {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Path
@@ -91,7 +91,7 @@ function Remove-HypervImageFile {
         # unrolls an empty-array return to $null, which trips
         # Set-StrictMode -Version 3.0's null-property-access check on
         # the following .Count read.
-        $holders = @(Get-HypervImageFileDvdHolders -Path $Path)
+        $holders = @(Get-HypervImageFileDvdHolder -Path $Path)
         if ($holders.Count -eq 0) {
             $detail = "No Hyper-V DVD attachment matches this path; another process " +
                 "(antivirus scan, Explorer preview, etc.) is holding the file."
