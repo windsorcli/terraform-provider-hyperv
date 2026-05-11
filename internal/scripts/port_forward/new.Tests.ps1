@@ -318,6 +318,43 @@ Describe 'New-HypervPortForward' {
 
             Should -Invoke Add-NetNatStaticMapping -Times 2 -Exactly
         }
+
+        It 'short-circuits on the port-exclusion FQEId (no retry on deterministic failure)' {
+            # Regression: ERROR_SHARING_VIOLATION's HResult (-2147024864)
+            # and English message text fire for BOTH transient file-handle
+            # contention AND deterministic port-exclusion-range conflicts.
+            # An earlier draft retried port-exclusion failures through the
+            # full 250+500+1000ms cycle before the outer catch translated
+            # them -- 1.75s of pointless latency before the operator sees
+            # the clear diagnostic. The FQEId 'Windows System Error 32'
+            # is the discriminating WMI port-reservation signature; this
+            # test pins that the helper short-circuits on it.
+            Mock Add-NetNatStaticMapping {
+                $exception = [System.InvalidOperationException]::new(
+                    'The process cannot access the file because it is being used by another process.')
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception,
+                    'Windows System Error 32,Add-NetNatStaticMapping',
+                    [System.Management.Automation.ErrorCategory]::NotSpecified,
+                    $null)
+                throw $errorRecord
+            }
+
+            { New-HypervPortForward `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $true `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' } |
+                Should -Throw
+
+            # 1 call, not 4. The retry cycle is bypassed entirely.
+            Should -Invoke Add-NetNatStaticMapping -Times 1 -Exactly
+        }
     }
 
     Context 'rollback on partial failure' {

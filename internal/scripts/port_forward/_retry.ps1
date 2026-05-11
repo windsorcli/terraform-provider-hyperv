@@ -54,6 +54,18 @@ function Invoke-WithNetNatRetry {
             return & $Action
         }
         catch {
+            # Short-circuit on port-exclusion-range failures: the FQEId
+            # "Windows System Error 32" is the WMI port-reservation
+            # signature and is deterministic -- no amount of retry will
+            # succeed against a port that's in a reserved range. Re-
+            # throw so the outer catch in new.ps1 / set.ps1 routes the
+            # error through Resolve-NetNatPortConflictMessage for the
+            # clearer diagnostic. Symmetric with that translator's
+            # FQEId-only signature -- the same signal gates retry-no
+            # here and translate-yes there. Without this short-circuit
+            # the retry helper burns the full 250+500+1000ms cycle on
+            # deterministic failures before the diagnostic surfaces.
+            if ($_.FullyQualifiedErrorId -match 'Windows System Error 32') { throw }
             $hresult = $_.Exception.HResult
             $message = $_.Exception.Message
             $isTransient = ($hresult -eq -2147024844) -or
