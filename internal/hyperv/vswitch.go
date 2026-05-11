@@ -44,13 +44,13 @@ var (
 // returns the bare six-field shape with empty NAT fields and SwitchType
 // reflecting Hyper-V's underlying enum (External/Internal/Private).
 func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwitch, error) {
-	// NAT branch reads Get-NetNat + Get-NetIPAddress; serialize to
-	// avoid sharing-violation races against concurrent NetNat writes
-	// from port_forward CRUD. Non-NAT switches don't touch NetNat at
-	// all and run unlocked.
+	// NAT branch reads Get-NetNat + Get-NetIPAddress; take the read
+	// lock to block against concurrent NetNat writes from port_forward
+	// or vswitch mutations, but allow concurrent reads to parallelize.
+	// Non-NAT switches don't touch NetNat at all and run unlocked.
 	if natName != "" {
-		c.netNatMu.Lock()
-		defer c.netNatMu.Unlock()
+		c.netNatMu.RLock()
+		defer c.netNatMu.RUnlock()
 	}
 	body, err := scripts.VswitchScript("get")
 	if err != nil {

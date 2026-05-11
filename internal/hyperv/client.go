@@ -24,14 +24,25 @@ import (
 // ("The process cannot access the file because it is being used by
 // another process") on the loser. The PS-side _retry helper retries
 // these as defense in depth, but eliminating the contention here is the
-// real fix: a 6-port-forward apply now takes ~6x a single (the cmdlets
-// are 1-2s each) instead of having a non-deterministic ~20% failure rate.
-// One mutex per Client is correct because NetNat is host-singleton --
+// real fix.
+//
+// RWMutex (not Mutex) so concurrent reads parallelize. The race is
+// specifically between WRITERS racing the NetNat backing file's
+// exclusive-write handle -- Add-NetNatStaticMapping is the offender
+// named in the bug report. Get-NetNatStaticMapping (the Read path)
+// opens the file with shared-read access per the Windows file API
+// convention and doesn't conflict with other readers. So:
+//   - Get* methods take RLock -- N parallel terraform refreshes of
+//     port_forward resources run in O(1) wall time, not O(N).
+//   - New / Set / Remove methods take Lock (exclusive) -- writers
+//     serialize against each other AND against any in-flight reader.
+//
+// One RWMutex per Client is correct because NetNat is host-singleton:
 // there's exactly one ordering of NetNat writes per host.
 type Client struct {
 	runner     connection.Runner
 	httpClient *http.Client
-	netNatMu   sync.Mutex
+	netNatMu   sync.RWMutex
 }
 
 // ClientOption customizes a Client at construction time. Functional-

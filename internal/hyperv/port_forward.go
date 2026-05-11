@@ -17,8 +17,12 @@ import (
 // should call RemoveResource), or ErrUnavailable when the underlying
 // service is transiently unreachable.
 func (c *Client) GetPortForward(ctx context.Context, in GetPortForwardInput) (*PortForward, error) {
-	c.netNatMu.Lock()
-	defer c.netNatMu.Unlock()
+	// RLock: Get-NetNatStaticMapping is read-only. Concurrent reads
+	// against the NetNat backing file's shared-read handle don't
+	// conflict; writers (New/Set/Remove below) take the exclusive
+	// Lock to block both other writers and any in-flight readers.
+	c.netNatMu.RLock()
+	defer c.netNatMu.RUnlock()
 	body, err := scripts.PortForwardScript("get")
 	if err != nil {
 		return nil, fmt.Errorf("load port_forward/get.ps1: %w", err)
