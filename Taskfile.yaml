@@ -181,8 +181,18 @@ tasks:
 
   sweep:
     desc: Sweep orphan acceptance-test resources
+    summary: |
+      Enumerates tfacc-* VMs / disks / switches / files on the bench and
+      removes them. Uses HYPERV_* env vars from .env.local (same shape as
+      task test:acc) to reach the bench. Best-effort: individual failures
+      log a warning and continue; the task exits non-zero if anything
+      failed so the operator notices.
+
+      Scoped to internal/acctest/... because that's the only test binary
+      with TestMain dispatching the -sweep flag (see the file header of
+      internal/acctest/sweepers_test.go for the design rationale).
     cmds:
-      - go test ./... -sweep=local
+      - go test ./internal/acctest/... -sweep=local -timeout=10m
 
   # ---------- Lab ----------
   # Build artifacts for the Kerberos test lab -- a dogfood of this

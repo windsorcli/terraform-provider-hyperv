@@ -976,3 +976,71 @@ func TestClient_GetVM_DecodesStaticMemoryAsNullDynamicFields(t *testing.T) {
 		t.Errorf("MemoryMaximumBytes: got %v, want nil", *v.MemoryMaximumBytes)
 	}
 }
+
+// TestClient_ListVMsByPrefix_DecodesArray pins the wire contract: list.ps1
+// emits a JSON array of {Name} objects, even on zero or one result.
+func TestClient_ListVMsByPrefix_DecodesArray(t *testing.T) {
+	t.Parallel()
+
+	stdout := `[{"Name":"tfacc-vm-basic-abc"},{"Name":"tfacc-vm-boot-xyz"}]`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVMByPrefix").Return(stdout, "", 0)
+	c := NewClient(fr)
+
+	vms, err := c.ListVMsByPrefix(t.Context(), "tfacc-")
+	if err != nil {
+		t.Fatalf("ListVMsByPrefix: %v", err)
+	}
+	if len(vms) != 2 {
+		t.Fatalf("len = %d, want 2", len(vms))
+	}
+	if vms[0].Name != "tfacc-vm-basic-abc" || vms[1].Name != "tfacc-vm-boot-xyz" {
+		t.Errorf("names = %+v", vms)
+	}
+}
+
+// TestClient_ListVMsByPrefix_EmptyArray locks the empty-result case. The
+// PS-side -InputObject keeps the shape array-typed even at zero matches;
+// the Go side decodes that to []VMName{} (length 0), not nil. Either
+// would satisfy len()==0, but documenting the choice keeps a future
+// reader from "fixing" the non-nil empty slice into a nil one.
+func TestClient_ListVMsByPrefix_EmptyArray(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVMByPrefix").Return("[]", "", 0)
+	c := NewClient(fr)
+
+	vms, err := c.ListVMsByPrefix(t.Context(), "tfacc-")
+	if err != nil {
+		t.Fatalf("ListVMsByPrefix: %v", err)
+	}
+	if len(vms) != 0 {
+		t.Errorf("len = %d, want 0", len(vms))
+	}
+}
+
+// TestClient_ListVMsByPrefix_ForwardsPrefixInStdin pins the snake_case
+// stdin shape ({"name_prefix": "..."}) that list.ps1's entry block
+// reads via [Console]::In.ReadToEnd().
+func TestClient_ListVMsByPrefix_ForwardsPrefixInStdin(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVMByPrefix").Return("[]", "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.ListVMsByPrefix(t.Context(), "tfacc-"); err != nil {
+		t.Fatalf("ListVMsByPrefix: %v", err)
+	}
+
+	var got struct {
+		NamePrefix string `json:"name_prefix"`
+	}
+	if err := json.Unmarshal(fr.Calls()[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.NamePrefix != "tfacc-" {
+		t.Errorf("stdin.name_prefix = %q, want %q", got.NamePrefix, "tfacc-")
+	}
+}

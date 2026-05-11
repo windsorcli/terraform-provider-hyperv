@@ -106,7 +106,7 @@ func VHDScript(verb string) ([]byte, error) {
 // per-cmdlet error mapping than when set.ps1 has to disambiguate which
 // of N internal failures fired.
 //
-//go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1
+//go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1 vm/list.ps1
 //go:embed vm/add-hard-disk-drive.ps1 vm/remove-hard-disk-drive.ps1
 //go:embed vm/add-network-adapter.ps1 vm/remove-network-adapter.ps1
 //go:embed vm/add-dvd-drive.ps1 vm/remove-dvd-drive.ps1

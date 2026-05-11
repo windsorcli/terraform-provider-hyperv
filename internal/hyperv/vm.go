@@ -103,6 +103,43 @@ func (c *Client) RemoveVM(ctx context.Context, name string) error {
 	return c.runScript(ctx, string(body), stdin, nil)
 }
 
+// VMName is the minimal shape vm/list.ps1 emits per result. Only Name is
+// carried because the sweeper (the sole caller today) only needs the
+// name to call RemoveVM. Adding more fields means slower enumeration
+// on hosts with many VMs and a wider blast radius for script-Go
+// contract drift; if a future caller needs richer shape, add a
+// separate verb rather than fattening this one.
+type VMName struct {
+	Name string `json:"Name"`
+}
+
+// ListVMsByPrefix returns the names of all VMs whose Name begins with
+// the given prefix (typically "tfacc-" for the acceptance-test sweeper).
+// Empty result is a normal return ([]VMName{}, nil) -- the caller can
+// distinguish "no matches" from "fault" without checking err.
+//
+// Backed by vm/list.ps1 -- see that script's header for the wire
+// contract. Read-only operation; no power transitions or other side
+// effects.
+func (c *Client) ListVMsByPrefix(ctx context.Context, prefix string) ([]VMName, error) {
+	body, err := scripts.VMScript("list")
+	if err != nil {
+		return nil, fmt.Errorf("load vm/list.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		NamePrefix string `json:"name_prefix"`
+	}{NamePrefix: prefix})
+	if err != nil {
+		return nil, fmt.Errorf("marshal list.ps1 input: %w", err)
+	}
+
+	var vms []VMName
+	if err := c.runReadScript(ctx, string(body), stdin, &vms); err != nil {
+		return nil, err
+	}
+	return vms, nil
+}
+
 // AttachHardDisk wires an existing VHD to a VM at a specific controller
 // slot via Add-VMHardDiskDrive. Slot semantics:
 //
