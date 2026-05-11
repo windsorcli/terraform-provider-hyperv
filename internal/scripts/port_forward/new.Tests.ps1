@@ -498,33 +498,14 @@ Describe 'Resolve-NetNatPortConflictMessage' {
             $translated.Exception.Message | Should -Match 'external_port 50000'
         }
 
-        It 'detects via the "being used by another process" message substring' {
-            $original = [System.Management.Automation.ErrorRecord]::new(
-                [System.InvalidOperationException]::new(
-                    'The process cannot access the file because it is being used by another process.'),
-                'OpaqueErrorId',
-                [System.Management.Automation.ErrorCategory]::NotSpecified,
-                $null
-            )
-            $lines = @(
-                'Protocol tcp Port Exclusion Ranges',
-                'Start Port    End Port      ',
-                '----------    --------      ',
-                '     49972       50071      ',
-                '* - Administered port exclusions.'
-            )
-            $translated = Resolve-NetNatPortConflictMessage -ErrorRecord $original -Protocol 'tcp' -ExternalPort 50000 -ExcludedRangesText $lines
-
-            $translated.Exception.Message | Should -Match 'external_port 50000'
-            # Pointed at the actual cause, not the misleading file-lock surface.
-            $translated.Exception.Message | Should -Not -Match 'being used by another process$'
-        }
-
         It 'omits the range tail when no exclusion list contains the port' {
+            # Same FQEId-only signature as the canonical case above; the
+            # behavior under test is the empty-ranges branch of the
+            # message builder, not the detection signature.
             $emptyRanges = @('Protocol tcp Port Exclusion Ranges', 'Start Port    End Port', '----------    --------')
             $original = [System.Management.Automation.ErrorRecord]::new(
-                [System.InvalidOperationException]::new('being used by another process'),
-                'OpaqueErrorId',
+                [System.InvalidOperationException]::new('opaque'),
+                'Windows System Error 32,Add-NetNatStaticMapping',
                 [System.Management.Automation.ErrorCategory]::NotSpecified,
                 $null
             )
@@ -554,6 +535,33 @@ Describe 'Resolve-NetNatPortConflictMessage' {
                 -ExternalPort 50000
 
             # Same object reference -- not a re-thrown copy.
+            $translated | Should -BeExactly $original
+        }
+
+        It 'passes through ERROR_SHARING_VIOLATION when FQEId is not the WMI port-reservation signature' {
+            # Regression: an earlier draft also matched on HResult and the
+            # English message substring. Both fire for raw file-handle
+            # contention (the case the Go-side netNatMu prevents in normal
+            # operation, but which can still leak through if a process
+            # outside the mutex's reach invokes NetNat). Including those
+            # legs would mis-tag a genuine concurrent-access exhaustion as
+            # "port in exclusion range" -- worse than skipping the
+            # translation. This pins FQEId-only discrimination so a
+            # future revert that re-adds the HResult fallback fails here.
+            $exception = [System.IO.IOException]::new(
+                'The process cannot access the file because it is being used by another process.',
+                -2147024864)  # Win32 ERROR_SHARING_VIOLATION HResult
+            $original = [System.Management.Automation.ErrorRecord]::new(
+                $exception,
+                'NotTheWmiPortReservationFqeid',  # discriminating FQEId is absent
+                [System.Management.Automation.ErrorCategory]::ResourceBusy,
+                $null
+            )
+            $translated = Resolve-NetNatPortConflictMessage `
+                -ErrorRecord $original `
+                -Protocol 'tcp' `
+                -ExternalPort 50000
+
             $translated | Should -BeExactly $original
         }
     }

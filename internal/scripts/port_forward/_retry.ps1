@@ -82,29 +82,27 @@ function Resolve-NetNatPortConflictMessage {
     )
 
     # Signature match: Win32 ERROR_SHARING_VIOLATION (HRESULT 0x80070020,
-    # signed -2147024864) surfaced by Add-NetNatStaticMapping. The
-    # FullyQualifiedErrorId carries "Windows System Error 32" -- 32 is the
-    # canonical Win32 ERROR_SHARING_VIOLATION code, which the WMI/CIM
-    # layer reuses to mean "this port can't be reserved because it's
-    # already in an exclusion range." Detect with belt-and-suspenders
-    # checks: HResult, FQEId, and message-substring all point at the
-    # same underlying error class.
-    $hresult = $ErrorRecord.Exception.HResult
-    $fqeid   = $ErrorRecord.FullyQualifiedErrorId
-    $message = $ErrorRecord.Exception.Message
-    # Don't name this $matches -- that's a PowerShell automatic variable
-    # populated by every -match operator, and the right-hand side here
-    # uses -match three times. Writing to the auto var while the same
-    # expression is mutating it is a Set-StrictMode 3.0 footgun (the
-    # final value isn't the boolean -or chain you intended). Of the
-    # three checks, only the HResult path is locale-safe; the FQEId
-    # and message strings localize on non-English Windows hosts. We
-    # accept that as a degradation rather than a regression -- the
-    # HResult leg always fires for the canonical case.
-    $isPortConflict = ($hresult -eq -2147024864) -or
-                      ($fqeid -match 'Windows System Error 32') -or
-                      ($message -match 'being used by another process')
-    if (-not $isPortConflict) {
+    # surfaced by Add-NetNatStaticMapping. The WMI/CIM port-reservation
+    # path sets FullyQualifiedErrorId to "Windows System Error 32" --
+    # 32 is the Win32 ERROR_SHARING_VIOLATION code, which this layer
+    # reuses to mean "the port can't be reserved because it's in an
+    # exclusion range." That FQEId is the discriminating signal.
+    #
+    # Why FQEId-only and not also HResult / message-substring: the
+    # HResult (-2147024864) and the message text "being used by
+    # another process" both fire for the SAME Win32 error code surfaced
+    # by raw file-handle contention -- a real concern when the Go-side
+    # netNatMu has exhausted its retries against a process invoking
+    # NetNat outside the mutex's reach. Including those legs would
+    # mis-tag a genuine concurrent-access exhaustion as "port in
+    # exclusion range" and send operators down the wrong diagnostic
+    # path. Locale degradation (FQEId is in the system language;
+    # non-English hosts skip the translation and see the cmdlet's bare
+    # error) is the lesser harm: missing the translation just leaves
+    # the original misleading message intact, whereas mis-tagging
+    # actively misleads.
+    $fqeid = $ErrorRecord.FullyQualifiedErrorId
+    if ($fqeid -notmatch 'Windows System Error 32') {
         return $ErrorRecord
     }
 
