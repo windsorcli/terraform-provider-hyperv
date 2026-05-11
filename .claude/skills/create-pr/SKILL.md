@@ -73,7 +73,7 @@ Hard rules:
 - **One topic sentence per paragraph.** Reader should grasp the change
   in 15 seconds.
 - **Under ~150 words.**
-- **Sign off** with `Generated with [Claude Code](https://claude.com/claude-code)` on its own line at the bottom (no emoji prefix).
+- **No tool / model attribution lines** at the bottom (no "Generated with..." sign-offs).
 
 Recommended shape (1-3 paragraphs):
 
@@ -122,16 +122,12 @@ if [ -z "$PR_NUM" ]; then
   # Create
   gh pr create --title "<generated title>" --body "$(cat <<'EOF'
 <generated body>
-
-Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 elif [ -z "$(printf '%s' "$PR_BODY" | python3 -c 'import re, sys; print(re.sub(r"<!-- claude-code-review:summary -->.*?<!-- /claude-code-review:summary -->\s*", "", sys.stdin.read(), flags=re.DOTALL), end="")' | tr -d '[:space:]')" ]; then
   # Empty body (or only the workflow's markers/whitespace) — update
   gh pr edit "$PR_NUM" --body "$(cat <<'EOF'
 <generated body>
-
-Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 else
