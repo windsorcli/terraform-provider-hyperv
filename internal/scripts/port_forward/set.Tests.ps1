@@ -140,13 +140,13 @@ Describe 'Set-HypervPortForward' {
         }
     }
 
-    Context 'Add-NetNatStaticMapping ERROR_DUP_NAME retry' {
+    Context 'Add-NetNatStaticMapping transient retry' {
         # Mirror of new.Tests.ps1's retry context. The Remove + Add
         # pattern in Set-HypervPortForward is just as exposed to the
-        # transient Win32 0x34 (HRESULT 0x80070034) that NetSetup/WMI
-        # surfaces under concurrent pressure -- the cmdlet is idempotent
-        # on retry, so the same Invoke-WithDupNameRetry helper wraps
-        # the Add call.
+        # transient Win32 errors NetSetup/WMI surfaces under concurrent
+        # pressure (ERROR_DUP_NAME 0x80070034 and ERROR_SHARING_VIOLATION
+        # 0x80070020) -- the cmdlet is idempotent on retry, so the same
+        # Invoke-WithNetNatRetry helper wraps the Add call.
 
         BeforeEach {
             Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }

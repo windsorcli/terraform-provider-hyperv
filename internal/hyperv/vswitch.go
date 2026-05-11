@@ -44,6 +44,14 @@ var (
 // returns the bare six-field shape with empty NAT fields and SwitchType
 // reflecting Hyper-V's underlying enum (External/Internal/Private).
 func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwitch, error) {
+	// NAT branch reads Get-NetNat + Get-NetIPAddress; take the read
+	// lock to block against concurrent NetNat writes from port_forward
+	// or vswitch mutations, but allow concurrent reads to parallelize.
+	// Non-NAT switches don't touch NetNat at all and run unlocked.
+	if natName != "" {
+		c.netNatMu.RLock()
+		defer c.netNatMu.RUnlock()
+	}
 	body, err := scripts.VswitchScript("get")
 	if err != nil {
 		return nil, fmt.Errorf("load vswitch/get.ps1: %w", err)
@@ -96,8 +104,33 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
 	}
 
+	// NAT branch invokes New-NetNat + New-NetIPAddress; serialize with
+	// the package-wide netNatMu so we don't race port_forward CRUD on
+	// the host's NetNat persistent store. Two constraints shape the
+	// pattern below:
+	//
+	//   1. Reentrancy: we can't hold the lock for the full method body
+	//      because the recovery path below calls GetVMSwitch, which
+	//      takes this same mutex when natName is non-empty. sync.Mutex
+	//      is non-reentrant -- a second Lock from the same goroutine
+	//      would deadlock. The closure exits before recovery runs, so
+	//      the inner GetVMSwitch sees the lock free.
+	//
+	//   2. Panic safety: the framework's RPC layer recover()s panics
+	//      from resource methods, so a panic in runScript would leave
+	//      the provider process alive but with the mutex permanently
+	//      held -- every subsequent NAT op deadlocks. defer fires on
+	//      panic AND normal return, so wrap the locked region in an
+	//      IIFE with defer Unlock instead of a manual Unlock.
 	var sw VMSwitch
-	runErr := c.runScript(ctx, string(body), stdin, &sw)
+	var runErr error
+	func() {
+		if in.NatName != "" {
+			c.netNatMu.Lock()
+			defer c.netNatMu.Unlock()
+		}
+		runErr = c.runScript(ctx, string(body), stdin, &sw)
+	}()
 	if runErr == nil {
 		return &sw, nil
 	}
@@ -151,6 +184,12 @@ func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name, natName str
 // it, the cmdlet's opaque "parameter is not applicable" error surfaces
 // instead.
 func (c *Client) SetVMSwitch(ctx context.Context, in SetVMSwitchInput) (*VMSwitch, error) {
+	// NAT branch reads Get-NetNat for the synthesized read-back;
+	// serialize. Non-NAT updates don't touch NetNat and run unlocked.
+	if in.NatName != "" {
+		c.netNatMu.Lock()
+		defer c.netNatMu.Unlock()
+	}
 	body, err := scripts.VswitchScript("set")
 	if err != nil {
 		return nil, fmt.Errorf("load vswitch/set.ps1: %w", err)
@@ -228,7 +267,29 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error
 		return fmt.Errorf("marshal remove.ps1 input: %w", err)
 	}
 
-	runErr := c.runScript(ctx, string(body), stdin, nil)
+	// NAT branch invokes Remove-NetNat + Remove-NetIPAddress before the
+	// Remove-VMSwitch teardown; serialize with the package-wide
+	// netNatMu so we don't race port_forward CRUD on the host's NetNat
+	// persistent store. Same two constraints as NewVMSwitch's inner
+	// closure:
+	//
+	//   1. Reentrancy: GetVMSwitch in the pre-step above already takes
+	//      this same mutex when natName is non-empty, and the recovery
+	//      path below also calls back into GetVMSwitch. sync.Mutex is
+	//      non-reentrant; the closure must release before any of those
+	//      reentrant call paths run.
+	//
+	//   2. Panic safety: framework recover()s panics; manual Unlock
+	//      after a panicking runScript would leak the mutex. IIFE +
+	//      defer Unlock fires on panic AND normal return.
+	var runErr error
+	func() {
+		if natName != "" {
+			c.netNatMu.Lock()
+			defer c.netNatMu.Unlock()
+		}
+		runErr = c.runScript(ctx, string(body), stdin, nil)
+	}()
 	if runErr == nil || !errors.Is(runErr, connection.ErrSessionDropped) {
 		return runErr
 	}

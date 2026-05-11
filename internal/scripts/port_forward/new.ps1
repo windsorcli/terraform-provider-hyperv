@@ -23,7 +23,7 @@
 # NetNat instance. Without the precondition, Add-NetNatStaticMapping
 # fails with an opaque "no NAT" message that obscures the dependency.
 
-# Invoke-WithDupNameRetry is defined in port_forward/_retry.ps1, which
+# Invoke-WithNetNatRetry is defined in port_forward/_retry.ps1, which
 # the Go-side loadPortForwardWithRetry prepends to this script body
 # before sending it to the runner.
 
@@ -62,8 +62,8 @@ function New-HypervPortForward {
     # Add the static mapping. The cmdlet returns the mapping with a
     # fresh StaticMappingID Hyper-V assigns -- we capture it for the
     # rollback path and the read shape. Wrapped in dup-name retry to
-    # absorb the Win32 0x34 transient (see Invoke-WithDupNameRetry).
-    $mapping = Invoke-WithDupNameRetry {
+    # absorb the Win32 0x34 transient (see Invoke-WithNetNatRetry).
+    $mapping = Invoke-WithNetNatRetry {
         Add-NetNatStaticMapping `
             -NatName $NatName `
             -Protocol $protocolUpper `
@@ -153,7 +153,14 @@ if ($MyInvocation.InvocationName -ne '.') {
             -FirewallProfile $fw.profile
     }
     catch {
-        Write-HypervError $_
+        # Translate the Add-NetNatStaticMapping sharing-violation
+        # signature into a clearer "port is in a Windows exclusion range"
+        # error before surfacing; pass-through for any other error class.
+        $translated = Resolve-NetNatPortConflictMessage `
+            -ErrorRecord $_ `
+            -Protocol $params.protocol `
+            -ExternalPort $params.external_port
+        Write-HypervError $translated
         exit 1
     }
 }

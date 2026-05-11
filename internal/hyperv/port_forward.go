@@ -17,6 +17,12 @@ import (
 // should call RemoveResource), or ErrUnavailable when the underlying
 // service is transiently unreachable.
 func (c *Client) GetPortForward(ctx context.Context, in GetPortForwardInput) (*PortForward, error) {
+	// RLock: Get-NetNatStaticMapping is read-only. Concurrent reads
+	// against the NetNat backing file's shared-read handle don't
+	// conflict; writers (New/Set/Remove below) take the exclusive
+	// Lock to block both other writers and any in-flight readers.
+	c.netNatMu.RLock()
+	defer c.netNatMu.RUnlock()
 	body, err := scripts.PortForwardScript("get")
 	if err != nil {
 		return nil, fmt.Errorf("load port_forward/get.ps1: %w", err)
@@ -43,6 +49,8 @@ func (c *Client) GetPortForward(ctx context.Context, in GetPortForwardInput) (*P
 // "missing NetNat" error if it doesn't, mapped here through the
 // typed-error path.
 func (c *Client) NewPortForward(ctx context.Context, in NewPortForwardInput) (*PortForward, error) {
+	c.netNatMu.Lock()
+	defer c.netNatMu.Unlock()
 	body, err := loadPortForwardWithRetry("new")
 	if err != nil {
 		return nil, err
@@ -65,6 +73,8 @@ func (c *Client) NewPortForward(ctx context.Context, in NewPortForwardInput) (*P
 // Returns the post-mutation read shape -- the StaticMappingID may
 // change because Hyper-V re-numbers mappings on Add.
 func (c *Client) SetPortForward(ctx context.Context, in SetPortForwardInput) (*PortForward, error) {
+	c.netNatMu.Lock()
+	defer c.netNatMu.Unlock()
 	body, err := loadPortForwardWithRetry("set")
 	if err != nil {
 		return nil, err
@@ -86,6 +96,8 @@ func (c *Client) SetPortForward(ctx context.Context, in SetPortForwardInput) (*P
 // (the mapping is already gone). Best-effort destroy: a missing
 // firewall rule doesn't fail Delete.
 func (c *Client) RemovePortForward(ctx context.Context, in RemovePortForwardInput) error {
+	c.netNatMu.Lock()
+	defer c.netNatMu.Unlock()
 	body, err := scripts.PortForwardScript("remove")
 	if err != nil {
 		return fmt.Errorf("load port_forward/remove.ps1: %w", err)
@@ -110,7 +122,7 @@ func (c *Client) RemovePortForward(ctx context.Context, in RemovePortForwardInpu
 }
 
 // loadPortForwardWithRetry loads a port_forward verb script (new/set)
-// and prepends the canonical Invoke-WithDupNameRetry body from
+// and prepends the canonical Invoke-WithNetNatRetry body from
 // port_forward/_retry.ps1 so the verb's call to that function
 // resolves. Mirrors loadVMReadEmitter's prepend pattern; reduces the
 // drift surface between new.ps1 and set.ps1 at the cost of one extra
