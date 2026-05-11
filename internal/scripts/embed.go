@@ -27,7 +27,7 @@ var Common embed.FS
 // Pester *.Tests.ps1 and the _test_helpers.ps1 stub file are deliberately
 // excluded from the embed glob — production Go has no use for them.
 //
-//go:embed vswitch/get.ps1 vswitch/new.ps1 vswitch/set.ps1 vswitch/remove.ps1
+//go:embed vswitch/get.ps1 vswitch/new.ps1 vswitch/set.ps1 vswitch/remove.ps1 vswitch/list.ps1
 var Vswitch embed.FS
 
 // Preamble returns the contents of common/preamble.ps1. Convenience wrapper

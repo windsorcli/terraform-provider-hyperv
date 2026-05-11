@@ -296,6 +296,47 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error
 	return c.recoverVMSwitchRemoveOnDrop(ctx, name, natName, runErr)
 }
 
+// VMSwitchName is the minimal shape vswitch/list.ps1 emits per result.
+// Only Name is carried because the sweeper (the sole caller today)
+// passes name + empty natName to RemoveVMSwitch; the existing acctest
+// bar uses Private + Internal switches only, so empty natName is
+// correct for everything the sweeper currently encounters. NAT-switch
+// sweep support (which would need NatName carried alongside) is a
+// follow-up when NAT acctests land. Symmetric with VMName.
+type VMSwitchName struct {
+	Name string `json:"Name"`
+}
+
+// ListVMSwitchesByPrefix returns the names of all virtual switches
+// whose Name begins with the given prefix (typically "tfacc-" for the
+// acceptance-test sweeper). Empty result is a normal return
+// ([]VMSwitchName{}, nil); the caller can distinguish "no matches"
+// from "fault" without checking err.
+//
+// Backed by vswitch/list.ps1. Read-only operation; no side effects.
+// Doesn't take the netNatMu (vs RLock on GetVMSwitch's NAT branch)
+// because Get-VMSwitch enumeration without name-narrowing doesn't
+// touch the NetNat backing file at all -- the NAT join lives in the
+// caller-supplied-natName path of GetVMSwitch, not here.
+func (c *Client) ListVMSwitchesByPrefix(ctx context.Context, prefix string) ([]VMSwitchName, error) {
+	body, err := scripts.VswitchScript("list")
+	if err != nil {
+		return nil, fmt.Errorf("load vswitch/list.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		NamePrefix string `json:"name_prefix"`
+	}{NamePrefix: prefix})
+	if err != nil {
+		return nil, fmt.Errorf("marshal list.ps1 input: %w", err)
+	}
+
+	var switches []VMSwitchName
+	if err := c.runReadScript(ctx, string(body), stdin, &switches); err != nil {
+		return nil, err
+	}
+	return switches, nil
+}
+
 // prepareVMSwitchExternalForRemove flips the switch's AllowManagementOS
 // to false so the host's IP migrates from the vEthernet (windsor-X)
 // vNIC back to the physical NIC. Hyper-V handles this as a graceful

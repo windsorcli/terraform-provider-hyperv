@@ -99,4 +99,46 @@ func init() {
 			return sweepErr
 		},
 	})
+
+	// hyperv_virtual_switch runs AFTER hyperv_vm: Remove-VMSwitch fails
+	// while a VM still has a NIC bound to the switch, so the framework
+	// must run the vm sweeper first.
+	//
+	// Caveat: passes empty natName to RemoveVMSwitch. That's correct for
+	// every switch the current acctest bar creates (Private + Internal
+	// only; no NAT acctests). When NAT-switch acctests land, list.ps1
+	// will need to also surface NatName per switch, and this sweeper
+	// will need to thread that through -- otherwise NAT cleanup
+	// (Remove-NetNat + Remove-NetIPAddress) silently no-ops and the
+	// host accumulates orphan NetNat instances.
+	resource.AddTestSweepers("hyperv_virtual_switch", &resource.Sweeper{
+		Name:         "hyperv_virtual_switch",
+		Dependencies: []string{"hyperv_vm"},
+		F: func(_ string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
+			defer cancel()
+
+			client, closeClient, err := acctest.NewClientForSweep(ctx)
+			if err != nil {
+				return err
+			}
+			defer closeClient()
+
+			switches, err := client.ListVMSwitchesByPrefix(ctx, acctest.SweepPrefix)
+			if err != nil {
+				return err
+			}
+			log.Printf("[INFO] hyperv_virtual_switch sweeper: found %d orphan switches under prefix %q", len(switches), acctest.SweepPrefix)
+
+			var sweepErr error
+			for _, sw := range switches {
+				log.Printf("[INFO] hyperv_virtual_switch sweeper: removing %q", sw.Name)
+				if rmErr := client.RemoveVMSwitch(ctx, sw.Name, ""); rmErr != nil && !errors.Is(rmErr, hyperv.ErrNotFound) {
+					log.Printf("[WARN] hyperv_virtual_switch sweeper: remove %q failed: %v", sw.Name, rmErr)
+					sweepErr = errors.Join(sweepErr, rmErr)
+				}
+			}
+			return sweepErr
+		},
+	})
 }
