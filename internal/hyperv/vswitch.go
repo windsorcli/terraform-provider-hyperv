@@ -106,22 +106,31 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 
 	// NAT branch invokes New-NetNat + New-NetIPAddress; serialize with
 	// the package-wide netNatMu so we don't race port_forward CRUD on
-	// the host's NetNat persistent store. We can't hold the lock for
-	// the full method body because the recovery path below calls
-	// GetVMSwitch, which takes this same mutex when natName is
-	// non-empty (sync.Mutex is non-reentrant -- a second Lock from the
-	// same goroutine would deadlock). Locking just around runScript is
-	// the right granularity: the file-handle race the mutex prevents
-	// is between concurrent cmdlet calls, not between back-to-back
-	// same-goroutine calls.
+	// the host's NetNat persistent store. Two constraints shape the
+	// pattern below:
+	//
+	//   1. Reentrancy: we can't hold the lock for the full method body
+	//      because the recovery path below calls GetVMSwitch, which
+	//      takes this same mutex when natName is non-empty. sync.Mutex
+	//      is non-reentrant -- a second Lock from the same goroutine
+	//      would deadlock. The closure exits before recovery runs, so
+	//      the inner GetVMSwitch sees the lock free.
+	//
+	//   2. Panic safety: the framework's RPC layer recover()s panics
+	//      from resource methods, so a panic in runScript would leave
+	//      the provider process alive but with the mutex permanently
+	//      held -- every subsequent NAT op deadlocks. defer fires on
+	//      panic AND normal return, so wrap the locked region in an
+	//      IIFE with defer Unlock instead of a manual Unlock.
 	var sw VMSwitch
-	if in.NatName != "" {
-		c.netNatMu.Lock()
-	}
-	runErr := c.runScript(ctx, string(body), stdin, &sw)
-	if in.NatName != "" {
-		c.netNatMu.Unlock()
-	}
+	var runErr error
+	func() {
+		if in.NatName != "" {
+			c.netNatMu.Lock()
+			defer c.netNatMu.Unlock()
+		}
+		runErr = c.runScript(ctx, string(body), stdin, &sw)
+	}()
 	if runErr == nil {
 		return &sw, nil
 	}
@@ -261,20 +270,26 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error
 	// NAT branch invokes Remove-NetNat + Remove-NetIPAddress before the
 	// Remove-VMSwitch teardown; serialize with the package-wide
 	// netNatMu so we don't race port_forward CRUD on the host's NetNat
-	// persistent store. We can't lock at the function entry because
-	// the GetVMSwitch pre-step above already takes this same mutex
-	// when natName is non-empty (sync.Mutex is non-reentrant -- a
-	// second Lock from the same goroutine would deadlock). Locking
-	// just around runScript is the right granularity: the file-handle
-	// race the mutex prevents is between concurrent cmdlet calls, not
-	// between back-to-back same-goroutine calls.
-	if natName != "" {
-		c.netNatMu.Lock()
-	}
-	runErr := c.runScript(ctx, string(body), stdin, nil)
-	if natName != "" {
-		c.netNatMu.Unlock()
-	}
+	// persistent store. Same two constraints as NewVMSwitch's inner
+	// closure:
+	//
+	//   1. Reentrancy: GetVMSwitch in the pre-step above already takes
+	//      this same mutex when natName is non-empty, and the recovery
+	//      path below also calls back into GetVMSwitch. sync.Mutex is
+	//      non-reentrant; the closure must release before any of those
+	//      reentrant call paths run.
+	//
+	//   2. Panic safety: framework recover()s panics; manual Unlock
+	//      after a panicking runScript would leak the mutex. IIFE +
+	//      defer Unlock fires on panic AND normal return.
+	var runErr error
+	func() {
+		if natName != "" {
+			c.netNatMu.Lock()
+			defer c.netNatMu.Unlock()
+		}
+		runErr = c.runScript(ctx, string(body), stdin, nil)
+	}()
 	if runErr == nil || !errors.Is(runErr, connection.ErrSessionDropped) {
 		return runErr
 	}
