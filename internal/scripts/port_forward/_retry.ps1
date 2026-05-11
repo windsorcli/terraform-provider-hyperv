@@ -150,7 +150,13 @@ function Resolve-NetNatPortConflictMessage {
     # Synthesize a new ErrorRecord carrying the clearer message but
     # preserving the category info (NotSpecified) and FQEId tail so
     # downstream Go-side error mapping behaves identically.
-    $exception = [System.IO.InvalidDataException]::new($clearMessage)
+    # InvalidOperationException, not InvalidDataException: the port being
+    # in an OS-reserved exclusion range is an operational precondition
+    # failure, not malformed data. The Go-side error mapper reads only
+    # the message text today (no practical impact from the base type),
+    # but the type is a contract for any future typed-catch logic and
+    # for a human inspecting the record in a debugger.
+    $exception = [System.InvalidOperationException]::new($clearMessage)
     $newRecord = [System.Management.Automation.ErrorRecord]::new(
         $exception,
         'PortForwardPortExcluded',
