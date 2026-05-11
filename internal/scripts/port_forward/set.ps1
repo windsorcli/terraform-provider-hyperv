@@ -15,7 +15,7 @@
 # The firewall rule, by contrast, has Set-NetFirewallRule for in-place
 # mutation of Enabled / Profile.
 
-# Invoke-WithDupNameRetry is defined in port_forward/_retry.ps1, which
+# Invoke-WithNetNatRetry is defined in port_forward/_retry.ps1, which
 # the Go-side loadPortForwardWithRetry prepends to this script body
 # before sending it to the runner.
 
@@ -23,10 +23,10 @@ function Set-HypervPortForward {
     [CmdletBinding()]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
         'PSReviewUnusedParameter', 'InternalIPAddress',
-        Justification = 'Used inside the Invoke-WithDupNameRetry script block at the Add-NetNatStaticMapping call below; PSScriptAnalyzer cannot trace variable use through custom script-block boundaries (only special-cases known cmdlets like Invoke-Command).')]
+        Justification = 'Used inside the Invoke-WithNetNatRetry script block at the Add-NetNatStaticMapping call below; PSScriptAnalyzer cannot trace variable use through custom script-block boundaries (only special-cases known cmdlets like Invoke-Command).')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
         'PSReviewUnusedParameter', 'InternalPort',
-        Justification = 'Used inside the Invoke-WithDupNameRetry script block at the Add-NetNatStaticMapping call below; same script-block-boundary limitation as InternalIPAddress.')]
+        Justification = 'Used inside the Invoke-WithNetNatRetry script block at the Add-NetNatStaticMapping call below; same script-block-boundary limitation as InternalIPAddress.')]
     param(
         [Parameter(Mandatory)] [string] $NatName,
         [Parameter(Mandatory)] [ValidateSet('tcp', 'udp')] [string] $Protocol,
@@ -71,7 +71,7 @@ function Set-HypervPortForward {
     # changes whenever the mapping is recreated.
     Remove-NetNatStaticMapping -StaticMappingID $existing.StaticMappingID `
         -Confirm:$false -ErrorAction Stop
-    $mapping = Invoke-WithDupNameRetry {
+    $mapping = Invoke-WithNetNatRetry {
         Add-NetNatStaticMapping `
             -NatName $NatName `
             -Protocol $protocolUpper `
@@ -167,7 +167,16 @@ if ($MyInvocation.InvocationName -ne '.') {
             -FirewallProfile $fw.profile
     }
     catch {
-        Write-HypervError $_
+        # Translate the Add-NetNatStaticMapping sharing-violation
+        # signature into a clearer "port is in a Windows exclusion range"
+        # error before surfacing; pass-through for any other error class.
+        # set.ps1 does Remove+Add internally; the same translation applies
+        # because the Add half hits the same kernel reservation check.
+        $translated = Resolve-NetNatPortConflictMessage `
+            -ErrorRecord $_ `
+            -Protocol $params.protocol `
+            -ExternalPort $params.external_port
+        Write-HypervError $translated
         exit 1
     }
 }

@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
@@ -14,9 +15,23 @@ import (
 // httpClient is consumed by the runner-pipelined image_file fetch; other
 // methods route entirely through the PowerShell connection layer and
 // don't observe it.
+//
+// netNatMu serializes calls to every NetNat-touching method (port_forward
+// CRUD plus the NAT branches of vswitch CRUD). Windows' NetNat is a
+// host-singleton with a persistent-store backing file; under terraform's
+// default parallelism=10 (or higher), parallel Add-NetNatStaticMapping
+// calls race the same file handle and surface as ERROR_SHARING_VIOLATION
+// ("The process cannot access the file because it is being used by
+// another process") on the loser. The PS-side _retry helper retries
+// these as defense in depth, but eliminating the contention here is the
+// real fix: a 6-port-forward apply now takes ~6x a single (the cmdlets
+// are 1-2s each) instead of having a non-deterministic ~20% failure rate.
+// One mutex per Client is correct because NetNat is host-singleton --
+// there's exactly one ordering of NetNat writes per host.
 type Client struct {
 	runner     connection.Runner
 	httpClient *http.Client
+	netNatMu   sync.Mutex
 }
 
 // ClientOption customizes a Client at construction time. Functional-
