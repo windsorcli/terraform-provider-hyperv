@@ -267,3 +267,43 @@ func (c *Client) RemoveVHD(ctx context.Context, path string) error {
 
 	return c.runScript(ctx, string(body), stdin, nil)
 }
+
+// VHDPath is the minimal shape vhd/list.ps1 emits per result. Path-only
+// because the sweeper's RemoveVHD call only needs the path; bigger
+// shape means slower enumeration on a directory with many files and a
+// wider blast radius for script-Go contract drift.
+type VHDPath struct {
+	Path string `json:"Path"`
+}
+
+// ListVHDsByPrefix returns paths of all VHD/VHDX (and avhd/avhdx) files
+// under parentDir whose filename starts with the given prefix. Unlike
+// ListVMsByPrefix which enumerates host-globally via Get-VM, VHDs are
+// path-addressable -- there's no "list all VHDs on the host" Hyper-V
+// cmdlet -- so the caller must supply the directory to scan. The
+// acctest sweeper threads HYPERV_TEST_VHD_DIR as parentDir.
+//
+// A missing parentDir is a normal empty return ([]VHDPath{}, nil), not
+// an error -- a fresh bench legitimately has no fixture directory yet.
+// Other errors (permission denied, etc.) propagate.
+//
+// Backed by vhd/list.ps1. Read-only.
+func (c *Client) ListVHDsByPrefix(ctx context.Context, parentDir, prefix string) ([]VHDPath, error) {
+	body, err := scripts.VHDScript("list")
+	if err != nil {
+		return nil, fmt.Errorf("load vhd/list.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		ParentDir  string `json:"parent_dir"`
+		NamePrefix string `json:"name_prefix"`
+	}{ParentDir: parentDir, NamePrefix: prefix})
+	if err != nil {
+		return nil, fmt.Errorf("marshal list.ps1 input: %w", err)
+	}
+
+	var vhds []VHDPath
+	if err := c.runReadScript(ctx, string(body), stdin, &vhds); err != nil {
+		return nil, err
+	}
+	return vhds, nil
+}

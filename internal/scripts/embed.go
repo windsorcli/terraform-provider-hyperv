@@ -84,7 +84,7 @@ func ImageFileScript(verb string) ([]byte, error) {
 // VHD holds the verb scripts for hyperv_vhd (M4). The "set" verb only
 // resizes -- every other attribute is RequiresReplace at the schema layer.
 //
-//go:embed vhd/get.ps1 vhd/new.ps1 vhd/set.ps1 vhd/remove.ps1
+//go:embed vhd/get.ps1 vhd/new.ps1 vhd/set.ps1 vhd/remove.ps1 vhd/list.ps1
 var VHD embed.FS
 
 // VHDScript returns the contents of vhd/<verb>.ps1 (verb in {get, new, set, remove}).

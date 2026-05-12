@@ -544,3 +544,76 @@ func TestClient_NewVHDDifferencing_SessionDroppedRecoversSkipsSizeCheck(t *testi
 		t.Errorf("VhdType = %q, want \"Differencing\"", v.VhdType)
 	}
 }
+
+// TestClient_ListVHDsByPrefix_DecodesArray pins the wire contract:
+// list.ps1 emits a JSON array of {Path} objects, even on zero or one
+// result. Symmetric with the ListVMsByPrefix / ListVMSwitchesByPrefix
+// tests in vm_test.go / vswitch_test.go.
+func TestClient_ListVHDsByPrefix_DecodesArray(t *testing.T) {
+	t.Parallel()
+
+	stdout := `[{"Path":"C:\\hyperv\\tfacc\\tfacc-vm-root-abc.vhdx"},{"Path":"C:\\hyperv\\tfacc\\tfacc-vm-data-def.vhd"}]`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVHDByPrefix").Return(stdout, "", 0)
+	c := NewClient(fr)
+
+	vhds, err := c.ListVHDsByPrefix(t.Context(), "C:\\hyperv\\tfacc", "tfacc-")
+	if err != nil {
+		t.Fatalf("ListVHDsByPrefix: %v", err)
+	}
+	if len(vhds) != 2 {
+		t.Fatalf("len = %d, want 2", len(vhds))
+	}
+	if vhds[0].Path != "C:\\hyperv\\tfacc\\tfacc-vm-root-abc.vhdx" || vhds[1].Path != "C:\\hyperv\\tfacc\\tfacc-vm-data-def.vhd" {
+		t.Errorf("paths = %+v", vhds)
+	}
+}
+
+// TestClient_ListVHDsByPrefix_EmptyArray locks the empty-result case --
+// matters both for "no orphans in a populated dir" and "parent dir
+// missing entirely" (which list.ps1 also returns as []).
+func TestClient_ListVHDsByPrefix_EmptyArray(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVHDByPrefix").Return("[]", "", 0)
+	c := NewClient(fr)
+
+	vhds, err := c.ListVHDsByPrefix(t.Context(), "C:\\hyperv\\tfacc", "tfacc-")
+	if err != nil {
+		t.Fatalf("ListVHDsByPrefix: %v", err)
+	}
+	if len(vhds) != 0 {
+		t.Errorf("len = %d, want 0", len(vhds))
+	}
+}
+
+// TestClient_ListVHDsByPrefix_ForwardsBothParamsInStdin pins the
+// snake_case stdin shape ({"parent_dir":"...","name_prefix":"..."})
+// that list.ps1's entry block reads. Distinct from the VM/switch
+// variants because list.ps1 takes TWO inputs: parent dir + prefix.
+func TestClient_ListVHDsByPrefix_ForwardsBothParamsInStdin(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVHDByPrefix").Return("[]", "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.ListVHDsByPrefix(t.Context(), "C:\\hyperv\\tfacc", "tfacc-"); err != nil {
+		t.Fatalf("ListVHDsByPrefix: %v", err)
+	}
+
+	var got struct {
+		ParentDir  string `json:"parent_dir"`
+		NamePrefix string `json:"name_prefix"`
+	}
+	if err := json.Unmarshal(fr.Calls()[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.ParentDir != "C:\\hyperv\\tfacc" {
+		t.Errorf("stdin.parent_dir = %q", got.ParentDir)
+	}
+	if got.NamePrefix != "tfacc-" {
+		t.Errorf("stdin.name_prefix = %q", got.NamePrefix)
+	}
+}

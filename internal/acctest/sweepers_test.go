@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"testing"
 	"time"
 
@@ -135,6 +136,54 @@ func init() {
 				log.Printf("[INFO] hyperv_virtual_switch sweeper: removing %q", sw.Name)
 				if rmErr := client.RemoveVMSwitch(ctx, sw.Name, ""); rmErr != nil && !errors.Is(rmErr, hyperv.ErrNotFound) {
 					log.Printf("[WARN] hyperv_virtual_switch sweeper: remove %q failed: %v", sw.Name, rmErr)
+					sweepErr = errors.Join(sweepErr, rmErr)
+				}
+			}
+			return sweepErr
+		},
+	})
+
+	// hyperv_vhd runs AFTER hyperv_vm: while a VM still references a
+	// VHD, Remove-Item / Remove-VHD on the file fails with a sharing
+	// violation (the VHD provider holds the handle until the VM
+	// releases it). Letting the vm sweeper clear first lets the disk
+	// files unlock.
+	//
+	// Parent dir comes from HYPERV_TEST_VHD_DIR rather than a hard-coded
+	// path because the bench layout differs per operator (some run
+	// C:\hyperv\tfacc, others a non-default ClusterSharedVolume path).
+	// Unset = no-op rather than an error: a host with no VHD-producing
+	// acctests run yet legitimately has nothing to sweep.
+	resource.AddTestSweepers("hyperv_vhd", &resource.Sweeper{
+		Name:         "hyperv_vhd",
+		Dependencies: []string{"hyperv_vm"},
+		F: func(_ string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
+			defer cancel()
+
+			parentDir := os.Getenv("HYPERV_TEST_VHD_DIR")
+			if parentDir == "" {
+				log.Printf("[INFO] hyperv_vhd sweeper: HYPERV_TEST_VHD_DIR unset; nothing to sweep")
+				return nil
+			}
+
+			client, closeClient, err := acctest.NewClientForSweep(ctx)
+			if err != nil {
+				return err
+			}
+			defer closeClient()
+
+			vhds, err := client.ListVHDsByPrefix(ctx, parentDir, acctest.SweepPrefix)
+			if err != nil {
+				return err
+			}
+			log.Printf("[INFO] hyperv_vhd sweeper: found %d orphan VHDs under %s with prefix %q", len(vhds), parentDir, acctest.SweepPrefix)
+
+			var sweepErr error
+			for _, vhd := range vhds {
+				log.Printf("[INFO] hyperv_vhd sweeper: removing %q", vhd.Path)
+				if rmErr := client.RemoveVHD(ctx, vhd.Path); rmErr != nil && !errors.Is(rmErr, hyperv.ErrNotFound) {
+					log.Printf("[WARN] hyperv_vhd sweeper: remove %q failed: %v", vhd.Path, rmErr)
 					sweepErr = errors.Join(sweepErr, rmErr)
 				}
 			}
