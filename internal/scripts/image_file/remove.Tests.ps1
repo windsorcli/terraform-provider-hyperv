@@ -329,13 +329,15 @@ Describe 'Remove-HypervImageFile' {
             Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
         }
 
-        It 'surfaces ImageFileLocked when the retry still fails after detach' {
-            # If detach succeeds but the file is still locked (a second
-            # holder appears between the holder enumeration and the
-            # retry, or AV grabs the file the moment Hyper-V releases),
-            # we surface the same diagnostic the no-force path would.
-            # Don't promote the underlying retry error -- the operator's
-            # next action is the same either way.
+        It 'surfaces ImageFileLocked with the no-holders message when the retry still fails after detach' {
+            # Detach succeeded but Remove-Item still fails -- a new
+            # holder appeared between our detach and our retry. The
+            # message must NOT name the VM whose slot we just cleared,
+            # because that VM is no longer holding the file and the
+            # operator should not be told to detach what's already
+            # detached. The no-holders branch ("another process is
+            # holding the file") points at the right culprit (AV /
+            # Explorer / out-of-band Set-VMDvdDrive).
             Mock Test-Path { $true }
             Mock Remove-Item {
                 $exception = [System.IO.IOException]::new(
@@ -357,7 +359,9 @@ Describe 'Remove-HypervImageFile' {
 
             $captured | Should -Not -BeNullOrEmpty
             $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
-            $captured.Exception.Message | Should -Match 'worker-2'
+            $captured.Exception.Message | Should -Match 'another process'
+            $captured.Exception.Message | Should -Not -Match 'worker-2'
+            $captured.Exception.Message | Should -Not -Match 'Detach the dvd_drive'
             Should -Invoke Set-VMDvdDrive -Times 1 -Exactly
             Should -Invoke Remove-Item -Times 2 -Exactly
         }

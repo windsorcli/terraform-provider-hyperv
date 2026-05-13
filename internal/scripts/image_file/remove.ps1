@@ -229,15 +229,16 @@ function Remove-HypervImageFile {
                 return
             }
             catch {
-                # Detach succeeded, but the file is still locked:
-                # another holder appeared between detach and retry (AV
-                # scanner, Explorer preview), or the original VM
-                # re-attached via an out-of-band Set-VMDvdDrive. Naming
-                # the holders we *did* detach is the right operator
-                # starting point -- they're the most likely root cause
-                # and the previous-holder VM is the obvious thing to
-                # check next.
-                $message = Format-HypervImageFileLockedMessage -Path $Path -Holders $holders
+                # Detach succeeded but the file is still locked, so a
+                # new holder appeared between our detach and our retry
+                # -- almost always AV scanner or Explorer preview.
+                # Render with empty holders: the no-holders branch
+                # text ("another process is holding the file") names
+                # the right culprit, where reusing $holders here would
+                # falsely claim a Hyper-V slot still has the file
+                # attached (we cleared those a few lines up) and tell
+                # the operator to detach what we already detached.
+                $message = Format-HypervImageFileLockedMessage -Path $Path -Holders @()
                 throw (New-HypervImageFileLockedError -Path $Path -Message $message)
             }
         }
