@@ -600,3 +600,70 @@ func shortenVerifyTimings(t *testing.T) {
 // case. The recovery loop's logic is unchanged structurally; the gap
 // is unit-test coverage of that loop in the Remove path. Re-add once
 // FakeRunner gains response-queue support.
+
+// TestClient_ListVMSwitchesByPrefix_DecodesArray pins the wire contract:
+// list.ps1 emits a JSON array of {Name} objects, even on zero or one
+// result. Symmetric with the ListVMsByPrefix tests in vm_test.go.
+func TestClient_ListVMSwitchesByPrefix_DecodesArray(t *testing.T) {
+	t.Parallel()
+
+	stdout := `[{"Name":"tfacc-vswitch-priv-abc"},{"Name":"tfacc-nic-sw-vlan-xyz"}]`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVMSwitchByPrefix").Return(stdout, "", 0)
+	c := NewClient(fr)
+
+	switches, err := c.ListVMSwitchesByPrefix(t.Context(), "tfacc-")
+	if err != nil {
+		t.Fatalf("ListVMSwitchesByPrefix: %v", err)
+	}
+	if len(switches) != 2 {
+		t.Fatalf("len = %d, want 2", len(switches))
+	}
+	if switches[0].Name != "tfacc-vswitch-priv-abc" || switches[1].Name != "tfacc-nic-sw-vlan-xyz" {
+		t.Errorf("names = %+v", switches)
+	}
+}
+
+// TestClient_ListVMSwitchesByPrefix_EmptyArray locks the empty-result
+// case -- the PS-side -InputObject keeps the shape array-typed so the
+// Go decoder returns []VMSwitchName{} (length 0), not nil-or-error.
+func TestClient_ListVMSwitchesByPrefix_EmptyArray(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVMSwitchByPrefix").Return("[]", "", 0)
+	c := NewClient(fr)
+
+	switches, err := c.ListVMSwitchesByPrefix(t.Context(), "tfacc-")
+	if err != nil {
+		t.Fatalf("ListVMSwitchesByPrefix: %v", err)
+	}
+	if len(switches) != 0 {
+		t.Errorf("len = %d, want 0", len(switches))
+	}
+}
+
+// TestClient_ListVMSwitchesByPrefix_ForwardsPrefixInStdin pins the
+// snake_case stdin shape ({"name_prefix": "..."}) that list.ps1's
+// entry block reads via [Console]::In.ReadToEnd().
+func TestClient_ListVMSwitchesByPrefix_ForwardsPrefixInStdin(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervVMSwitchByPrefix").Return("[]", "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.ListVMSwitchesByPrefix(t.Context(), "tfacc-"); err != nil {
+		t.Fatalf("ListVMSwitchesByPrefix: %v", err)
+	}
+
+	var got struct {
+		NamePrefix string `json:"name_prefix"`
+	}
+	if err := json.Unmarshal(fr.Calls()[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.NamePrefix != "tfacc-" {
+		t.Errorf("stdin.name_prefix = %q, want %q", got.NamePrefix, "tfacc-")
+	}
+}

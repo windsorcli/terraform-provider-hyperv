@@ -55,6 +55,44 @@ function Remove-Item {
     )
 }
 
+# Get-ChildItem stub for list.ps1 test mocks. Real Get-ChildItem has
+# many parameters (-File, -Directory, -Recurse, -Include, ...) but Pester's
+# Mock loses non-positional parameter signatures, so binding -File or
+# similar through a mock fails with ParameterBindingException. This
+# stub keeps the parameter set minimal so the script's call surface
+# is testable; the production script avoids -File for the same reason
+# (see list.ps1 comment).
+function Get-ChildItem {
+    [CmdletBinding()]
+    param(
+        [string] $LiteralPath,
+        [string] $Filter
+    )
+}
+
+# New-HypervChildItemSample builds a Get-ChildItem-shaped object for use
+# as a Mock return value. Used by vhd/list.Tests.ps1 to synthesize the
+# files the script enumerates without touching the real filesystem.
+# Lives in this dot-sourced helper because Pester's Mock blocks can't
+# see test-file-level functions.
+function New-HypervChildItemSample {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [string] $ParentDir = 'C:\hyperv\tfacc'
+    )
+    # String-concat rather than Join-Path: on PS 7 on non-Windows
+    # (e.g. macOS), Join-Path resolves the parent through the PSDrive
+    # registry and errors with "drive C: does not exist". The fixture
+    # only needs a synthesized path string, not a resolved one.
+    $extension = [System.IO.Path]::GetExtension($Name)
+    [pscustomobject]@{
+        Name      = $Name
+        Extension = $extension
+        FullName  = "${ParentDir}\${Name}"
+    }
+}
+
 # New-HypervVHDSample builds a Get-VHD-shaped object for use as the canned
 # return value from Mock blocks. Defaults model a typical 32 GiB dynamic
 # VHDX; per-test overrides cover differencing and fixed shapes.

@@ -27,7 +27,7 @@ var Common embed.FS
 // Pester *.Tests.ps1 and the _test_helpers.ps1 stub file are deliberately
 // excluded from the embed glob — production Go has no use for them.
 //
-//go:embed vswitch/get.ps1 vswitch/new.ps1 vswitch/set.ps1 vswitch/remove.ps1
+//go:embed vswitch/get.ps1 vswitch/new.ps1 vswitch/set.ps1 vswitch/remove.ps1 vswitch/list.ps1
 var Vswitch embed.FS
 
 // Preamble returns the contents of common/preamble.ps1. Convenience wrapper
@@ -84,7 +84,7 @@ func ImageFileScript(verb string) ([]byte, error) {
 // VHD holds the verb scripts for hyperv_vhd (M4). The "set" verb only
 // resizes -- every other attribute is RequiresReplace at the schema layer.
 //
-//go:embed vhd/get.ps1 vhd/new.ps1 vhd/set.ps1 vhd/remove.ps1
+//go:embed vhd/get.ps1 vhd/new.ps1 vhd/set.ps1 vhd/remove.ps1 vhd/list.ps1
 var VHD embed.FS
 
 // VHDScript returns the contents of vhd/<verb>.ps1 (verb in {get, new, set, remove}).
@@ -106,7 +106,7 @@ func VHDScript(verb string) ([]byte, error) {
 // per-cmdlet error mapping than when set.ps1 has to disambiguate which
 // of N internal failures fired.
 //
-//go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1
+//go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1 vm/list.ps1
 //go:embed vm/add-hard-disk-drive.ps1 vm/remove-hard-disk-drive.ps1
 //go:embed vm/add-network-adapter.ps1 vm/remove-network-adapter.ps1
 //go:embed vm/add-dvd-drive.ps1 vm/remove-dvd-drive.ps1
