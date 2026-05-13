@@ -2,7 +2,7 @@
 #
 # Wire contract (locked in by Tests.ps1):
 #
-#   stdin JSON  : { "path": "<absolute-path>" }
+#   stdin JSON  : { "path": "<absolute-path>", "force": <bool> }
 #   stdout      : empty (caller passes dst=nil to runScript).
 #   stderr/exit : missing file -> Write-HypervError envelope with
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
@@ -12,6 +12,16 @@
 # the file (source_mode=url). For host_path mode, Delete is a no-op in Go --
 # the user did not ask the provider to put the file there, so removing it on
 # destroy would surprise them.
+#
+# `force` is the opt-in detach-then-retry escape hatch. When true and the
+# initial Remove-Item hits a sharing violation whose holders are Hyper-V
+# DVDs, the script detaches each DVD slot (Set-VMDvdDrive -Path $null) and
+# retries the delete once. Same diagnostic surfaces on retry failure or
+# when the holder is non-Hyper-V (AV scan, Explorer preview, etc.) -- the
+# detach loop has nothing to act on in that case. When false (default),
+# the original sharing-violation diagnostic surfaces immediately, which
+# is the safe behavior for resources whose VM holder isn't being
+# destroyed in the same operation.
 
 # Get-HypervImageFileDvdHolder enumerates the Hyper-V DVD drives whose
 # mounted media path equals $Path. Used by Remove-HypervImageFile's
@@ -52,6 +62,75 @@ function Get-HypervImageFileDvdHolder {
     return @($holders)
 }
 
+# Format-HypervImageFileLockedMessage renders the operator-facing message
+# for an ImageFileLocked error. Pulled out of Remove-HypervImageFile so the
+# force-retry path and the no-force path emit identical text for the same
+# (path, holders) tuple -- the operator should not see a different
+# diagnostic just because they opted in to force_destroy. Empty holders
+# array picks the non-Hyper-V branch.
+function Format-HypervImageFileLockedMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Holders
+    )
+    if ($Holders.Count -eq 0) {
+        $detail = "No Hyper-V DVD attachment matches this path; another process " +
+            "(antivirus scan, Explorer preview, etc.) is holding the file."
+    }
+    else {
+        $tuples = $Holders | ForEach-Object {
+            "VM '$($_.VMName)' has it attached at controller " +
+            "$($_.ControllerNumber)/$($_.ControllerLocation)"
+        }
+        $detail = ($tuples -join '; ') + ". Detach the dvd_drive (or " +
+            "taint the hyperv_image_file resource) so the next apply " +
+            "can release the lock."
+    }
+    return "Cannot remove '$Path': $detail"
+}
+
+# New-HypervImageFileLockedError builds an ImageFileLocked ErrorRecord.
+# Centralized so force-retry and no-force paths emit byte-identical
+# CategoryInfo / FullyQualifiedErrorId; tests assert on those values and
+# subtle drift between the two paths would silently break the diagnostic
+# contract.
+function New-HypervImageFileLockedError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Message
+    )
+    $exception = [System.IO.IOException]::new($Message)
+    return [System.Management.Automation.ErrorRecord]::new(
+        $exception, 'ImageFileLocked',
+        [System.Management.Automation.ErrorCategory]::ResourceBusy, $Path)
+}
+
+# Invoke-HypervImageFileForceDetach walks a holders array and detaches
+# each DVD slot via Set-VMDvdDrive -Path $null. Errors from individual
+# detach calls propagate -- a partial detach is less useful than a
+# clean diagnostic naming the slot that failed, since the operator
+# needs to know whether to retry or escalate to the VM owner.
+#
+# Pulled out of Remove-HypervImageFile to keep the per-holder iteration
+# in one place; the function body would otherwise pile a third nested
+# loop into the catch block.
+function Invoke-HypervImageFileForceDetach {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Holders
+    )
+    foreach ($holder in $Holders) {
+        Set-VMDvdDrive `
+            -VMName $holder.VMName `
+            -ControllerNumber $holder.ControllerNumber `
+            -ControllerLocation $holder.ControllerLocation `
+            -Path $null `
+            -ErrorAction Stop
+    }
+}
+
 # Remove-HypervImageFile deletes a file at the given path. Test-Path returns
 # $false (no error) for non-existent paths, so the missing branch sidesteps
 # the SilentlyContinue trap. Permission/IO errors from Test-Path propagate
@@ -66,10 +145,21 @@ function Get-HypervImageFileDvdHolder {
 # message so the operator sees a clear next step (taint the resource,
 # remove the dvd_drive attachment, etc.). Non-sharing-violation errors
 # re-throw unchanged.
+#
+# When -Force is set and the holders are Hyper-V DVDs, the function
+# detaches each slot (Set-VMDvdDrive -Path $null) and retries the
+# delete once. This is the cross-module-destroy escape hatch: the
+# VM resource lives in a different terraform state that will be
+# destroyed in a later apply, so Terraform can't model the dependency,
+# and the locked-file diagnostic blocks the cidata module's destroy.
+# Opt-in (default $false) because the detach mutates VM state the
+# hyperv_vm resource tracks, drifting that state until the VM is
+# itself destroyed.
 function Remove-HypervImageFile {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string] $Path
+        [Parameter(Mandatory)] [string] $Path,
+        [switch] $Force
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $exception = [System.Management.Automation.ItemNotFoundException]::new(
@@ -113,25 +203,33 @@ function Remove-HypervImageFile {
         catch {
             $holders = @()
         }
-        if ($holders.Count -eq 0) {
-            $detail = "No Hyper-V DVD attachment matches this path; another process " +
-                "(antivirus scan, Explorer preview, etc.) is holding the file."
-        }
-        else {
-            $tuples = $holders | ForEach-Object {
-                "VM '$($_.VMName)' has it attached at controller " +
-                "$($_.ControllerNumber)/$($_.ControllerLocation)"
+
+        # Force-detach path: when -Force is set and we have Hyper-V
+        # holders, detach each slot and retry the delete once. A
+        # non-Hyper-V holder (no entries in $holders) leaves nothing
+        # for the detach loop to act on, so the original diagnostic
+        # surfaces unchanged -- the operator still needs to deal with
+        # the AV / Explorer / etc. holder out-of-band.
+        if ($Force -and $holders.Count -gt 0) {
+            try {
+                Invoke-HypervImageFileForceDetach -Holders $holders
+                Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+                return
             }
-            $detail = ($tuples -join '; ') + ". Detach the dvd_drive (or " +
-                "taint the hyperv_image_file resource) so the next apply " +
-                "can release the lock."
+            catch {
+                # Retry failed (or detach itself failed). Surface the
+                # same diagnostic the no-force path would have, naming
+                # the holders we tried to detach. Don't promote the
+                # underlying detach/retry error -- the operator's next
+                # action is the same either way (resolve the lock and
+                # re-run apply).
+                $message = Format-HypervImageFileLockedMessage -Path $Path -Holders $holders
+                throw (New-HypervImageFileLockedError -Path $Path -Message $message)
+            }
         }
-        $message = "Cannot remove '$Path': $detail"
-        $exception = [System.IO.IOException]::new($message)
-        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-            $exception, 'ImageFileLocked',
-            [System.Management.Automation.ErrorCategory]::ResourceBusy, $Path)
-        throw $errorRecord
+
+        $message = Format-HypervImageFileLockedMessage -Path $Path -Holders $holders
+        throw (New-HypervImageFileLockedError -Path $Path -Message $message)
     }
 }
 
@@ -139,7 +237,11 @@ function Remove-HypervImageFile {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-        Remove-HypervImageFile -Path $params.path
+        $forceFlag = $false
+        if ($null -ne $params.PSObject.Properties['force']) {
+            $forceFlag = [bool] $params.force
+        }
+        Remove-HypervImageFile -Path $params.path -Force:$forceFlag
     }
     catch {
         Write-HypervError $_

@@ -1128,13 +1128,16 @@ func TestClient_RemoveImageFile_HappyPath(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveImageFile(t.Context(), "C:\\images\\to-delete.vhdx"); err != nil {
+	if err := c.RemoveImageFile(t.Context(), "C:\\images\\to-delete.vhdx", false); err != nil {
 		t.Fatalf("RemoveImageFile: %v", err)
 	}
 
 	stdin := string(fr.Calls()[0].StdinJSON)
 	if !strings.Contains(stdin, `"path":"C:\\images\\to-delete.vhdx"`) {
 		t.Errorf("stdin should forward path as snake_case JSON; got: %s", stdin)
+	}
+	if !strings.Contains(stdin, `"force":false`) {
+		t.Errorf("stdin should forward force=false as snake_case JSON; got: %s", stdin)
 	}
 }
 
@@ -1148,8 +1151,29 @@ func TestClient_RemoveImageFile_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	err := c.RemoveImageFile(t.Context(), "C:\\images\\already-gone.vhdx")
+	err := c.RemoveImageFile(t.Context(), "C:\\images\\already-gone.vhdx", false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// RemoveImageFile forwards force=true into the stdin JSON so the host
+// script's detach-then-retry branch can run. Pins the JSON shape locked
+// by remove.Tests.ps1 -- the field name and boolean type matter; a typo
+// here would silently disable force_destroy at the wire layer.
+func TestClient_RemoveImageFile_ForwardsForceTrueInStdin(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervImageFile").Return("", "", 0)
+	c := NewClient(fr)
+
+	if err := c.RemoveImageFile(t.Context(), "C:\\images\\seed.iso", true); err != nil {
+		t.Fatalf("RemoveImageFile: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if !strings.Contains(stdin, `"force":true`) {
+		t.Errorf("stdin should forward force=true as snake_case JSON; got: %s", stdin)
 	}
 }

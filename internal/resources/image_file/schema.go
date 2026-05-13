@@ -235,6 +235,34 @@ func resourceSchema() schema.Schema {
 					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"force_destroy": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				MarkdownDescription: "When `true`, `terraform destroy` detaches the file from any Hyper-V " +
+					"VM DVD slot that currently mounts it before removing it from disk. Solves the " +
+					"cross-module-destroy ordering case: when the `hyperv_image_file` (typically a cidata " +
+					"seed) lives in one Terraform state and the `hyperv_vm` that mounts it lives in " +
+					"another, Terraform can't model the dependency, and the cidata module's destroy hits " +
+					"a sharing-violation diagnostic naming the VM that still holds the file open.\n\n" +
+					"With this flag set, the provider walks the host-side DVD enumeration, calls " +
+					"`Set-VMDvdDrive -Path $null` against each holder, and retries the file delete. The " +
+					"locked-file diagnostic still surfaces if the retry fails (the lock came from " +
+					"antivirus, Explorer preview, or a holder that appeared between enumeration and " +
+					"retry) -- the flag does not paper over non-Hyper-V holders.\n\n" +
+					"**Drift caveat:** detaching the DVD slot mutates state the `hyperv_vm` resource " +
+					"tracks. The next `terraform refresh` against that VM resource will surface the " +
+					"detached slot as drift. This is fine when the VM is also being destroyed in a " +
+					"subsequent apply (the canonical case for setting the flag); set this only on " +
+					"image_files whose VM consumers are themselves transient or being torn down.\n\n" +
+					"**No-op for `host_path`-mode** -- destroy was already a no-op in that mode " +
+					"(`keep_on_destroy` also short-circuits the delete entirely). Setting the flag in " +
+					"those configurations is harmless but does nothing. Toggling the flag is an " +
+					"in-place change; it never forces replacement.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
 		},
 	}
 }

@@ -43,6 +43,14 @@ import (
 // re-stream Update path; url-mode forces replacement on any change, and
 // host_path-mode never writes the destination.
 //
+// ForceDestroy is the opt-in escape hatch for destroying a file that is
+// currently mounted as a DVD on a running VM. When true, Delete asks
+// remove.ps1 to detach the holding slot(s) via Set-VMDvdDrive -Path
+// $null before retrying the delete. Honored in url, local_path, and
+// literal_bytes modes -- those are the modes that actually run the
+// host-side delete. Host_path-mode skips the delete entirely so the
+// flag is a no-op there.
+//
 // DestinationPath uses the pathtype.Path custom type so users can
 // write either `C:/foo` or `C:\foo` without the framework rejecting
 // the apply with "Provider produced inconsistent result after apply"
@@ -62,6 +70,7 @@ type Model struct {
 	Sha256              types.String  `tfsdk:"sha256"`
 	SizeBytes           types.Int64   `tfsdk:"size_bytes"`
 	KeepOnDestroy       types.Bool    `tfsdk:"keep_on_destroy"`
+	ForceDestroy        types.Bool    `tfsdk:"force_destroy"`
 }
 
 // URLConfig is the user-supplied URL-mode source configuration.

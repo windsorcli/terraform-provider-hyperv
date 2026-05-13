@@ -180,4 +180,186 @@ Describe 'Remove-HypervImageFile' {
             Should -Invoke Get-VMDvdDrive -Times 0 -Exactly
         }
     }
+
+    Context 'force_destroy detach-then-retry' {
+        # The -Force escape hatch handles the cross-module-destroy case:
+        # the cidata image_file lives in one terraform state, the VM
+        # holding it lives in another, and the cidata module's destroy
+        # plan can't model the dependency. With -Force the script
+        # detaches the DVD slots and retries the delete once, letting
+        # the cidata destroy succeed even though the VM-side destroy
+        # hasn't run yet.
+
+        It 'detaches DVD slots and retries Remove-Item when -Force is set and Hyper-V holds the lock' {
+            Mock Test-Path { $true }
+            $script:removeAttempt = 0
+            Mock Remove-Item {
+                $script:removeAttempt++
+                if ($script:removeAttempt -eq 1) {
+                    $exception = [System.IO.IOException]::new(
+                        "The process cannot access the file because it is being used by another process.",
+                        -2147024864)
+                    throw $exception
+                }
+                # Second attempt succeeds (DVD detached -- lock released).
+            }
+            Mock Get-VM { New-HypervImageFileVMSample -Name 'worker-2' }
+            Mock Get-VMDvdDrive {
+                New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'worker-2' `
+                    -Path 'C:\images\seed.iso' `
+                    -ControllerNumber 0 `
+                    -ControllerLocation 2
+            } -ParameterFilter { $VMName -eq 'worker-2' }
+            Mock Set-VMDvdDrive { }
+
+            { Remove-HypervImageFile -Path 'C:\images\seed.iso' -Force } |
+                Should -Not -Throw
+
+            # The detach call passes -Path $null to release the slot. The
+            # _test_helpers Set-VMDvdDrive stub binds Path as [string], so
+            # $null folds to '' on PS 5.1; assert on the slot tuple and
+            # the empty-string Path so the filter doesn't depend on the
+            # stub's parameter-binding choice.
+            Should -Invoke Set-VMDvdDrive -Times 1 -Exactly -ParameterFilter {
+                $VMName -eq 'worker-2' -and
+                $ControllerNumber -eq 0 -and
+                $ControllerLocation -eq 2 -and
+                [string]::IsNullOrEmpty($Path)
+            }
+            Should -Invoke Remove-Item -Times 2 -Exactly
+        }
+
+        It 'detaches every Hyper-V holder when -Force is set (multiple VMs)' {
+            # Multiple VMs holding the same cidata path is rare but legal
+            # (e.g., a snapshot/clone that shares the seed). The detach
+            # loop must cover every slot or the retry hits the same
+            # sharing violation.
+            Mock Test-Path { $true }
+            $script:removeAttempt = 0
+            Mock Remove-Item {
+                $script:removeAttempt++
+                if ($script:removeAttempt -eq 1) {
+                    $exception = [System.IO.IOException]::new(
+                        "The process cannot access the file because it is being used by another process.",
+                        -2147024864)
+                    throw $exception
+                }
+            }
+            Mock Get-VM {
+                @(
+                    (New-HypervImageFileVMSample -Name 'worker-2'),
+                    (New-HypervImageFileVMSample -Name 'worker-3')
+                )
+            }
+            Mock Get-VMDvdDrive {
+                if ($VMName -eq 'worker-2') {
+                    New-HypervImageFileVMDvdDriveSample `
+                        -VMName 'worker-2' `
+                        -Path 'C:\images\shared.iso' `
+                        -ControllerNumber 0 -ControllerLocation 2
+                }
+                elseif ($VMName -eq 'worker-3') {
+                    New-HypervImageFileVMDvdDriveSample `
+                        -VMName 'worker-3' `
+                        -Path 'C:\images\shared.iso' `
+                        -ControllerNumber 0 -ControllerLocation 2
+                }
+            }
+            Mock Set-VMDvdDrive { }
+
+            { Remove-HypervImageFile -Path 'C:\images\shared.iso' -Force } |
+                Should -Not -Throw
+
+            Should -Invoke Set-VMDvdDrive -Times 2 -Exactly
+            Should -Invoke Set-VMDvdDrive -Times 1 -Exactly -ParameterFilter { $VMName -eq 'worker-2' }
+            Should -Invoke Set-VMDvdDrive -Times 1 -Exactly -ParameterFilter { $VMName -eq 'worker-3' }
+        }
+
+        It 'does NOT call Set-VMDvdDrive when -Force is omitted (no-detach is the default)' {
+            # Backstop for the safety property: force_destroy=false on the
+            # resource means the script never mutates VM state. The
+            # original ImageFileLocked diagnostic must still surface.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { New-HypervImageFileVMSample -Name 'worker-2' }
+            Mock Get-VMDvdDrive {
+                New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'worker-2' `
+                    -Path 'C:\images\seed.iso' `
+                    -ControllerNumber 0 -ControllerLocation 2
+            }
+            Mock Set-VMDvdDrive { }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
+        }
+
+        It 'does NOT call Set-VMDvdDrive when -Force is set but the holder is non-Hyper-V' {
+            # AV scan / Explorer preview / etc. produce a sharing
+            # violation with no matching DVD attachment. -Force has
+            # nothing to act on; surface the original "another process"
+            # message so the operator resolves it out-of-band.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { @() }
+            Mock Get-VMDvdDrive { @() }
+            Mock Set-VMDvdDrive { }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' -Force } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'No Hyper-V DVD attachment matches'
+            Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
+        }
+
+        It 'surfaces ImageFileLocked when the retry still fails after detach' {
+            # If detach succeeds but the file is still locked (a second
+            # holder appears between the holder enumeration and the
+            # retry, or AV grabs the file the moment Hyper-V releases),
+            # we surface the same diagnostic the no-force path would.
+            # Don't promote the underlying retry error -- the operator's
+            # next action is the same either way.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { New-HypervImageFileVMSample -Name 'worker-2' }
+            Mock Get-VMDvdDrive {
+                New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'worker-2' `
+                    -Path 'C:\images\seed.iso' `
+                    -ControllerNumber 0 -ControllerLocation 2
+            }
+            Mock Set-VMDvdDrive { }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' -Force } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'worker-2'
+            Should -Invoke Set-VMDvdDrive -Times 1 -Exactly
+            Should -Invoke Remove-Item -Times 2 -Exactly
+        }
+    }
 }

@@ -577,7 +577,7 @@ func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := client.RemoveImageFile(ctx, dest); err != nil {
+		if err := client.RemoveImageFile(ctx, dest, false); err != nil {
 			t.Logf("orphan cleanup of %s failed (file may have been removed already): %v", dest, err)
 		}
 	})
