@@ -15,9 +15,11 @@ import (
 // matching "SweepPrefix*" and delete them; any non-test resource on the
 // bench is invisible to the sweep by construction.
 //
-// Keep this in sync with RandomName -- if the prefix ever moves, every
-// sweeper's enumeration pattern moves with it.
-const SweepPrefix = "tfacc-"
+// Derived from AccTestPrefix rather than spelled as a literal so a
+// future rename of the canonical prefix can't desync the sweep pattern
+// from what RandomName actually emits -- a desync would silently match
+// nothing and let orphans accumulate with the sweeper still exiting 0.
+const SweepPrefix = AccTestPrefix + "-"
 
 // NewClientForSweep builds a hyperv.Client from the same HYPERV_* env
 // vars NewClient uses, but for sweeper context where no *testing.T is
