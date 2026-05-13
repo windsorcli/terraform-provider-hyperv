@@ -70,6 +70,7 @@ func TestResource_Schema(t *testing.T) {
 		"sha256",
 		"size_bytes",
 		"keep_on_destroy",
+		"force_destroy",
 	}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -347,7 +348,7 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 		t.Fatalf("URLObjectFromConfig: %v", diags)
 	}
 
-	got := modelFromImageFile(f, urlObj, pathtype.NewPathNull(), types.StringNull(), types.BoolNull(), types.BoolNull())
+	got := modelFromImageFile(f, urlObj, pathtype.NewPathNull(), types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolNull())
 
 	if got.ID.ValueString() != f.Path {
 		t.Errorf("ID = %q, want %q", got.ID.ValueString(), f.Path)
@@ -382,7 +383,7 @@ func TestModelFromImageFile_HostPathModePreservesNilURL(t *testing.T) {
 		Sha256:    "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathNull(), types.StringNull(), types.BoolNull(), types.BoolNull())
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathNull(), types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolNull())
 
 	if !got.URL.IsNull() {
 		t.Errorf("URL = %+v, want null Object (host_path mode)", got.URL)
@@ -407,13 +408,39 @@ func TestModelFromImageFile_PreservesLocalPath(t *testing.T) {
 	}
 	localPath := pathtype.NewPathValue("/Users/me/dist/foo.iso")
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), localPath, types.StringNull(), types.BoolNull(), types.BoolNull())
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), localPath, types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolNull())
 
 	if !got.URL.IsNull() {
 		t.Errorf("URL = %+v, want null Object (local_path mode)", got.URL)
 	}
 	if got.LocalPath.ValueString() != "/Users/me/dist/foo.iso" {
 		t.Errorf("LocalPath = %q, want %q", got.LocalPath.ValueString(), "/Users/me/dist/foo.iso")
+	}
+}
+
+// TestModelFromImageFile_PreservesForceDestroy round-trips the caller-
+// supplied force_destroy through Read/Create/Update. Symmetric with
+// keep_on_destroy: the bench has no concept of this flag, so
+// modelFromImageFile must thread the caller's value. Without it, state
+// holds null, Delete reads null, ValueBool() returns false, and the
+// detach-then-retry branch in remove.ps1 never fires -- the feature
+// is silently a no-op.
+func TestModelFromImageFile_PreservesForceDestroy(t *testing.T) {
+	t.Parallel()
+
+	f := &hyperv.ImageFile{
+		Path:      "C:\\images\\seed.iso",
+		SizeBytes: 387072,
+		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+	}
+
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathValue("/Users/me/dist/seed.iso"), types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolValue(true))
+
+	if got.ForceDestroy.IsNull() {
+		t.Fatal("ForceDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
+	}
+	if !got.ForceDestroy.ValueBool() {
+		t.Errorf("ForceDestroy = false, want true (caller passed types.BoolValue(true))")
 	}
 }
 
@@ -434,7 +461,7 @@ func TestModelFromImageFile_PreservesKeepOnDestroy(t *testing.T) {
 		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	}
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.StringNull(), types.BoolNull(), types.BoolValue(true))
+	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.StringNull(), types.BoolNull(), types.BoolValue(true), types.BoolNull())
 
 	if got.KeepOnDestroy.IsNull() {
 		t.Fatal("KeepOnDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
@@ -464,6 +491,45 @@ func TestResource_Schema_LocalPathRequiresReplace(t *testing.T) {
 	}
 	if !hasPlanModifier(lp.PlanModifiers, "RequiresReplace") {
 		t.Error(`"local_path" must carry RequiresReplace (path-string change forces replace)`)
+	}
+}
+
+// TestResource_Schema_ForceDestroy pins the force_destroy attribute's
+// shape: Optional+Computed with a static-false default and
+// UseStateForUnknown -- symmetric with keep_on_destroy. Critically
+// asserts the absence of a RequiresReplace modifier: toggling
+// force_destroy is an in-place attribute change, not a destroy+recreate
+// (which would defeat the purpose of the flag in the cross-module-
+// destroy case that motivates it).
+func TestResource_Schema_ForceDestroy(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	raw, ok := resp.Schema.Attributes["force_destroy"]
+	if !ok {
+		t.Fatal(`missing attribute "force_destroy"`)
+	}
+	attr, ok := raw.(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("force_destroy is not a BoolAttribute (got %T)", raw)
+	}
+	if !attr.Optional {
+		t.Error(`"force_destroy" must be Optional`)
+	}
+	if !attr.Computed {
+		t.Error(`"force_destroy" must be Computed (default carries through unset configs)`)
+	}
+	if attr.Default == nil {
+		t.Error(`"force_destroy" must carry a Default (false), or null configs surface as null instead of false`)
+	}
+	if !hasPlanModifier(attr.PlanModifiers, "UseStateForUnknown") {
+		t.Error(`"force_destroy" must carry UseStateForUnknown`)
+	}
+	if hasPlanModifier(attr.PlanModifiers, "RequiresReplace") {
+		t.Error(`"force_destroy" must NOT carry RequiresReplace -- toggling the flag is an in-place change`)
 	}
 }
 

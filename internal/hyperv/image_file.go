@@ -633,14 +633,24 @@ func (c *Client) NewImageFileFromHostPath(ctx context.Context, destinationPath s
 // treat ErrNotFound as success (the file is already gone). Should NOT be
 // called for host_path-mode resources -- the Go-side resource gates this
 // based on the source_mode tracked in state.
-func (c *Client) RemoveImageFile(ctx context.Context, path string) error {
+//
+// `force` opts into the detach-then-retry escape hatch in remove.ps1:
+// when the initial Remove-Item hits a sharing violation whose holders
+// are Hyper-V DVDs, the host script detaches each slot via
+// Set-VMDvdDrive -Path $null and retries the delete once. Used by the
+// resource Delete when the `force_destroy` attribute is set on the
+// hyperv_image_file resource. Default (false) keeps the safer behavior:
+// surface the locked-file diagnostic and let the operator resolve the
+// holder explicitly.
+func (c *Client) RemoveImageFile(ctx context.Context, path string, force bool) error {
 	body, err := scripts.ImageFileScript("remove")
 	if err != nil {
 		return fmt.Errorf("load image_file/remove.ps1: %w", err)
 	}
 	stdin, err := json.Marshal(struct {
-		Path string `json:"path"`
-	}{Path: path})
+		Path  string `json:"path"`
+		Force bool   `json:"force"`
+	}{Path: path, Force: force})
 	if err != nil {
 		return fmt.Errorf("marshal remove.ps1 input: %w", err)
 	}

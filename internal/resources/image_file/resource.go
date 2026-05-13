@@ -410,7 +410,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	state := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
+	state := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy, plan.ForceDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -465,7 +465,11 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	if replaceWhileMounted.IsNull() {
 		replaceWhileMounted = types.BoolValue(false)
 	}
-	newState := modelFromImageFile(f, state.URL, state.LocalPath, state.ContentBase64, replaceWhileMounted, keepOnDestroy)
+	forceDestroy := state.ForceDestroy
+	if forceDestroy.IsNull() {
+		forceDestroy = types.BoolValue(false)
+	}
+	newState := modelFromImageFile(f, state.URL, state.LocalPath, state.ContentBase64, replaceWhileMounted, keepOnDestroy, forceDestroy)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -539,7 +543,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		// In local_path mode plan.URL and plan.ContentBase64 are null
 		// (mutually exclusive); pass them through unchanged so the round-
 		// trip preserves that nullness.
-		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy)
+		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy, plan.ForceDestroy)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -553,6 +557,12 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 // it on destroy is the symmetric operation. host_path-mode (URL nil
 // AND LocalPath null) leaves the file alone: the user attested it
 // already existed, so removing on destroy would surprise them.
+//
+// `force_destroy=true` forwards into remove.ps1's detach-then-retry
+// branch: when the initial Remove-Item hits a sharing violation whose
+// holders are Hyper-V DVDs, the script detaches each slot and retries.
+// Default (false) preserves the locked-file diagnostic so cross-state
+// drift surfaces explicitly rather than silently mutating VM state.
 //
 // ErrNotFound from RemoveImageFile is treated as success (the file is
 // already gone, no need to error).
@@ -594,8 +604,9 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 
 	tflog.Debug(ctx, "deleting hyperv_image_file", map[string]any{
 		"destination_path": state.DestinationPath.ValueString(),
+		"force_destroy":    state.ForceDestroy.ValueBool(),
 	})
-	err := r.client.RemoveImageFile(ctx, state.DestinationPath.ValueString())
+	err := r.client.RemoveImageFile(ctx, state.DestinationPath.ValueString(), state.ForceDestroy.ValueBool())
 	if err != nil && !errors.Is(err, hyperv.ErrNotFound) {
 		resp.Diagnostics.AddError("Delete hyperv_image_file failed", err.Error())
 		return
@@ -625,7 +636,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals; we don't need to preserve
 // the user's prior representation here.
-func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtype.Path, contentBase64 types.String, replaceWhileMounted types.Bool, keepOnDestroy types.Bool) Model {
+func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtype.Path, contentBase64 types.String, replaceWhileMounted types.Bool, keepOnDestroy types.Bool, forceDestroy types.Bool) Model {
 	return Model{
 		ID:                  pathtype.NewPathValue(f.Path),
 		DestinationPath:     pathtype.NewPathValue(f.Path),
@@ -636,6 +647,7 @@ func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtyp
 		Sha256:              types.StringValue(f.Sha256),
 		SizeBytes:           types.Int64Value(f.SizeBytes),
 		KeepOnDestroy:       keepOnDestroy,
+		ForceDestroy:        forceDestroy,
 	}
 }
 
