@@ -211,18 +211,32 @@ function Remove-HypervImageFile {
         # surfaces unchanged -- the operator still needs to deal with
         # the AV / Explorer / etc. holder out-of-band.
         if ($Force -and $holders.Count -gt 0) {
+            # Two-phase intentionally, not one wrapping try/catch: the
+            # detach-refused case (VM in Saved/Paused/Saving, runner
+            # identity missing Hyper-V Admins on the VM, live-migration
+            # in flight) needs different operator remediation than the
+            # detach-succeeded-but-file-still-locked case. Folding both
+            # into ImageFileLocked tells the operator to "resolve the
+            # lock and re-run apply" -- which is wrong when Hyper-V
+            # itself refused Set-VMDvdDrive, because the next apply hits
+            # the same refusal. Letting the Set-VMDvdDrive ErrorRecord
+            # propagate raw names the VM and the cmdlet, pointing at
+            # the VM-state fix instead.
+            Invoke-HypervImageFileForceDetach -Holders $holders
+
             try {
-                Invoke-HypervImageFileForceDetach -Holders $holders
                 Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
                 return
             }
             catch {
-                # Retry failed (or detach itself failed). Surface the
-                # same diagnostic the no-force path would have, naming
-                # the holders we tried to detach. Don't promote the
-                # underlying detach/retry error -- the operator's next
-                # action is the same either way (resolve the lock and
-                # re-run apply).
+                # Detach succeeded, but the file is still locked:
+                # another holder appeared between detach and retry (AV
+                # scanner, Explorer preview), or the original VM
+                # re-attached via an out-of-band Set-VMDvdDrive. Naming
+                # the holders we *did* detach is the right operator
+                # starting point -- they're the most likely root cause
+                # and the previous-holder VM is the obvious thing to
+                # check next.
                 $message = Format-HypervImageFileLockedMessage -Path $Path -Holders $holders
                 throw (New-HypervImageFileLockedError -Path $Path -Message $message)
             }

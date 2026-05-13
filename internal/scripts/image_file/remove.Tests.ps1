@@ -361,5 +361,45 @@ Describe 'Remove-HypervImageFile' {
             Should -Invoke Set-VMDvdDrive -Times 1 -Exactly
             Should -Invoke Remove-Item -Times 2 -Exactly
         }
+
+        It 'surfaces the raw Set-VMDvdDrive error (not ImageFileLocked) when the detach itself is refused' {
+            # The detach-refused case -- VM in Saved/Paused, runner
+            # missing Hyper-V Admins on the VM, live-migration in
+            # flight -- demands different remediation than the
+            # detach-succeeded-but-file-still-locked case. If we
+            # wrapped this as ImageFileLocked, the operator would be
+            # told to "resolve the lock and re-run apply" -- but the
+            # next apply hits the same refusal. The raw error names
+            # the VM and the cmdlet so they go fix VM state instead.
+            Mock Test-Path { $true }
+            Mock Remove-Item {
+                $exception = [System.IO.IOException]::new(
+                    "The process cannot access the file because it is being used by another process.",
+                    -2147024864)
+                throw $exception
+            }
+            Mock Get-VM { New-HypervImageFileVMSample -Name 'paused-vm' }
+            Mock Get-VMDvdDrive {
+                New-HypervImageFileVMDvdDriveSample `
+                    -VMName 'paused-vm' `
+                    -Path 'C:\images\seed.iso' `
+                    -ControllerNumber 0 -ControllerLocation 1
+            }
+            Mock Set-VMDvdDrive {
+                throw "Set-VMDvdDrive : The operation cannot be performed while the virtual machine is in its current state."
+            }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\seed.iso' -Force } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Not -Match 'ImageFileLocked'
+            $captured.Exception.Message | Should -Match 'current state'
+            Should -Invoke Set-VMDvdDrive -Times 1 -Exactly
+            # Only the original Remove-Item runs: the retry never
+            # fires because the detach failure short-circuits the
+            # force branch.
+            Should -Invoke Remove-Item -Times 1 -Exactly
+        }
     }
 }
