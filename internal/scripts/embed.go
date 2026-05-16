@@ -92,6 +92,24 @@ func VHDScript(verb string) ([]byte, error) {
 	return VHD.ReadFile("vhd/" + verb + ".ps1")
 }
 
+// NetNat holds the verb scripts for orphan-NetNat cleanup. NetNat is a
+// host-level singleton on Windows (exactly one instance per host), so
+// the only shape needed today is a combined list+remove `sweep` verb
+// used by the acceptance-test sweeper -- splitting it into separate
+// list and remove scripts would double the SSH cost for zero benefit.
+// Production CRUD on NetNat lives inside vswitch/{new,remove}.ps1 and
+// port_forward/*.ps1; this package is sweep-only.
+//
+//go:embed netnat/sweep.ps1
+var NetNat embed.FS
+
+// NetNatScript returns the contents of netnat/<verb>.ps1. Today the
+// only verb is "sweep"; the function shape mirrors VswitchScript so
+// the call sites stay consistent if more verbs land later.
+func NetNatScript(verb string) ([]byte, error) {
+	return NetNat.ReadFile("netnat/" + verb + ".ps1")
+}
+
 // VM holds the verb scripts for hyperv_vm. Beyond the four base verbs
 // (get/new/set/remove) there are per-attachment add/remove scripts:
 //

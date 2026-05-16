@@ -159,6 +159,34 @@ func TestVHDScript_TestFilesNotEmbedded(t *testing.T) {
 	}
 }
 
+// NetNatScript counterpart to the other script-loading tests. Verb set
+// is {sweep} only -- NetNat is host-singleton so list+remove are fused.
+func TestNetNatScript_LoadsSweepVerb(t *testing.T) {
+	t.Parallel()
+
+	body, err := NetNatScript("sweep")
+	if err != nil {
+		t.Fatalf("NetNatScript(\"sweep\"): %v", err)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		t.Errorf("NetNatScript(\"sweep\") returned empty body")
+	}
+}
+
+// Same anti-bloat sanity check as the other counterparts.
+func TestNetNatScript_TestFilesNotEmbedded(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"netnat/sweep.Tests.ps1",
+		"netnat/_test_helpers.ps1",
+	} {
+		if _, err := NetNat.ReadFile(name); err == nil {
+			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
+		}
+	}
+}
+
 // VM counterpart to the vswitch / image_file / vhd script-loading tests.
 // Verb set is {get, new, set, remove} -- set handles the in-place
 // mutations (vcpu, memory_bytes, secure_boot, notes); name/generation

@@ -101,20 +101,53 @@ func init() {
 		},
 	})
 
-	// hyperv_virtual_switch runs AFTER hyperv_vm: Remove-VMSwitch fails
-	// while a VM still has a NIC bound to the switch, so the framework
-	// must run the vm sweeper first.
+	// hyperv_nat sweeps orphan NetNat instances before any NAT-switch
+	// sweep would try to Remove-VMSwitch. Windows allows exactly one
+	// NetNat per host, so a single stuck NetNat from a prior failed
+	// run blocks every subsequent NAT switch / port_forward acctest --
+	// the New-NetNat singleton precondition fires before the test can
+	// even create its own switch. SweepNetNats lists Get-NetNat and
+	// removes any tfacc-* match, decoupled from the VMSwitch sweep so
+	// it also catches the case where the NetNat outlives its parent
+	// switch (test died mid-destroy).
 	//
-	// Caveat: passes empty natName to RemoveVMSwitch. That's correct for
-	// every switch the current acctest bar creates (Private + Internal
-	// only; no NAT acctests). When NAT-switch acctests land, list.ps1
-	// will need to also surface NatName per switch, and this sweeper
-	// will need to thread that through -- otherwise NAT cleanup
-	// (Remove-NetNat + Remove-NetIPAddress) silently no-ops and the
-	// host accumulates orphan NetNat instances.
+	// Depends on hyperv_vm for the same defensive reason hyperv_vhd
+	// does: nothing in vm references NetNat directly, but ordering the
+	// vm sweep first means any port_forward-style resource we add in
+	// the future that DOES tie a VM to a NetNat would already have
+	// the right ordering.
+	resource.AddTestSweepers("hyperv_nat", &resource.Sweeper{
+		Name:         "hyperv_nat",
+		Dependencies: []string{"hyperv_vm"},
+		F: func(_ string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
+			defer cancel()
+
+			client, closeClient, err := acctest.NewClientForSweep(ctx)
+			if err != nil {
+				return err
+			}
+			defer closeClient()
+
+			removed, err := client.SweepNetNats(ctx, acctest.SweepPrefix)
+			if err != nil {
+				return err
+			}
+			log.Printf("[INFO] hyperv_nat sweeper: removed %d orphan NetNat(s) under prefix %q: %v", len(removed), acctest.SweepPrefix, removed)
+			return nil
+		},
+	})
+
+	// hyperv_virtual_switch runs AFTER hyperv_vm AND hyperv_nat:
+	// Remove-VMSwitch fails while a VM still has a NIC bound to the
+	// switch (vm dependency), and on a NAT switch it also fails while
+	// the NetNat still references the switch's vNIC (nat dependency).
+	// Running the nat sweep first clears the NetNat so the bare
+	// Remove-VMSwitch path here completes cleanly even for NAT
+	// switches -- no NatName threading required.
 	resource.AddTestSweepers("hyperv_virtual_switch", &resource.Sweeper{
 		Name:         "hyperv_virtual_switch",
-		Dependencies: []string{"hyperv_vm"},
+		Dependencies: []string{"hyperv_vm", "hyperv_nat"},
 		F: func(_ string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
 			defer cancel()
