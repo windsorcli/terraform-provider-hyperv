@@ -169,7 +169,10 @@ tasks:
       # Without it, packages with overlapping NAT-switch fixtures (vswitch +
       # nat_static_mapping both create 192.168.222.0/24 vNICs) race
       # New-NetIPAddress and one fails with "object already exists".
-      - go test -v -p 1 -timeout 120m -run '^TestAcc' ./...
+      # Timeout sized for serialized totals: each NAT-touching package
+      # can run 40-50m on the bench, and back-to-back execution would
+      # crowd a 120m cap.
+      - go test -v -p 1 -timeout 240m -run '^TestAcc' ./...
 
   test:pester:
     desc: Pester tests against PowerShell scripts (cross-platform; cmdlets are mocked)
