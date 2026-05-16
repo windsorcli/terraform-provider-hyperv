@@ -28,6 +28,11 @@ Describe 'Invoke-HypervNetNatSweep' {
 
             @($parsed.removed).Count | Should -Be 1
             @($parsed.removed) | Should -Contain 'tfacc-nat-data-abc'
+            # Raw-JSON guard: @($parsed.removed) coerces a bare string into a
+            # one-element array, so the Count / Contain assertions alone pass
+            # on PS 5.1 even when ConvertTo-Json collapses the single-element
+            # array to a scalar. The regex below catches that regression.
+            $output | Should -Match '"removed":\["tfacc-nat-data-abc"\]'
             Should -Invoke Remove-NetNat -Times 1 -ParameterFilter {
                 $Name -eq 'tfacc-nat-data-abc'
             }
