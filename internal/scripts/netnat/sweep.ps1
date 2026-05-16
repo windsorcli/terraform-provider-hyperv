@@ -29,7 +29,12 @@
 function Invoke-HypervNetNatSweep {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string] $NamePrefix
+        # ValidateNotNullOrEmpty is load-bearing: [Parameter(Mandatory)] [string]
+        # accepts "" -- only $null is blocked -- which would expand $pattern to
+        # "*" and sweep every NetNat on the host. The validation throws a
+        # ParameterBindingValidationException that the entry block's try/catch
+        # routes through Write-HypervError, matching the script's error envelope.
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $NamePrefix
     )
     $pattern = "${NamePrefix}*"
     # [string[]] is load-bearing on PS 5.1: an untyped @() becomes [Object[]],

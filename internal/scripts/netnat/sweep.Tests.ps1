@@ -86,6 +86,18 @@ Describe 'Invoke-HypervNetNatSweep' {
         }
     }
 
+    Context 'parameter validation' {
+
+        It 'rejects an empty name prefix' {
+            # [Parameter(Mandatory)] [string] accepts "" -- only $null is blocked --
+            # which would expand $pattern to "*" and sweep every NetNat on the host.
+            # ValidateNotNullOrEmpty is the boundary guard; the entry-block catch
+            # translates the validation throw into a Write-HypervError envelope.
+            { Invoke-HypervNetNatSweep -NamePrefix '' } |
+                Should -Throw -ExpectedMessage '*null or empty*'
+        }
+    }
+
     Context 'error handling' {
 
         It 'logs and continues when Remove-NetNat fails on one instance' {
