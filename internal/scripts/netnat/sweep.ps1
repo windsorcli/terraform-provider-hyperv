@@ -32,7 +32,11 @@ function Invoke-HypervNetNatSweep {
         [Parameter(Mandatory)] [string] $NamePrefix
     )
     $pattern = "${NamePrefix}*"
-    $removed = @()
+    # [string[]] is load-bearing on PS 5.1: an untyped @() becomes [Object[]],
+    # and ConvertTo-Json on a single-element [Object[]] property unboxes it to
+    # a scalar -- {"removed":"tfacc-nat-abc"} instead of {"removed":["tfacc-nat-abc"]}.
+    # Typing the variable forces the array shape through serialization.
+    [string[]]$removed = @()
 
     # `$_ -and ...` guard before the .Name access keeps Set-StrictMode
     # v3.0 (set by the preamble) from throwing PropertyNotFound if a
