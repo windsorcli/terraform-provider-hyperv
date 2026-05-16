@@ -1,4 +1,4 @@
-package port_forward
+package nat_static_mapping
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
@@ -13,14 +13,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 )
 
-// resourceSchema returns the locked-in schema for hyperv_port_forward.
+// resourceSchema returns the locked-in schema for hyperv_nat_static_mapping.
 // MarkdownDescription on each attribute drives the Registry-published
 // doc when `task generate` runs tfplugindocs (see PLAN.md S15).
 //
 // Mutability summary:
 //
 //	nat_name / protocol / external_ip / external_port  -> RequiresReplace
-//	  (lookup tuple; NetNatStaticMapping has no rename)
+//	  (lookup tuple; NatStaticMapping has no rename)
 //	internal_ip / internal_port                        -> in-place
 //	  (script Set does Remove + Add; StaticMappingID re-rolls)
 //	firewall_rule.{enabled, profile}                   -> in-place
@@ -50,7 +50,7 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			// static_mapping_id is intentionally NOT exposed: Hyper-V's
-			// NetNatStaticMapping ID is opaque, re-rolls on every
+			// NatStaticMapping ID is opaque, re-rolls on every
 			// internal_* update (Set is Remove + Add under the hood),
 			// and is never used as a foreign-key target by other
 			// resources. Exposing it in state forces a "known after

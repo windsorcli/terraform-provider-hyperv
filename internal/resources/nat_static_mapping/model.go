@@ -1,9 +1,9 @@
-// Package port_forward implements the hyperv_port_forward resource.
-// Wraps the port_forward/{get,new,set,remove}.ps1 contract via the
+// Package nat_static_mapping implements the hyperv_nat_static_mapping resource.
+// Wraps the nat_static_mapping/{get,new,set,remove}.ps1 contract via the
 // typed hyperv.Client. Composes with hyperv_virtual_switch's NAT type
 // (or any pre-existing NetNat instance) to build a Windows-native
 // reverse proxy in front of one or more VMs on a private network.
-package port_forward
+package nat_static_mapping
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -12,7 +12,7 @@ import (
 
 // Model is the tfsdk-bound struct backing the resource state. Field
 // tags align with schema.go attribute names; conversion to/from the
-// typed hyperv.PortForward DTO lives in resource.go.
+// typed hyperv.NatStaticMapping DTO lives in resource.go.
 //
 // Lookup tuple (NatName, Protocol, ExternalIP, ExternalPort) is
 // RequiresReplace at the schema layer -- it identifies the mapping

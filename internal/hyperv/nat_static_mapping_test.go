@@ -9,17 +9,17 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
-// GetPortForward happy path: typed result decoded from the canned JSON
+// GetNatStaticMapping happy path: typed result decoded from the canned JSON
 // shape the Pester contract locked in. Pins the field-by-field mapping --
 // breakage here means the wire contract drifted.
-func TestClient_GetPortForward_HappyPath(t *testing.T) {
+func TestClient_GetNatStaticMapping_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("function Get-HypervPortForward").Return(testutil.PortForwardTCPFixtureJSON, "", 0)
+		On("function Get-HypervNatStaticMapping").Return(testutil.NatStaticMappingTCPFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	pf, err := c.GetPortForward(context.Background(), GetPortForwardInput{
+	pf, err := c.GetNatStaticMapping(context.Background(), GetNatStaticMappingInput{
 		NatName:           "windsor-nat",
 		Protocol:          "tcp",
 		ExternalIPAddress: "0.0.0.0",
@@ -27,7 +27,7 @@ func TestClient_GetPortForward_HappyPath(t *testing.T) {
 		FirewallName:      "windsor-pf-tcp-80",
 	})
 	if err != nil {
-		t.Fatalf("GetPortForward: %v", err)
+		t.Fatalf("GetNatStaticMapping: %v", err)
 	}
 	if pf.ID != "windsor-nat:tcp:0.0.0.0:80" {
 		t.Errorf("ID = %q", pf.ID)
@@ -49,23 +49,23 @@ func TestClient_GetPortForward_HappyPath(t *testing.T) {
 	}
 }
 
-// GetPortForward forwards the lookup tuple as snake_case stdin JSON.
+// GetNatStaticMapping forwards the lookup tuple as snake_case stdin JSON.
 // Locks the wire-level field names that get.ps1's entry block reads.
-func TestClient_GetPortForward_ForwardsTupleInStdin(t *testing.T) {
+func TestClient_GetNatStaticMapping_ForwardsTupleInStdin(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("function Get-HypervPortForward").Return(testutil.PortForwardTCPFixtureJSON, "", 0)
+		On("function Get-HypervNatStaticMapping").Return(testutil.NatStaticMappingTCPFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	if _, err := c.GetPortForward(context.Background(), GetPortForwardInput{
+	if _, err := c.GetNatStaticMapping(context.Background(), GetNatStaticMappingInput{
 		NatName:           "windsor-nat",
 		Protocol:          "tcp",
 		ExternalIPAddress: "0.0.0.0",
 		ExternalPort:      80,
 		FirewallName:      "windsor-pf-tcp-80",
 	}); err != nil {
-		t.Fatalf("GetPortForward: %v", err)
+		t.Fatalf("GetNatStaticMapping: %v", err)
 	}
 
 	calls := fr.Calls()
@@ -84,18 +84,18 @@ func TestClient_GetPortForward_ForwardsTupleInStdin(t *testing.T) {
 	}
 }
 
-// GetPortForward maps ObjectNotFound to ErrNotFound so resource Read
+// GetNatStaticMapping maps ObjectNotFound to ErrNotFound so resource Read
 // can RemoveResource. Mirrors the equivalent vswitch test -- locking
-// the typed-error mapping for the port_forward path too.
-func TestClient_GetPortForward_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
+// the typed-error mapping for the nat_static_mapping path too.
+func TestClient_GetNatStaticMapping_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	t.Parallel()
 
 	envelope := `{"category":"ObjectNotFound","message":"port forward not found","cmdlet":"Get-NetNatStaticMapping"}`
 	fr := testutil.NewFakeRunner().
-		On("function Get-HypervPortForward").Return("", envelope, 1)
+		On("function Get-HypervNatStaticMapping").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	_, err := c.GetPortForward(context.Background(), GetPortForwardInput{
+	_, err := c.GetNatStaticMapping(context.Background(), GetNatStaticMappingInput{
 		NatName:           "windsor-nat",
 		Protocol:          "tcp",
 		ExternalIPAddress: "0.0.0.0",
@@ -107,31 +107,31 @@ func TestClient_GetPortForward_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	}
 }
 
-// NewPortForward forwards the nested firewall block as a JSON object.
+// NewNatStaticMapping forwards the nested firewall block as a JSON object.
 // The script's entry block reads $params.firewall.{enabled,name,profile};
 // flattening or omitting the nested level would silently break the
 // firewall toggle.
-func TestClient_NewPortForward_ForwardsNestedFirewallBlock(t *testing.T) {
+func TestClient_NewNatStaticMapping_ForwardsNestedFirewallBlock(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
-		On("function New-HypervPortForward").Return(testutil.PortForwardTCPFixtureJSON, "", 0)
+		On("function New-HypervNatStaticMapping").Return(testutil.NatStaticMappingTCPFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	if _, err := c.NewPortForward(context.Background(), NewPortForwardInput{
+	if _, err := c.NewNatStaticMapping(context.Background(), NewNatStaticMappingInput{
 		NatName:           "windsor-nat",
 		Protocol:          "tcp",
 		ExternalIPAddress: "0.0.0.0",
 		ExternalPort:      80,
 		InternalIPAddress: "192.168.100.10",
 		InternalPort:      30080,
-		Firewall: PortForwardFirewallInput{
+		Firewall: NatStaticMappingFirewallInput{
 			Enabled: true,
 			Name:    "windsor-pf-tcp-80",
 			Profile: "Any",
 		},
 	}); err != nil {
-		t.Fatalf("NewPortForward: %v", err)
+		t.Fatalf("NewNatStaticMapping: %v", err)
 	}
 
 	calls := fr.Calls()
@@ -151,11 +151,11 @@ func TestClient_NewPortForward_ForwardsNestedFirewallBlock(t *testing.T) {
 	}
 }
 
-// SetPortForward returns the post-mutation read shape -- StaticMappingID
+// SetNatStaticMapping returns the post-mutation read shape -- StaticMappingID
 // can change because internal_* mutations are Remove + Add under the
 // hood. Locking the round-trip here ensures the Go-side resource
 // Update threads the new ID into state.
-func TestClient_SetPortForward_RoundTripsNewStaticMappingID(t *testing.T) {
+func TestClient_SetNatStaticMapping_RoundTripsNewStaticMappingID(t *testing.T) {
 	t.Parallel()
 
 	rerolled := `{
@@ -172,24 +172,24 @@ func TestClient_SetPortForward_RoundTripsNewStaticMappingID(t *testing.T) {
 		"FirewallRuleProfile": "Any"
 	}`
 	fr := testutil.NewFakeRunner().
-		On("function Set-HypervPortForward").Return(rerolled, "", 0)
+		On("function Set-HypervNatStaticMapping").Return(rerolled, "", 0)
 	c := NewClient(fr)
 
-	pf, err := c.SetPortForward(context.Background(), SetPortForwardInput{
+	pf, err := c.SetNatStaticMapping(context.Background(), SetNatStaticMappingInput{
 		NatName:           "windsor-nat",
 		Protocol:          "tcp",
 		ExternalIPAddress: "0.0.0.0",
 		ExternalPort:      80,
 		InternalIPAddress: "192.168.100.20",
 		InternalPort:      30080,
-		Firewall: PortForwardFirewallInput{
+		Firewall: NatStaticMappingFirewallInput{
 			Enabled: true,
 			Name:    "windsor-pf-tcp-80",
 			Profile: "Any",
 		},
 	})
 	if err != nil {
-		t.Fatalf("SetPortForward: %v", err)
+		t.Fatalf("SetNatStaticMapping: %v", err)
 	}
 	if pf.StaticMappingID != 42 {
 		t.Errorf("StaticMappingID = %d, want 42 (Remove + Add re-rolls the ID)", pf.StaticMappingID)
@@ -199,17 +199,17 @@ func TestClient_SetPortForward_RoundTripsNewStaticMappingID(t *testing.T) {
 	}
 }
 
-// RemovePortForward treats ErrNotFound as success. A best-effort destroy
+// RemoveNatStaticMapping treats ErrNotFound as success. A best-effort destroy
 // against a mapping that vanished out-of-band shouldn't error.
-func TestClient_RemovePortForward_NotFoundIsSuccess(t *testing.T) {
+func TestClient_RemoveNatStaticMapping_NotFoundIsSuccess(t *testing.T) {
 	t.Parallel()
 
 	envelope := `{"category":"ObjectNotFound","message":"port forward not found","cmdlet":"Remove-NetNatStaticMapping"}`
 	fr := testutil.NewFakeRunner().
-		On("function Remove-HypervPortForward").Return("", envelope, 1)
+		On("function Remove-HypervNatStaticMapping").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	err := c.RemovePortForward(context.Background(), RemovePortForwardInput{
+	err := c.RemoveNatStaticMapping(context.Background(), RemoveNatStaticMappingInput{
 		NatName:           "windsor-nat",
 		Protocol:          "tcp",
 		ExternalIPAddress: "0.0.0.0",
@@ -217,6 +217,6 @@ func TestClient_RemovePortForward_NotFoundIsSuccess(t *testing.T) {
 		FirewallName:      "windsor-pf-tcp-80",
 	})
 	if err != nil {
-		t.Errorf("RemovePortForward should treat ErrNotFound as success; got %v", err)
+		t.Errorf("RemoveNatStaticMapping should treat ErrNotFound as success; got %v", err)
 	}
 }

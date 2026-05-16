@@ -58,7 +58,7 @@ func TestProvider_Resources(t *testing.T) {
 	// slice: url + host_path + local_path + literal_bytes source modes) +
 	// hyperv_vhd (PLAN M4: fixed/dynamic/differencing) + hyperv_vm
 	// (PLAN M4 minimal: name/generation/vcpu/memory_bytes/secure_boot/
-	// notes) + hyperv_port_forward (PLAN M6: NetNatStaticMapping +
+	// notes) + hyperv_nat_static_mapping (PLAN M6: NatStaticMapping +
 	// optional NetFirewallRule, paired with hyperv_virtual_switch's
 	// NAT type). Pin the count so accidental wiring of additional
 	// resources doesn't slip in unnoticed before their schema is
@@ -69,7 +69,7 @@ func TestProvider_Resources(t *testing.T) {
 	// literal_bytes mode. This split happened mid-PR after the original
 	// hyperv_iso_volume managed resource was judged a hacky workaround.
 	if len(got) != 5 {
-		t.Errorf("got %d resources, want 5 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm, hyperv_port_forward)", len(got))
+		t.Errorf("got %d resources, want 5 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm, hyperv_nat_static_mapping)", len(got))
 	}
 }
 

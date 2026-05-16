@@ -1,8 +1,8 @@
-# _test_helpers.ps1 -- shared Pester setup for the port_forward verb
+# _test_helpers.ps1 -- shared Pester setup for the nat_static_mapping verb
 # scripts. Underscore prefix keeps it out of Pester's *.Tests.ps1
 # discovery glob.
 #
-# Stubs for the NetNat / NetFirewall cmdlets the port_forward scripts
+# Stubs for the NetNat / NetFirewall cmdlets the nat_static_mapping scripts
 # call. Defined unconditionally (not gated on `Get-Command`) on purpose:
 # when the real NetNat / NetSecurity modules are present (Windows
 # runners), their parameter sets require certain combinations -- e.g.
@@ -18,7 +18,7 @@
 # the real cmdlets are still used; this shadow only applies to test
 # execution.
 
-# NetNat singleton-resolution: port_forward references an existing NAT
+# NetNat singleton-resolution: nat_static_mapping references an existing NAT
 # by name (provider precondition). Get-NetNat is the cross-resource
 # lookup; Add/Remove/Get-NetNatStaticMapping are the actual port-
 # forward cmdlets.
@@ -57,7 +57,7 @@ function Remove-NetNatStaticMapping {
     )
 }
 
-# NetFirewall: optional companion. The port_forward resource opens the
+# NetFirewall: optional companion. The nat_static_mapping resource opens the
 # inbound port via New-NetFirewallRule by default; nested block
 # enabled=false skips it.
 function Get-NetFirewallRule {
@@ -100,10 +100,10 @@ function Remove-NetFirewallRule {
     )
 }
 
-# New-HypervPortForwardSample builds a PSCustomObject shaped like a real
+# New-HypervNatStaticMappingSample builds a PSCustomObject shaped like a real
 # Get-NetNatStaticMapping result. Field set mirrors what the canonical
 # read shape projects.
-function New-HypervPortForwardSample {
+function New-HypervNatStaticMappingSample {
     [CmdletBinding()]
     param(
         [int]    $StaticMappingID = 1,
@@ -143,7 +143,7 @@ function New-HypervFirewallRuleSample {
 }
 
 # New-HypervNetNatSample mirrors the vswitch helper: the precondition
-# probe in port_forward/new.ps1 (Get-NetNat -Name <nat_name>) returns
+# probe in nat_static_mapping/new.ps1 (Get-NetNat -Name <nat_name>) returns
 # this shape on success, $null on missing.
 function New-HypervNetNatSample {
     [CmdletBinding()]

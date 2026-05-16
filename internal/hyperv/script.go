@@ -26,7 +26,7 @@ const defaultReadTimeout = 60 * time.Second
 // breadcrumb at TF_LOG=DEBUG while the underlying RunScript is in
 // flight. 15s is short enough that an operator inspecting a stalled
 // apply sees progress within one screen-refresh and long enough that
-// healthy short reads (sub-second port_forward / vhd / vswitch
+// healthy short reads (sub-second nat_static_mapping / vhd / vswitch
 // lookups) never log anything.
 const scriptHeartbeatInterval = 15 * time.Second
 

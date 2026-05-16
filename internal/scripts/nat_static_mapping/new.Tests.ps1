@@ -1,7 +1,7 @@
-# Locks the JSON contract for New-HypervPortForward -- both the input-side
+# Locks the JSON contract for New-HypervNatStaticMapping -- both the input-side
 # splat logic (which JSON keys map to which Add-NetNatStaticMapping +
 # New-NetFirewallRule parameters) and the output-side read shape that
-# round-trips through Get-HypervPortForward.
+# round-trips through Get-HypervNatStaticMapping.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -10,7 +10,7 @@ BeforeAll {
     . $PSScriptRoot/new.ps1
 }
 
-Describe 'New-HypervPortForward' {
+Describe 'New-HypervNatStaticMapping' {
 
     Context 'NAT precondition' {
 
@@ -21,10 +21,10 @@ Describe 'New-HypervPortForward' {
             # NetNat by that name" message that obscures the actual
             # config dependency. Throwing here surfaces the real cause.
             Mock Get-NetNat { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            { New-HypervPortForward `
+            { New-HypervNatStaticMapping `
                 -NatName 'missing-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -45,11 +45,11 @@ Describe 'New-HypervPortForward' {
 
         It 'forwards all six required mapping params to Add-NetNatStaticMapping' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -74,11 +74,11 @@ Describe 'New-HypervPortForward' {
 
         It 'creates the firewall rule when firewall.enabled = true' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -101,11 +101,11 @@ Describe 'New-HypervPortForward' {
 
         It 'skips New-NetFirewallRule when firewall.enabled = false' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
             Mock Get-NetFirewallRule { }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -122,11 +122,11 @@ Describe 'New-HypervPortForward' {
 
         It 'forwards UDP protocol uppercased to both cmdlets' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -Protocol 'UDP' }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -Protocol 'UDP' }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'udp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -176,10 +176,10 @@ Describe 'New-HypervPortForward' {
                     # differs across .NET Framework / .NET 5+ / non-Windows.
                     throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
                 }
-                New-HypervPortForwardSample
+                New-HypervNatStaticMappingSample
             }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -204,10 +204,10 @@ Describe 'New-HypervPortForward' {
                 if ($script:msgCalls -lt 2) {
                     throw 'Add-NetNatStaticMapping: ERROR_DUP_NAME (0x34)'
                 }
-                New-HypervPortForwardSample
+                New-HypervNatStaticMappingSample
             }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -225,7 +225,7 @@ Describe 'New-HypervPortForward' {
             Mock Add-NetNatStaticMapping { throw 'totally unrelated cmdlet failure' }
             Mock Remove-NetNatStaticMapping { }
 
-            { New-HypervPortForward `
+            { New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -247,7 +247,7 @@ Describe 'New-HypervPortForward' {
                 throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
             }
 
-            { New-HypervPortForward `
+            { New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -265,7 +265,7 @@ Describe 'New-HypervPortForward' {
         It 'retries when Add-NetNatStaticMapping throws Win32 ERROR_SHARING_VIOLATION (HResult 0x80070020)' {
             # Surfaces when concurrent terraform applies race the NetNat
             # persistent-store handle (default parallelism=10 + 5+
-            # port_forward resources). Same retry semantics as
+            # nat_static_mapping resources). Same retry semantics as
             # ERROR_DUP_NAME -- the contention releases in tens of
             # milliseconds.
             $script:shareCalls = 0
@@ -274,10 +274,10 @@ Describe 'New-HypervPortForward' {
                 if ($script:shareCalls -lt 2) {
                     throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024864)
                 }
-                New-HypervPortForwardSample
+                New-HypervNatStaticMappingSample
             }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -302,10 +302,10 @@ Describe 'New-HypervPortForward' {
                 if ($script:shareMsgCalls -lt 2) {
                     throw 'The process cannot access the file because it is being used by another process.'
                 }
-                New-HypervPortForwardSample
+                New-HypervNatStaticMappingSample
             }
 
-            New-HypervPortForward `
+            New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -340,7 +340,7 @@ Describe 'New-HypervPortForward' {
                 throw $errorRecord
             }
 
-            { New-HypervPortForward `
+            { New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -367,12 +367,12 @@ Describe 'New-HypervPortForward' {
 
         It 'rolls back the static mapping when New-NetFirewallRule fails' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { throw 'simulated firewall failure' }
             Mock Remove-NetNatStaticMapping { }
             Mock Get-NetFirewallRule { }
 
-            { New-HypervPortForward `
+            { New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -391,12 +391,12 @@ Describe 'New-HypervPortForward' {
 
         It 'rollback re-throws the ORIGINAL failure (not cleanup chatter)' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { throw 'original firewall failure' }
             Mock Remove-NetNatStaticMapping { throw 'cleanup chatter' }
             Mock Get-NetFirewallRule { }
 
-            { New-HypervPortForward `
+            { New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -414,11 +414,11 @@ Describe 'New-HypervPortForward' {
 
         It 'emits the canonical eleven-field read shape' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = (New-HypervPortForward `
+            $parsed = (New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -446,11 +446,11 @@ Describe 'New-HypervPortForward' {
 
         It 'composite Id encodes (nat_name, protocol, external_ip, external_port)' {
             Mock Get-NetNat { New-HypervNetNatSample }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock New-NetFirewallRule { New-HypervFirewallRuleSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = (New-HypervPortForward `
+            $parsed = (New-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -473,8 +473,8 @@ Describe 'New-HypervPortForward' {
 
 # Diagnostic translation for the misleading sharing-violation error
 # Add-NetNatStaticMapping surfaces when the requested port falls in a
-# Windows TCP exclusion range. Defined in port_forward/_retry.ps1,
-# prepended to new.ps1 at runtime via loadPortForwardWithRetry.
+# Windows TCP exclusion range. Defined in nat_static_mapping/_retry.ps1,
+# prepended to new.ps1 at runtime via loadNatStaticMappingWithRetry.
 Describe 'Resolve-NetNatPortConflictMessage' {
 
     Context 'signature match' {

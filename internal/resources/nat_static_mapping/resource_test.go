@@ -1,4 +1,4 @@
-package port_forward
+package nat_static_mapping
 
 import (
 	"testing"
@@ -50,8 +50,8 @@ func TestResource_Metadata(t *testing.T) {
 	r := New()
 	resp := &resource.MetadataResponse{}
 	r.Metadata(t.Context(), resource.MetadataRequest{ProviderTypeName: "hyperv"}, resp)
-	if resp.TypeName != "hyperv_port_forward" {
-		t.Errorf("TypeName = %q, want %q", resp.TypeName, "hyperv_port_forward")
+	if resp.TypeName != "hyperv_nat_static_mapping" {
+		t.Errorf("TypeName = %q, want %q", resp.TypeName, "hyperv_nat_static_mapping")
 	}
 }
 
@@ -213,14 +213,14 @@ func TestBuildSetInput_SourcesLookupTupleFromState(t *testing.T) {
 	}
 }
 
-// modelFromPortForward hydrates a Model from a typed PortForward.
+// modelFromNatStaticMapping hydrates a Model from a typed NatStaticMapping.
 // Locks the wire-shape -> tfsdk attribute mapping plus the
 // uppercase-protocol -> lowercase-state normalization (Get-NetNatStaticMapping
 // reports TCP/UDP; the schema's `protocol` attribute is lowercase).
-func TestModelFromPortForward_LowercasesProtocolAndPopulatesAllFields(t *testing.T) {
+func TestModelFromNatStaticMapping_LowercasesProtocolAndPopulatesAllFields(t *testing.T) {
 	t.Parallel()
 
-	pf := &hyperv.PortForward{
+	pf := &hyperv.NatStaticMapping{
 		ID:                  "windsor-nat:tcp:0.0.0.0:80",
 		StaticMappingID:     1,
 		NatName:             "windsor-nat",
@@ -233,9 +233,9 @@ func TestModelFromPortForward_LowercasesProtocolAndPopulatesAllFields(t *testing
 		FirewallRuleName:    "windsor-pf-tcp-80",
 		FirewallRuleProfile: "Any",
 	}
-	got, diags := modelFromPortForward(t.Context(), pf, "windsor-pf-tcp-80")
+	got, diags := modelFromNatStaticMapping(t.Context(), pf, "windsor-pf-tcp-80")
 	if diags.HasError() {
-		t.Fatalf("modelFromPortForward: %v", diags)
+		t.Fatalf("modelFromNatStaticMapping: %v", diags)
 	}
 	if got.Protocol.ValueString() != "tcp" {
 		t.Errorf("Protocol = %q, want lowercase 'tcp' (TCP on the wire, lowercase in state)", got.Protocol.ValueString())
@@ -245,7 +245,7 @@ func TestModelFromPortForward_LowercasesProtocolAndPopulatesAllFields(t *testing
 	}
 	// static_mapping_id is intentionally NOT in state -- the schema
 	// drops it because it re-rolls on every internal_* update and
-	// no other resource consumes it. modelFromPortForward correspondingly
+	// no other resource consumes it. modelFromNatStaticMapping correspondingly
 	// has no field to populate; pinning the absence here keeps a future
 	// re-add from slipping in unnoticed.
 	if got.ID.ValueString() != "windsor-nat:tcp:0.0.0.0:80" {
@@ -253,22 +253,22 @@ func TestModelFromPortForward_LowercasesProtocolAndPopulatesAllFields(t *testing
 	}
 }
 
-// modelFromPortForward maps an empty FirewallRuleProfile string back
+// modelFromNatStaticMapping maps an empty FirewallRuleProfile string back
 // to "Any" so state always holds a valid OneOf value -- the host's
 // Get-NetFirewallRule reports an empty string when the rule is
 // missing, and "Any" is the schema default.
-func TestModelFromPortForward_CoalescesEmptyProfileToAny(t *testing.T) {
+func TestModelFromNatStaticMapping_CoalescesEmptyProfileToAny(t *testing.T) {
 	t.Parallel()
 
-	pf := &hyperv.PortForward{
+	pf := &hyperv.NatStaticMapping{
 		ID:                  "windsor-nat:tcp:0.0.0.0:80",
 		Protocol:            "TCP",
 		FirewallRulePresent: false,
 		FirewallRuleProfile: "",
 	}
-	got, diags := modelFromPortForward(t.Context(), pf, "windsor-pf-tcp-80")
+	got, diags := modelFromNatStaticMapping(t.Context(), pf, "windsor-pf-tcp-80")
 	if diags.HasError() {
-		t.Fatalf("modelFromPortForward: %v", diags)
+		t.Fatalf("modelFromNatStaticMapping: %v", diags)
 	}
 	var fw FirewallRuleModel
 	got.FirewallRule.As(t.Context(), &fw, basetypes.ObjectAsOptions{})

@@ -1,4 +1,4 @@
-# port_forward/get.ps1 -- read a static NAT port forward by its
+# nat_static_mapping/get.ps1 -- read a static NAT port forward by its
 # (nat_name, protocol, external_ip, external_port) lookup tuple, plus
 # the optional companion firewall rule.
 #
@@ -19,12 +19,12 @@
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound
 #                 on the Go side (resource Read calls RemoveResource).
 
-# Get-HypervPortForward enumerates the NetNatStaticMapping list scoped
+# Get-HypervNatStaticMapping enumerates the NatStaticMapping list scoped
 # to NatName and filters in-process for the (Protocol, ExternalIP,
 # ExternalPort) tuple -- the cmdlet has no per-port filter parameter,
 # so the script does the matching. Missing tuple throws an explicit
 # ObjectNotFound so the typed client maps it to ErrNotFound.
-function Get-HypervPortForward {
+function Get-HypervNatStaticMapping {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $NatName,
@@ -53,7 +53,7 @@ function Get-HypervPortForward {
             "No NAT static mapping found for nat_name='$NatName', protocol='$Protocol', " +
                 "external_ip='$ExternalIPAddress', external_port='$ExternalPort'.")
         $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-            $exception, 'PortForwardNotFound',
+            $exception, 'NatStaticMappingNotFound',
             [System.Management.Automation.ErrorCategory]::ObjectNotFound,
             "$NatName/$Protocol/$ExternalIPAddress/$ExternalPort")
         throw $errorRecord
@@ -93,7 +93,7 @@ function Get-HypervPortForward {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-        Get-HypervPortForward `
+        Get-HypervNatStaticMapping `
             -NatName $params.nat_name `
             -Protocol $params.protocol `
             -ExternalIPAddress $params.external_ip `

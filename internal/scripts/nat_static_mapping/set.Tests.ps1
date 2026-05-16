@@ -1,6 +1,6 @@
-# Locks the partial-update semantics of Set-HypervPortForward.
+# Locks the partial-update semantics of Set-HypervNatStaticMapping.
 #
-# NetNatStaticMapping has no in-place edit cmdlet -- mutating
+# NatStaticMapping has no in-place edit cmdlet -- mutating
 # internal_ip / internal_port requires Remove-NetNatStaticMapping +
 # Add-NetNatStaticMapping (the new mapping gets a fresh StaticMappingID,
 # which the read-back returns and the resource layer threads back into
@@ -14,18 +14,18 @@ BeforeAll {
     . $PSScriptRoot/set.ps1
 }
 
-Describe 'Set-HypervPortForward' {
+Describe 'Set-HypervNatStaticMapping' {
 
     Context 'mapping mutation (internal_ip / internal_port change)' {
 
         It 'tears down the existing mapping and re-adds with the new internal target' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Remove-NetNatStaticMapping { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 2 -InternalIPAddress '192.168.100.20' }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 2 -InternalIPAddress '192.168.100.20' }
             Mock Set-NetFirewallRule { }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            Set-HypervPortForward `
+            Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -45,13 +45,13 @@ Describe 'Set-HypervPortForward' {
         }
 
         It 'returns the NEW StaticMappingID after the Remove + Add (the ID changes)' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Remove-NetNatStaticMapping { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 42 -InternalIPAddress '192.168.100.20' }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 42 -InternalIPAddress '192.168.100.20' }
             Mock Set-NetFirewallRule { }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = Set-HypervPortForward `
+            $parsed = Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -69,13 +69,13 @@ Describe 'Set-HypervPortForward' {
     Context 'firewall mutation' {
 
         It 'forwards Set-NetFirewallRule with the new profile' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Remove-NetNatStaticMapping { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Set-NetFirewallRule { }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample -Profile 'Domain' }
 
-            Set-HypervPortForward `
+            Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -105,9 +105,9 @@ Describe 'Set-HypervPortForward' {
             # Mocks: mapping reconciliation proceeds as usual; the
             # firewall probe returns $null on the first call (rule
             # absent), then a freshly-created rule on the read-back.
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Remove-NetNatStaticMapping { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Set-NetFirewallRule { }
             $script:fwCallCount = 0
             Mock Get-NetFirewallRule {
@@ -117,7 +117,7 @@ Describe 'Set-HypervPortForward' {
             }
             Mock New-NetFirewallRule { }
 
-            Set-HypervPortForward `
+            Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -142,14 +142,14 @@ Describe 'Set-HypervPortForward' {
 
     Context 'Add-NetNatStaticMapping transient retry' {
         # Mirror of new.Tests.ps1's retry context. The Remove + Add
-        # pattern in Set-HypervPortForward is just as exposed to the
+        # pattern in Set-HypervNatStaticMapping is just as exposed to the
         # transient Win32 errors NetSetup/WMI surfaces under concurrent
         # pressure (ERROR_DUP_NAME 0x80070034 and ERROR_SHARING_VIOLATION
         # 0x80070020) -- the cmdlet is idempotent on retry, so the same
         # Invoke-WithNetNatRetry helper wraps the Add call.
 
         BeforeEach {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Remove-NetNatStaticMapping { }
             Mock Set-NetFirewallRule { }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
@@ -166,10 +166,10 @@ Describe 'Set-HypervPortForward' {
                     # platform, matching what NetSetup/WMI surfaces in prod.
                     throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
                 }
-                New-HypervPortForwardSample -StaticMappingID 2
+                New-HypervNatStaticMappingSample -StaticMappingID 2
             }
 
-            Set-HypervPortForward `
+            Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -189,7 +189,7 @@ Describe 'Set-HypervPortForward' {
                 throw [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024844)
             }
 
-            { Set-HypervPortForward `
+            { Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -214,13 +214,13 @@ Describe 'Set-HypervPortForward' {
             # than an opaque ErrPSExecution.
             Mock Get-NetNatStaticMapping { @() }
             Mock Remove-NetNatStaticMapping { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Set-NetFirewallRule { }
             Mock Get-NetFirewallRule { }
 
             $captured = $null
             try {
-                Set-HypervPortForward `
+                Set-HypervNatStaticMapping `
                     -NatName 'windsor-nat' `
                     -Protocol 'tcp' `
                     -ExternalIPAddress '0.0.0.0' `
@@ -241,14 +241,14 @@ Describe 'Set-HypervPortForward' {
 
     Context 'output shape' {
 
-        It 'emits the same eleven-field shape as Get-HypervPortForward' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+        It 'emits the same eleven-field shape as Get-HypervNatStaticMapping' {
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
             Mock Remove-NetNatStaticMapping { }
-            Mock Add-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 2 }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 2 }
             Mock Set-NetFirewallRule { }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = Set-HypervPortForward `
+            $parsed = Set-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `

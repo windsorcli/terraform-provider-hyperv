@@ -1,4 +1,4 @@
-package port_forward
+package nat_static_mapping
 
 import (
 	"context"
@@ -22,7 +22,7 @@ var (
 	_ resource.ResourceWithImportState = (*Resource)(nil)
 )
 
-// Resource implements hyperv_port_forward.
+// Resource implements hyperv_nat_static_mapping.
 type Resource struct {
 	client *hyperv.Client
 }
@@ -32,7 +32,7 @@ func New() resource.Resource { return &Resource{} }
 
 // Metadata sets the resource's TF type name.
 func (r *Resource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_port_forward"
+	resp.TypeName = req.ProviderTypeName + "_nat_static_mapping"
 }
 
 // Schema returns the locked-in schema (see schema.go).
@@ -51,7 +51,7 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected provider data type",
-			fmt.Sprintf("hyperv_port_forward expected *hyperv.Client, got %T", req.ProviderData),
+			fmt.Sprintf("hyperv_nat_static_mapping expected *hyperv.Client, got %T", req.ProviderData),
 		)
 		return
 	}
@@ -63,7 +63,7 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
-			"hyperv_port_forward Create called before Configure stashed a client.")
+			"hyperv_nat_static_mapping Create called before Configure stashed a client.")
 		return
 	}
 
@@ -79,18 +79,18 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	tflog.Debug(ctx, "creating hyperv_port_forward", map[string]any{
+	tflog.Debug(ctx, "creating hyperv_nat_static_mapping", map[string]any{
 		"nat_name":      in.NatName,
 		"protocol":      in.Protocol,
 		"external_port": in.ExternalPort,
 	})
-	pf, err := r.client.NewPortForward(ctx, in)
+	pf, err := r.client.NewNatStaticMapping(ctx, in)
 	if err != nil {
-		resp.Diagnostics.AddError("Create hyperv_port_forward failed", err.Error())
+		resp.Diagnostics.AddError("Create hyperv_nat_static_mapping failed", err.Error())
 		return
 	}
 
-	state, diags := modelFromPortForward(ctx, pf, fwName)
+	state, diags := modelFromNatStaticMapping(ctx, pf, fwName)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -104,7 +104,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
-			"hyperv_port_forward Read called before Configure stashed a client.")
+			"hyperv_nat_static_mapping Read called before Configure stashed a client.")
 		return
 	}
 
@@ -120,7 +120,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	pf, err := r.client.GetPortForward(ctx, hyperv.GetPortForwardInput{
+	pf, err := r.client.GetNatStaticMapping(ctx, hyperv.GetNatStaticMappingInput{
 		NatName:           state.NatName.ValueString(),
 		Protocol:          state.Protocol.ValueString(),
 		ExternalIPAddress: state.ExternalIP.ValueString(),
@@ -129,17 +129,17 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	})
 	if err != nil {
 		if errors.Is(err, hyperv.ErrNotFound) {
-			tflog.Info(ctx, "hyperv_port_forward not found; removing from state", map[string]any{
+			tflog.Info(ctx, "hyperv_nat_static_mapping not found; removing from state", map[string]any{
 				"id": state.ID.ValueString(),
 			})
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Read hyperv_port_forward failed", err.Error())
+		resp.Diagnostics.AddError("Read hyperv_nat_static_mapping failed", err.Error())
 		return
 	}
 
-	newState, diags := modelFromPortForward(ctx, pf, fw.Name.ValueString())
+	newState, diags := modelFromNatStaticMapping(ctx, pf, fw.Name.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -156,7 +156,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
-			"hyperv_port_forward Update called before Configure stashed a client.")
+			"hyperv_nat_static_mapping Update called before Configure stashed a client.")
 		return
 	}
 
@@ -173,16 +173,16 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	tflog.Debug(ctx, "updating hyperv_port_forward", map[string]any{
+	tflog.Debug(ctx, "updating hyperv_nat_static_mapping", map[string]any{
 		"id": state.ID.ValueString(),
 	})
-	pf, err := r.client.SetPortForward(ctx, in)
+	pf, err := r.client.SetNatStaticMapping(ctx, in)
 	if err != nil {
-		resp.Diagnostics.AddError("Update hyperv_port_forward failed", err.Error())
+		resp.Diagnostics.AddError("Update hyperv_nat_static_mapping failed", err.Error())
 		return
 	}
 
-	newState, diags := modelFromPortForward(ctx, pf, fwName)
+	newState, diags := modelFromNatStaticMapping(ctx, pf, fwName)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -195,7 +195,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
-			"hyperv_port_forward Delete called before Configure stashed a client.")
+			"hyperv_nat_static_mapping Delete called before Configure stashed a client.")
 		return
 	}
 
@@ -211,10 +211,10 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
-	tflog.Debug(ctx, "deleting hyperv_port_forward", map[string]any{
+	tflog.Debug(ctx, "deleting hyperv_nat_static_mapping", map[string]any{
 		"id": state.ID.ValueString(),
 	})
-	err := r.client.RemovePortForward(ctx, hyperv.RemovePortForwardInput{
+	err := r.client.RemoveNatStaticMapping(ctx, hyperv.RemoveNatStaticMappingInput{
 		NatName:           state.NatName.ValueString(),
 		Protocol:          state.Protocol.ValueString(),
 		ExternalIPAddress: state.ExternalIP.ValueString(),
@@ -222,7 +222,7 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		FirewallName:      fw.Name.ValueString(),
 	})
 	if err != nil && !errors.Is(err, hyperv.ErrNotFound) {
-		resp.Diagnostics.AddError("Delete hyperv_port_forward failed", err.Error())
+		resp.Diagnostics.AddError("Delete hyperv_nat_static_mapping failed", err.Error())
 	}
 }
 
@@ -232,7 +232,7 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 //	<nat_name>:<protocol>:<external_ip>:<external_port>
 //	<nat_name>:<protocol>:<external_ip>:<external_port>:<firewall_rule_name>
 //
-// The 5-segment form lets users adopt an existing port-forward whose
+// The 5-segment form lets users adopt an existing netnat-static-mapping whose
 // firewall rule has a non-default DisplayName -- without it, `Read`
 // can't locate the rule (it keys on the name) and `firewall_rule.name`
 // in state lands as the derived default; any later config that sets a
@@ -248,7 +248,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	parts := strings.Split(req.ID, ":")
 	if len(parts) != 4 && len(parts) != 5 {
 		resp.Diagnostics.AddError(
-			"Invalid import ID for hyperv_port_forward",
+			"Invalid import ID for hyperv_nat_static_mapping",
 			fmt.Sprintf("Expected `<nat_name>:<protocol>:<external_ip>:<external_port>` or "+
 				"`<nat_name>:<protocol>:<external_ip>:<external_port>:<firewall_rule_name>`; got %q.", req.ID),
 		)
@@ -258,7 +258,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	var externalPort int64
 	if _, err := fmt.Sscanf(externalPortStr, "%d", &externalPort); err != nil {
 		resp.Diagnostics.AddError(
-			"Invalid import ID for hyperv_port_forward",
+			"Invalid import ID for hyperv_nat_static_mapping",
 			fmt.Sprintf("external_port %q is not an integer: %s", externalPortStr, err),
 		)
 		return
@@ -273,7 +273,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	// schema defaults so the framework's "Computed value drift" guard
 	// doesn't trip when Read lands its own values. The first Read
 	// after import will overwrite enabled / profile from the host's
-	// joined NetNatStaticMapping + NetFirewallRule view; the name is
+	// joined NatStaticMapping + NetFirewallRule view; the name is
 	// the load-bearing import input because the firewall rule is
 	// keyed by DisplayName.
 	fwModel := FirewallRuleModel{
@@ -318,16 +318,16 @@ func unpackFirewallRule(ctx context.Context, obj types.Object) (FirewallRuleMode
 }
 
 // buildNewInput translates a Create plan into the wire-level
-// NewPortForwardInput. Returns the resolved firewall rule name as a
+// NewNatStaticMappingInput. Returns the resolved firewall rule name as a
 // secondary value because Create needs it both for the wire payload
 // and for the post-Create state reconciliation.
-func buildNewInput(ctx context.Context, plan Model) (hyperv.NewPortForwardInput, string, diag.Diagnostics) {
+func buildNewInput(ctx context.Context, plan Model) (hyperv.NewNatStaticMappingInput, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	fw, fwDiags := unpackFirewallRule(ctx, plan.FirewallRule)
 	diags.Append(fwDiags...)
 	if diags.HasError() {
-		return hyperv.NewPortForwardInput{}, "", diags
+		return hyperv.NewNatStaticMappingInput{}, "", diags
 	}
 
 	// Apply runtime defaults for any sub-attribute that's still
@@ -348,14 +348,14 @@ func buildNewInput(ctx context.Context, plan Model) (hyperv.NewPortForwardInput,
 		name = derivedFirewallRuleName(plan.Protocol.ValueString(), plan.ExternalPort.ValueInt64())
 	}
 
-	in := hyperv.NewPortForwardInput{
+	in := hyperv.NewNatStaticMappingInput{
 		NatName:           plan.NatName.ValueString(),
 		Protocol:          plan.Protocol.ValueString(),
 		ExternalIPAddress: plan.ExternalIP.ValueString(),
 		ExternalPort:      int(plan.ExternalPort.ValueInt64()),
 		InternalIPAddress: plan.InternalIP.ValueString(),
 		InternalPort:      int(plan.InternalPort.ValueInt64()),
-		Firewall: hyperv.PortForwardFirewallInput{
+		Firewall: hyperv.NatStaticMappingFirewallInput{
 			Enabled: enabled,
 			Name:    name,
 			Profile: profile,
@@ -365,16 +365,16 @@ func buildNewInput(ctx context.Context, plan Model) (hyperv.NewPortForwardInput,
 }
 
 // buildSetInput translates an Update plan + state into a
-// SetPortForwardInput. The lookup tuple is sourced from state (every
+// SetNatStaticMappingInput. The lookup tuple is sourced from state (every
 // attribute in it is RequiresReplace, so plan and state should match);
 // the mutable attributes come from plan.
-func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetPortForwardInput, string, diag.Diagnostics) {
+func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetNatStaticMappingInput, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	fw, fwDiags := unpackFirewallRule(ctx, plan.FirewallRule)
 	diags.Append(fwDiags...)
 	if diags.HasError() {
-		return hyperv.SetPortForwardInput{}, "", diags
+		return hyperv.SetNatStaticMappingInput{}, "", diags
 	}
 
 	// firewall.name is RequiresReplace, so it's stable across Update.
@@ -385,7 +385,7 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetPortForwar
 	stateFw, stateFwDiags := unpackFirewallRule(ctx, state.FirewallRule)
 	diags.Append(stateFwDiags...)
 	if diags.HasError() {
-		return hyperv.SetPortForwardInput{}, "", diags
+		return hyperv.SetNatStaticMappingInput{}, "", diags
 	}
 	name := stateFw.Name.ValueString()
 	if name == "" {
@@ -401,14 +401,14 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetPortForwar
 		profile = fw.Profile.ValueString()
 	}
 
-	in := hyperv.SetPortForwardInput{
+	in := hyperv.SetNatStaticMappingInput{
 		NatName:           state.NatName.ValueString(),
 		Protocol:          state.Protocol.ValueString(),
 		ExternalIPAddress: state.ExternalIP.ValueString(),
 		ExternalPort:      int(state.ExternalPort.ValueInt64()),
 		InternalIPAddress: plan.InternalIP.ValueString(),
 		InternalPort:      int(plan.InternalPort.ValueInt64()),
-		Firewall: hyperv.PortForwardFirewallInput{
+		Firewall: hyperv.NatStaticMappingFirewallInput{
 			Enabled: enabled,
 			Name:    name,
 			Profile: profile,
@@ -417,12 +417,12 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetPortForwar
 	return in, name, diags
 }
 
-// modelFromPortForward hydrates a Model from a typed PortForward DTO.
+// modelFromNatStaticMapping hydrates a Model from a typed NatStaticMapping DTO.
 // fwName is supplied by the caller because the script's read path
 // reports FirewallRuleName from the input (echoed back through the
 // projection, not from the host's Get-NetFirewallRule), and the
 // resource layer is the source of truth for the rule's display name.
-func modelFromPortForward(ctx context.Context, pf *hyperv.PortForward, fwName string) (Model, diag.Diagnostics) {
+func modelFromNatStaticMapping(ctx context.Context, pf *hyperv.NatStaticMapping, fwName string) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	// Protocol is uppercase on the wire (Get-NetNatStaticMapping native

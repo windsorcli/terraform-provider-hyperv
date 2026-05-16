@@ -90,7 +90,7 @@ setspn -L HV-BENCH-01    # confirm all four (HOST/{,fqdn}, HTTP/{,fqdn})
 
 If the workstation can't reach the DC's lab IP (`10.10.0.10`) directly
 — which is the common case, since the lab vSwitch is internal-only —
-add a TCP port-forward on the bench so KDC and LDAP traffic flow
+add a TCP netnat-static-mapping on the bench so KDC and LDAP traffic flow
 through to the DC:
 
 ```powershell

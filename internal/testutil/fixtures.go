@@ -44,13 +44,13 @@ const VMSwitchPrivateFixtureJSON = `{
 	"NatHostAddress": ""
 }`
 
-// PortForwardTCPFixtureJSON is the canonical eleven-field shape that
-// port_forward/{get,new,set}.ps1 emit. Locked by the Pester contract;
+// NatStaticMappingTCPFixtureJSON is the canonical eleven-field shape that
+// nat_static_mapping/{get,new,set}.ps1 emit. Locked by the Pester contract;
 // single source of truth across the typed-client and resource-layer
 // suites. Composite Id encodes (NatName:Protocol:ExternalIP:ExternalPort)
 // with lowercase protocol; the structured Protocol field is uppercase
 // because that's what Get-NetNatStaticMapping reports natively.
-const PortForwardTCPFixtureJSON = `{
+const NatStaticMappingTCPFixtureJSON = `{
 	"Id": "windsor-nat:tcp:0.0.0.0:80",
 	"StaticMappingId": 1,
 	"NatName": "windsor-nat",

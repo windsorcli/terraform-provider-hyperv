@@ -45,7 +45,7 @@ var (
 // reflecting Hyper-V's underlying enum (External/Internal/Private).
 func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwitch, error) {
 	// NAT branch reads Get-NetNat + Get-NetIPAddress; take the read
-	// lock to block against concurrent NetNat writes from port_forward
+	// lock to block against concurrent NetNat writes from nat_static_mapping
 	// or vswitch mutations, but allow concurrent reads to parallelize.
 	// Non-NAT switches don't touch NetNat at all and run unlocked.
 	if natName != "" {
@@ -105,7 +105,7 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 	}
 
 	// NAT branch invokes New-NetNat + New-NetIPAddress; serialize with
-	// the package-wide netNatMu so we don't race port_forward CRUD on
+	// the package-wide netNatMu so we don't race nat_static_mapping CRUD on
 	// the host's NetNat persistent store. Two constraints shape the
 	// pattern below:
 	//
@@ -269,7 +269,7 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error
 
 	// NAT branch invokes Remove-NetNat + Remove-NetIPAddress before the
 	// Remove-VMSwitch teardown; serialize with the package-wide
-	// netNatMu so we don't race port_forward CRUD on the host's NetNat
+	// netNatMu so we don't race nat_static_mapping CRUD on the host's NetNat
 	// persistent store. Same two constraints as NewVMSwitch's inner
 	// closure:
 	//
