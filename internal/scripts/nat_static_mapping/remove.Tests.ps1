@@ -1,4 +1,4 @@
-# Locks the Remove-HypervPortForward contract: tears down the static
+# Locks the Remove-HypervNatStaticMapping contract: tears down the static
 # mapping and the firewall rule (if present); both steps tolerate
 # ObjectNotFound so a partial out-of-band cleanup doesn't fail Delete.
 
@@ -8,15 +8,15 @@ BeforeAll {
     . $PSScriptRoot/remove.ps1
 }
 
-Describe 'Remove-HypervPortForward' {
+Describe 'Remove-HypervNatStaticMapping' {
 
     It 'removes the static mapping by StaticMappingID and the firewall rule by DisplayName' {
-        Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+        Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
         Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
         Mock Remove-NetNatStaticMapping { }
         Mock Remove-NetFirewallRule { }
 
-        Remove-HypervPortForward `
+        Remove-HypervNatStaticMapping `
             -NatName 'windsor-nat' `
             -Protocol 'tcp' `
             -ExternalIPAddress '0.0.0.0' `
@@ -41,7 +41,7 @@ Describe 'Remove-HypervPortForward' {
         Mock Remove-NetNatStaticMapping { }
         Mock Remove-NetFirewallRule { }
 
-        { Remove-HypervPortForward `
+        { Remove-HypervNatStaticMapping `
             -NatName 'windsor-nat' `
             -Protocol 'tcp' `
             -ExternalIPAddress '0.0.0.0' `
@@ -54,12 +54,12 @@ Describe 'Remove-HypervPortForward' {
     }
 
     It 'tolerates a missing firewall rule (best-effort destroy)' {
-        Mock Get-NetNatStaticMapping { New-HypervPortForwardSample -StaticMappingID 1 }
+        Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
         Mock Get-NetFirewallRule { }
         Mock Remove-NetNatStaticMapping { }
         Mock Remove-NetFirewallRule { }
 
-        { Remove-HypervPortForward `
+        { Remove-HypervNatStaticMapping `
             -NatName 'windsor-nat' `
             -Protocol 'tcp' `
             -ExternalIPAddress '0.0.0.0' `
@@ -72,12 +72,12 @@ Describe 'Remove-HypervPortForward' {
     }
 
     It 'emits no stdout on success (caller relies on dst=nil + exit 0)' {
-        Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+        Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
         Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
         Mock Remove-NetNatStaticMapping { }
         Mock Remove-NetFirewallRule { }
 
-        $output = Remove-HypervPortForward `
+        $output = Remove-HypervNatStaticMapping `
             -NatName 'windsor-nat' `
             -Protocol 'tcp' `
             -ExternalIPAddress '0.0.0.0' `
@@ -92,12 +92,12 @@ Describe 'Remove-HypervPortForward' {
         # fault), the Go side must see the error -- otherwise Delete
         # would succeed-on-paper while leaving the mapping live on the
         # host.
-        Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+        Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
         Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
         Mock Remove-NetNatStaticMapping { throw 'simulated WMI fault' }
         Mock Remove-NetFirewallRule { }
 
-        { Remove-HypervPortForward `
+        { Remove-HypervNatStaticMapping `
             -NatName 'windsor-nat' `
             -Protocol 'tcp' `
             -ExternalIPAddress '0.0.0.0' `

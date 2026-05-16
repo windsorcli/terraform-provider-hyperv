@@ -1,4 +1,4 @@
-package port_forward
+package nat_static_mapping
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 // Optional is enforced elsewhere; unknowns get re-validated when they
 // resolve to concrete strings.
 //
-// Used by external_ip and internal_ip on hyperv_port_forward.
+// Used by external_ip and internal_ip on hyperv_nat_static_mapping.
 type ipv4Validator struct{}
 
 func (v ipv4Validator) Description(_ context.Context) string {

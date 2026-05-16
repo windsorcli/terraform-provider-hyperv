@@ -1,4 +1,4 @@
-# Locks the JSON contract for Get-HypervPortForward. The Go-side typed
+# Locks the JSON contract for Get-HypervNatStaticMapping. The Go-side typed
 # wrapper decodes the output with field tags that match the keys
 # asserted here; any change is a wire-level break.
 
@@ -8,7 +8,7 @@ BeforeAll {
     . $PSScriptRoot/get.ps1
 }
 
-Describe 'Get-HypervPortForward' {
+Describe 'Get-HypervNatStaticMapping' {
 
     Context 'happy path' {
 
@@ -19,14 +19,14 @@ Describe 'Get-HypervPortForward' {
             # what "this is THE mapping" means for the resource layer.
             Mock Get-NetNatStaticMapping {
                 @(
-                    New-HypervPortForwardSample -StaticMappingID 1 -ExternalPort 80 -Protocol 'TCP'
-                    New-HypervPortForwardSample -StaticMappingID 2 -ExternalPort 443 -Protocol 'TCP'
-                    New-HypervPortForwardSample -StaticMappingID 3 -ExternalPort 80 -Protocol 'UDP'
+                    New-HypervNatStaticMappingSample -StaticMappingID 1 -ExternalPort 80 -Protocol 'TCP'
+                    New-HypervNatStaticMappingSample -StaticMappingID 2 -ExternalPort 443 -Protocol 'TCP'
+                    New-HypervNatStaticMappingSample -StaticMappingID 3 -ExternalPort 80 -Protocol 'UDP'
                 )
             }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = Get-HypervPortForward `
+            $parsed = Get-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -39,10 +39,10 @@ Describe 'Get-HypervPortForward' {
         }
 
         It 'reports FirewallRulePresent=true when the rule exists' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = Get-HypervPortForward `
+            $parsed = Get-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -59,10 +59,10 @@ Describe 'Get-HypervPortForward' {
             # firewall.enabled=false at create time, or removed the rule
             # out-of-band. Read must reflect the actual state without
             # erroring.
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Get-NetFirewallRule { }
 
-            $parsed = Get-HypervPortForward `
+            $parsed = Get-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -74,10 +74,10 @@ Describe 'Get-HypervPortForward' {
         }
 
         It 'composite Id encodes (nat_name, protocol, external_ip, external_port) lowercase protocol' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = Get-HypervPortForward `
+            $parsed = Get-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -101,7 +101,7 @@ Describe 'Get-HypervPortForward' {
 
             $captured = $null
             try {
-                Get-HypervPortForward `
+                Get-HypervNatStaticMapping `
                     -NatName 'windsor-nat' `
                     -Protocol 'tcp' `
                     -ExternalIPAddress '0.0.0.0' `
@@ -111,7 +111,7 @@ Describe 'Get-HypervPortForward' {
 
             $captured | Should -Not -BeNullOrEmpty
             $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
-            $captured.FullyQualifiedErrorId | Should -Match 'PortForwardNotFound'
+            $captured.FullyQualifiedErrorId | Should -Match 'NatStaticMappingNotFound'
         }
 
         It 'tuple disagreement on Protocol surfaces ObjectNotFound (port can be reused across protocols)' {
@@ -120,13 +120,13 @@ Describe 'Get-HypervPortForward' {
             # ALL of (protocol, external_ip, external_port) -- a port-
             # only match would silently return the wrong mapping.
             Mock Get-NetNatStaticMapping {
-                New-HypervPortForwardSample -StaticMappingID 99 -Protocol 'UDP' -ExternalPort 80
+                New-HypervNatStaticMappingSample -StaticMappingID 99 -Protocol 'UDP' -ExternalPort 80
             }
             Mock Get-NetFirewallRule { }
 
             $captured = $null
             try {
-                Get-HypervPortForward `
+                Get-HypervNatStaticMapping `
                     -NatName 'windsor-nat' `
                     -Protocol 'tcp' `
                     -ExternalIPAddress '0.0.0.0' `
@@ -142,10 +142,10 @@ Describe 'Get-HypervPortForward' {
     Context 'output shape' {
 
         It 'emits the canonical eleven-field shape' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $parsed = Get-HypervPortForward `
+            $parsed = Get-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `
@@ -168,10 +168,10 @@ Describe 'Get-HypervPortForward' {
         }
 
         It 'compresses output to a single line (Write-HypervResult contract)' {
-            Mock Get-NetNatStaticMapping { New-HypervPortForwardSample }
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
-            $output = Get-HypervPortForward `
+            $output = Get-HypervNatStaticMapping `
                 -NatName 'windsor-nat' `
                 -Protocol 'tcp' `
                 -ExternalIPAddress '0.0.0.0' `

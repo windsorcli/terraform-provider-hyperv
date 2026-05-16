@@ -1,4 +1,4 @@
-# port_forward/set.ps1 -- update an existing static NAT port forward
+# nat_static_mapping/set.ps1 -- update an existing static NAT port forward
 # and/or its companion firewall rule.
 #
 # Wire contract (locked in by Tests.ps1):
@@ -7,7 +7,7 @@
 #   stdout JSON : the updated mapping in the canonical eleven-field
 #                 read shape.
 #
-# NetNatStaticMapping has no in-place edit. internal_ip / internal_port
+# NatStaticMapping has no in-place edit. internal_ip / internal_port
 # changes are expressed as Remove + Add, which assigns a fresh
 # StaticMappingID -- the read-back returns it and the resource layer
 # threads the new value back into state.
@@ -15,11 +15,11 @@
 # The firewall rule, by contrast, has Set-NetFirewallRule for in-place
 # mutation of Enabled / Profile.
 
-# Invoke-WithNetNatRetry is defined in port_forward/_retry.ps1, which
-# the Go-side loadPortForwardWithRetry prepends to this script body
+# Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1, which
+# the Go-side loadNatStaticMappingWithRetry prepends to this script body
 # before sending it to the runner.
 
-function Set-HypervPortForward {
+function Set-HypervNatStaticMapping {
     [CmdletBinding()]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
         'PSReviewUnusedParameter', 'InternalIPAddress',
@@ -58,7 +58,7 @@ function Set-HypervPortForward {
             "No NAT static mapping found for nat_name='$NatName', protocol='$Protocol', " +
                 "external_ip='$ExternalIPAddress', external_port='$ExternalPort'.")
         $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-            $exception, 'PortForwardNotFound',
+            $exception, 'NatStaticMappingNotFound',
             [System.Management.Automation.ErrorCategory]::ObjectNotFound,
             "$NatName/$Protocol/$ExternalIPAddress/$ExternalPort")
         throw $errorRecord
@@ -67,7 +67,7 @@ function Set-HypervPortForward {
     # Mapping mutation: Remove + Add. The cmdlet has no -PassThru, so
     # we re-add and capture the new mapping object for the read-back.
     # The resource layer will see a fresh StaticMappingId in state --
-    # expected, since Hyper-V's NetNatStaticMapping ID is opaque and
+    # expected, since Hyper-V's NatStaticMapping ID is opaque and
     # changes whenever the mapping is recreated.
     Remove-NetNatStaticMapping -StaticMappingID $existing.StaticMappingID `
         -Confirm:$false -ErrorAction Stop
@@ -155,7 +155,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
         $fw = $params.firewall
-        Set-HypervPortForward `
+        Set-HypervNatStaticMapping `
             -NatName $params.nat_name `
             -Protocol $params.protocol `
             -ExternalIPAddress $params.external_ip `

@@ -16,7 +16,7 @@ import (
 // methods route entirely through the PowerShell connection layer and
 // don't observe it.
 //
-// netNatMu serializes calls to every NetNat-touching method (port_forward
+// netNatMu serializes calls to every NetNat-touching method (nat_static_mapping
 // CRUD plus the NAT branches of vswitch CRUD). Windows' NetNat is a
 // host-singleton with a persistent-store backing file; under terraform's
 // default parallelism=10 (or higher), parallel Add-NetNatStaticMapping
@@ -33,7 +33,7 @@ import (
 // opens the file with shared-read access per the Windows file API
 // convention and doesn't conflict with other readers. So:
 //   - Get* methods take RLock -- N parallel terraform refreshes of
-//     port_forward resources run in O(1) wall time, not O(N).
+//     nat_static_mapping resources run in O(1) wall time, not O(N).
 //   - New / Set / Remove methods take Lock (exclusive) -- writers
 //     serialize against each other AND against any in-flight reader.
 //

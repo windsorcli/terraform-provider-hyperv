@@ -1,4 +1,4 @@
-# port_forward/new.ps1 -- create a static NAT port forward + optional
+# nat_static_mapping/new.ps1 -- create a static NAT port forward + optional
 # inbound firewall allow rule.
 #
 # Wire contract (locked in by Tests.ps1):
@@ -23,16 +23,16 @@
 # NetNat instance. Without the precondition, Add-NetNatStaticMapping
 # fails with an opaque "no NAT" message that obscures the dependency.
 
-# Invoke-WithNetNatRetry is defined in port_forward/_retry.ps1, which
-# the Go-side loadPortForwardWithRetry prepends to this script body
+# Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1, which
+# the Go-side loadNatStaticMappingWithRetry prepends to this script body
 # before sending it to the runner.
 
-# New-HypervPortForward provisions Add-NetNatStaticMapping, then
+# New-HypervNatStaticMapping provisions Add-NetNatStaticMapping, then
 # (optionally) New-NetFirewallRule. On firewall failure, the static
 # mapping is rolled back -- otherwise an orphan mapping would survive
 # on the host and the next apply would trip on the (Protocol,
 # ExternalIP, ExternalPort) uniqueness constraint.
-function New-HypervPortForward {
+function New-HypervNatStaticMapping {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $NatName,
@@ -141,7 +141,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
         $fw = $params.firewall
-        New-HypervPortForward `
+        New-HypervNatStaticMapping `
             -NatName $params.nat_name `
             -Protocol $params.protocol `
             -ExternalIPAddress $params.external_ip `

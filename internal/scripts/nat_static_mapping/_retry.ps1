@@ -1,8 +1,8 @@
-# port_forward/_retry.ps1 -- shared transient-retry helper for the
-# port_forward verb scripts. Underscore prefix keeps the file out of
+# nat_static_mapping/_retry.ps1 -- shared transient-retry helper for the
+# nat_static_mapping verb scripts. Underscore prefix keeps the file out of
 # Pester's *.Tests.ps1 discovery glob (same convention
 # _test_helpers.ps1 uses); the runtime concatenates this body to the
-# top of new.ps1 and set.ps1 via loadPortForwardWithRetry on the Go
+# top of new.ps1 and set.ps1 via loadNatStaticMappingWithRetry on the Go
 # side, parallel to how vm/read-result.ps1 is prepended to the four
 # VM read-emitting verbs.
 #
@@ -171,7 +171,7 @@ function Resolve-NetNatPortConflictMessage {
     $exception = [System.InvalidOperationException]::new($clearMessage)
     $newRecord = [System.Management.Automation.ErrorRecord]::new(
         $exception,
-        'PortForwardPortExcluded',
+        'NatStaticMappingPortExcluded',
         $ErrorRecord.CategoryInfo.Category,
         $ErrorRecord.TargetObject
     )

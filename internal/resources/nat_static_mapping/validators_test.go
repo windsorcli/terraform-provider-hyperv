@@ -1,4 +1,4 @@
-package port_forward
+package nat_static_mapping
 
 import (
 	"testing"

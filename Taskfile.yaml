@@ -165,7 +165,11 @@ tasks:
     env:
       TF_ACC: "1"
     cmds:
-      - go test -v -timeout 120m -run '^TestAcc' ./...
+      # -p 1 serializes package execution against the single shared bench.
+      # Without it, packages with overlapping NAT-switch fixtures (vswitch +
+      # nat_static_mapping both create 192.168.222.0/24 vNICs) race
+      # New-NetIPAddress and one fails with "object already exists".
+      - go test -v -p 1 -timeout 120m -run '^TestAcc' ./...
 
   test:pester:
     desc: Pester tests against PowerShell scripts (cross-platform; cmdlets are mocked)

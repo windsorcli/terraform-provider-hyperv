@@ -25,7 +25,7 @@ import (
 	dsvswitch "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vswitch"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/port_forward"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/nat_static_mapping"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vhd"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vm"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
@@ -341,7 +341,7 @@ func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource
 		image_file.New,
 		vhd.New,
 		vm.New,
-		port_forward.New,
+		nat_static_mapping.New,
 	}
 }
 

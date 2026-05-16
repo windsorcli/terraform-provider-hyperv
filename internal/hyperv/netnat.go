@@ -29,7 +29,7 @@ type netNatSweepResult struct {
 // Takes the package netNatMu write lock for the same reason
 // RemoveVMSwitch's NAT branch does: Remove-NetNat mutates the host's
 // NetNat persistent-store backing file under an exclusive-write handle
-// and races every port_forward or vswitch NAT writer otherwise. Sweep
+// and races every nat_static_mapping or vswitch NAT writer otherwise. Sweep
 // only runs from the acceptance-test sweeper, which executes against an
 // idle bench, so the lock is belt-and-suspenders rather than load-
 // bearing -- but the cost is one uncontended Lock+Unlock and the

@@ -1,4 +1,4 @@
-# port_forward/remove.ps1 -- delete a static NAT port forward and its
+# nat_static_mapping/remove.ps1 -- delete a static NAT port forward and its
 # companion firewall rule (if present).
 #
 # Wire contract (locked in by Tests.ps1):
@@ -16,7 +16,7 @@
 # rule is treated as success (the goal is "no mapping/rule by these
 # identifiers exists," and that's already true).
 
-function Remove-HypervPortForward {
+function Remove-HypervNatStaticMapping {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $NatName,
@@ -55,7 +55,7 @@ function Remove-HypervPortForward {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
-        Remove-HypervPortForward `
+        Remove-HypervNatStaticMapping `
             -NatName $params.nat_name `
             -Protocol $params.protocol `
             -ExternalIPAddress $params.external_ip `

@@ -104,7 +104,7 @@ func init() {
 	// hyperv_nat sweeps orphan NetNat instances before any NAT-switch
 	// sweep would try to Remove-VMSwitch. Windows allows exactly one
 	// NetNat per host, so a single stuck NetNat from a prior failed
-	// run blocks every subsequent NAT switch / port_forward acctest --
+	// run blocks every subsequent NAT switch / nat_static_mapping acctest --
 	// the New-NetNat singleton precondition fires before the test can
 	// even create its own switch. SweepNetNats lists Get-NetNat and
 	// removes any tfacc-* match, decoupled from the VMSwitch sweep so
@@ -113,7 +113,7 @@ func init() {
 	//
 	// Depends on hyperv_vm for the same defensive reason hyperv_vhd
 	// does: nothing in vm references NetNat directly, but ordering the
-	// vm sweep first means any port_forward-style resource we add in
+	// vm sweep first means any nat_static_mapping-style resource we add in
 	// the future that DOES tie a VM to a NetNat would already have
 	// the right ordering.
 	resource.AddTestSweepers("hyperv_nat", &resource.Sweeper{
