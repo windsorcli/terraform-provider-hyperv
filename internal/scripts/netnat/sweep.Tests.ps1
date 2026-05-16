@@ -109,6 +109,9 @@ Describe 'Invoke-HypervNetNatSweep' {
 
             @($parsed.removed).Count | Should -Be 1
             @($parsed.removed) | Should -Contain 'tfacc-nat-ok'
+            # Same raw-JSON shape guard as the happy-path single-match test
+            # -- pins the [string[]]$removed typing in the error-iteration path.
+            $output | Should -Match '"removed":\["tfacc-nat-ok"\]'
             @($parsed.removed) | Should -Not -Contain 'tfacc-nat-fails'
         }
     }
