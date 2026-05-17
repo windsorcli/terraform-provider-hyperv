@@ -10,8 +10,7 @@ import (
 // TestClient_SweepNetNats_DecodesRemovedList pins the wire contract:
 // the sweep script emits {"removed": [...]}, and the client returns
 // that slice verbatim. Symmetric with the ListVMSwitchesByPrefix tests
-// in vswitch_test.go, except sweep is list+remove combined because
-// NetNat is host-singleton.
+// in vswitch_test.go; sweep is list+remove combined to save a round-trip.
 func TestClient_SweepNetNats_DecodesRemovedList(t *testing.T) {
 	t.Parallel()
 

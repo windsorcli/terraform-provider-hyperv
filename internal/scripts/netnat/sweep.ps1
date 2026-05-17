@@ -10,22 +10,19 @@
 #   stderr/exit : 0 on success (including the zero-match case).
 #
 # Combined list-and-remove is correct here (vs the split list.ps1 /
-# remove.ps1 pattern used for VMs and switches) because Windows allows
-# exactly one NetNat instance per host -- there's at most one match per
-# call, and a separate enumerate / delete round-trip would just double
-# the SSH cost. The returned `removed` list lets the Go-side sweeper
-# log what it cleared (typically zero or one entry).
+# remove.ps1 pattern used for VMs and switches) because the sweeper
+# round-trips once and removes whatever matches in the same call --
+# saves the second SSH hop and the returned `removed` list lets the
+# Go-side sweeper log what it cleared. Multiple NetNats can coexist
+# on a host, so the foreach loop is load-bearing, not just defensive.
 #
 # Best-effort per-NetNat: a Remove-NetNat failure on one instance
 # logs and continues to the next rather than aborting the whole
-# sweep. (In practice there's only ever one, but the loop shape keeps
-# the script robust if Microsoft ever lifts the singleton constraint.)
+# sweep.
 
 # Invoke-HypervNetNatSweep enumerates Get-NetNat, filters to names
 # matching the prefix, calls Remove-NetNat on each, and returns the
-# names that were removed. Symmetric in spirit with
-# Get-HypervVMSwitchByPrefix but combines the remove step because of
-# the host-singleton constraint above.
+# names that were removed.
 function Invoke-HypervNetNatSweep {
     [CmdletBinding()]
     param(

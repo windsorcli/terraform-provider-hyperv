@@ -100,3 +100,45 @@ func TestCheckNATPrefix(t *testing.T) {
 		})
 	}
 }
+
+// TestNatNameRegex pins the character set enforced on nat_name. The
+// regex exists because Get-NetNat -Name accepts PowerShell wildcards
+// (* ? [ ]); an unrestricted value could match more than one NetNat
+// at adoption-detection time and corrupt the prefix-mismatch check
+// in vswitch/new.ps1.
+func TestNatNameRegex(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"windsor-nat", true},
+		{"my_nat_1", true},
+		{"foo.bar", true},
+		{"X", true},
+		{"abc123", true},
+
+		// Wildcard metacharacters -- the load-bearing rejections.
+		{"dev-*", false},
+		{"foo?", false},
+		{"bar[1]", false},
+
+		// Other unsafe inputs.
+		{"", false},
+		{"-leading-dash", false},
+		{".leading-dot", false},
+		{"with space", false},
+		{"with/slash", false},
+		{`with\backslash`, false},
+		{"with'quote", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			if got := natNameRegex.MatchString(tc.input); got != tc.want {
+				t.Errorf("natNameRegex.MatchString(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}

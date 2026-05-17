@@ -4,11 +4,18 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
+
+// natNameRegex bounds nat_name to a safe character set. Get-NetNat -Name
+// accepts PowerShell wildcards (* ? [ ]), so an unrestricted value could
+// match more than one NetNat at adoption-detection time and skew the
+// prefix-mismatch check in vswitch/new.ps1.
+var natNameRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // natRequiresNatAttrsValidator: when switch_type = "NAT", the three NAT
 // inputs (nat_name, nat_internal_address_prefix, nat_host_address) must

@@ -19,9 +19,8 @@ type netNatSweepResult struct {
 // SweepNetNats removes every NetNat instance on the host whose Name
 // starts with the given prefix (typically "tfacc-" for the
 // acceptance-test sweeper) and returns the names that were removed.
-// Windows is host-singleton on NetNat -- a single sweep call sees at
-// most one instance in practice -- but the script and the return type
-// are list-shaped so the behavior stays correct if that ever changes.
+// Multiple NetNats can coexist on a host, so the script returns
+// a list and this method's return type is []string.
 //
 // Empty result is a normal return ([]string{}, nil); the caller can
 // distinguish "no orphans" from "fault" without checking err.
