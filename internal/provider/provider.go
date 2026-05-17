@@ -392,18 +392,11 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 }
 
 // classifyAuthProbeError converts a Get-VMHost probe failure into a
-// resp.Diagnostics entry whose Summary/Detail point at the right fix.
-// Three buckets in priority order:
-//
-//  1. hyperv.ErrUnauthorized -- auth succeeded but the identity lacks
-//     Hyper-V access. Tell the operator about the Hyper-V Administrators
-//     floor and link to the per-resource Requirements docs.
-//  2. context.DeadlineExceeded -- transient host issue or a script
-//     timeout. Tell the operator how to extend the timeout or skip the
-//     probe.
-//  3. Anything else -- transport-level error or unrecognized PS failure.
-//     Surface the underlying message verbatim and offer the skip flag
-//     as the escape hatch for hostless `terraform validate`.
+// resp.Diagnostics entry whose Detail points at the right fix:
+// hyperv.ErrUnauthorized routes to the Hyper-V Administrators message;
+// everything else (timeouts, transport errors, unrecognized PS failures)
+// falls to the generic message that offers skip_auth_probe as the
+// escape hatch for hostless `terraform validate`.
 func classifyAuthProbeError(backend string, err error, diags *diag.Diagnostics) {
 	switch {
 	case errors.Is(err, hyperv.ErrUnauthorized):
