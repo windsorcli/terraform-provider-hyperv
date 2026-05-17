@@ -72,7 +72,7 @@ jobs:
                 > /tmp/threads.json
 
             For each unresolved thread authored by the bot (login ending in
-            `[bot]` or matching `github-actions`), resolve when:
+            `[bot]`, `github-actions`, or `claude`), resolve when:
             - GitHub reports `isOutdated: true`
             - The specific issue is no longer present at HEAD
 
@@ -271,7 +271,7 @@ jobs:
                 > /tmp/threads.json
 
             For each unresolved thread authored by the bot (login ending in
-            `[bot]` or matching `github-actions`), resolve when:
+            `[bot]`, `github-actions`, or `claude`), resolve when:
             - GitHub reports `isOutdated: true`
             - The specific issue is no longer present at HEAD
 
@@ -436,7 +436,7 @@ jobs:
             --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
                    | select(.isResolved == false)
                    | select(.comments.nodes[0].author.login
-                       | test("\\[bot\\]$|^github-actions"))]
+                       | test("\\[bot\\]$|^github-actions|^claude$"))]
                    | length')
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Unresolved bot threads: $COUNT"
@@ -473,7 +473,7 @@ jobs:
                 }' -F owner="${GH_REPO%/*}" -F repo="${GH_REPO#*/}" -F num="$PR_NUMBER"
 
             2. For each unresolved thread authored by the bot (login ending
-               in `[bot]` or matching `github-actions`):
+               in `[bot]`, `github-actions`, or `claude`):
                - If `isOutdated: true`, resolve it.
                - Otherwise, read the file at the commented path/line and
                  check whether the specific concern is still present.
