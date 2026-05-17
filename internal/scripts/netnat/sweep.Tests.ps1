@@ -1,9 +1,10 @@
 # Locks the Invoke-HypervNetNatSweep contract: filters Get-NetNat by name
 # prefix, removes each match, and emits a JSON object with a `removed`
 # array (even on zero / one match). The combined list+remove shape is
-# the deliberate departure from vswitch/list.ps1 -- NetNat is host-
-# singleton on Windows so a separate enumerate / delete round-trip would
-# just double the SSH cost.
+# the deliberate departure from vswitch/list.ps1 -- saves a round-trip
+# since the sweeper would chain them anyway. Multiple NetNats can
+# coexist on a host, so the multi-match cases below are load-bearing,
+# not just defensive.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -39,9 +40,8 @@ Describe 'Invoke-HypervNetNatSweep' {
         }
 
         It 'skips NetNats that do not match the prefix' {
-            # Windows allows only one NetNat per host, but the
-            # filter-then-remove shape must be correct anyway: a NetNat
-            # the operator created out-of-band must not be touched.
+            # A NetNat the operator created out-of-band must not be
+            # touched -- the prefix filter is what bounds the sweep.
             Mock Get-NetNat {
                 @(
                     (New-HypervNetNatSample -Name 'production-nat-keep')
@@ -101,10 +101,9 @@ Describe 'Invoke-HypervNetNatSweep' {
     Context 'error handling' {
 
         It 'logs and continues when Remove-NetNat fails on one instance' {
-            # In practice there is only ever one NetNat per host, but
-            # the loop shape is best-effort: a failed remove on one
-            # instance must not abort the sweep on the next. Test pins
-            # that the failure does not throw out of the function.
+            # Best-effort sweep: a failed remove on one instance must
+            # not abort the sweep on the next. Test pins that the
+            # failure does not throw out of the function.
             Mock Get-NetNat {
                 @(
                     (New-HypervNetNatSample -Name 'tfacc-nat-fails'),

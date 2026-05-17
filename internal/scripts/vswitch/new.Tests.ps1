@@ -211,12 +211,12 @@ Describe 'New-HypervSwitch' {
             $parsed.AllowManagementOS | Should -BeFalse
         }
 
-        It 'rejects when a NetNat with a different name already exists (one-NAT-per-host)' {
-            # Singleton: Windows allows exactly one NetNat instance per host.
-            # If one already exists with a different name, fail before
-            # creating the VMSwitch so we don't leave a half-provisioned
-            # NAT-less Internal switch on the host.
-            Mock Get-NetNat { New-HypervNetNatSample -Name 'someone-elses-nat' }
+        It 'allows creation when a different-named NetNat exists on the host (no host-singleton constraint)' {
+            # Multiple NetNats can coexist as long as Name and prefix
+            # don't collide, so the script's Get-NetNat lookup is
+            # name-scoped. An unrelated NetNat on the host must not
+            # block our create.
+            Mock Get-NetNat -ParameterFilter { $Name -eq 'windsor-nat' } { $null }
             Mock New-VMSwitch { New-HypervSwitchSample }
             Mock New-NetIPAddress { New-HypervNetIPAddressSample }
             Mock New-NetNat { New-HypervNetNatSample }
@@ -224,12 +224,11 @@ Describe 'New-HypervSwitch' {
             { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
                 -NatName 'windsor-nat' `
                 -NatInternalAddressPrefix '192.168.100.0/24' `
-                -NatHostAddress '192.168.100.1' } |
-                Should -Throw -ExpectedMessage '*someone-elses-nat*'
+                -NatHostAddress '192.168.100.1' } | Should -Not -Throw
 
-            Should -Invoke New-VMSwitch -Times 0 -Exactly
-            Should -Invoke New-NetIPAddress -Times 0 -Exactly
-            Should -Invoke New-NetNat -Times 0 -Exactly
+            Should -Invoke New-VMSwitch -Times 1 -Exactly
+            Should -Invoke New-NetIPAddress -Times 1 -Exactly
+            Should -Invoke New-NetNat -Times 1 -Exactly
         }
 
         It 'rejects adoption when the existing NetNat has a different prefix (would loop on RequiresReplace otherwise)' {

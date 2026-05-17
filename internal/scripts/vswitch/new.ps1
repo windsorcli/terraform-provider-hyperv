@@ -22,10 +22,11 @@
 #
 # NAT branch -- Hyper-V has no "NAT" switch_type natively. A NAT switch is
 # an Internal VMSwitch + a New-NetIPAddress on the host vNIC + a New-NetNat
-# tying the prefix to that vNIC. The script orchestrates all three. Windows
-# allows exactly one NetNat instance per host; the singleton check fires
-# BEFORE creating the VMSwitch so a conflict doesn't leave a half-
-# provisioned NAT-less Internal switch behind.
+# tying the prefix to that vNIC. The script orchestrates all three. A
+# NetNat with the configured name is idempotently adopted when present
+# (re-apply / import safety); name mismatch is no longer a conflict --
+# multiple NetNats coexist on a host as long as Name and prefix don't
+# collide.
 
 # New-HypervSwitch builds the parameter splat for New-VMSwitch from typed
 # inputs, runs the cmdlet, and emits the canonical read shape. For NAT
@@ -96,14 +97,13 @@ function New-HypervSwitch {
 }
 
 # New-HypervNatSwitch provisions an Internal VMSwitch + NetIPAddress on the
-# host vNIC + NetNat tying the prefix to that vNIC. Singleton-checks the
-# host's NetNat before creating the switch so a conflict doesn't leave a
-# half-provisioned Internal switch behind.
+# host vNIC + NetNat tying the prefix to that vNIC.
 #
-# Adoption: if a NetNat with the planned name already exists (idempotent
-# re-apply or terraform import), New-NetNat is skipped and the existing
-# instance is reused. A NetNat with a DIFFERENT name fails the singleton
-# guard.
+# Idempotent adoption: if a NetNat with the planned name already exists
+# (re-apply or terraform import), New-NetNat is skipped and the existing
+# instance is reused. Prefix mismatch on the same-named NetNat throws --
+# RequiresReplace on the prefix attribute would otherwise loop, since
+# adoption locks state to the host's actual prefix.
 function New-HypervNatSwitch {
     [CmdletBinding()]
     param(
@@ -114,28 +114,18 @@ function New-HypervNatSwitch {
         [Parameter(Mandatory)] [string] $NatHostAddress
     )
 
-    # Singleton precondition: Windows allows exactly one NetNat per host. If
-    # one already exists with a different name, we must abort BEFORE creating
-    # the VMSwitch (otherwise we'd strand a NAT-less Internal switch on the
-    # host that the operator would have to clean up by hand).
-    $existingNat = Get-NetNat -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Name-scoped lookup. Multiple NetNats can coexist on a host as long
+    # as Name and prefix don't collide, so we only care about a NetNat
+    # that matches the configured name.
+    $existingNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue
     $adoptNat = $false
     if ($null -ne $existingNat) {
-        if ($existingNat.Name -ne $NatName) {
-            throw "A NetNat instance named '$($existingNat.Name)' already exists on this host. " +
-                "Windows allows exactly one NetNat per host -- remove the existing instance, " +
-                "or set nat_name = '$($existingNat.Name)' to adopt it."
-        }
         # Same name: adopt -- but only if the prefix matches. Adopting a
-        # NetNat whose prefix differs from the plan would let Create emit
-        # the plan's prefix (this script's projection), then Read see the
-        # host's actual prefix on the next refresh, then the diff force
-        # replacement (nat_internal_address_prefix is RequiresReplace),
-        # then the replacement Create hit the same adoption path with the
-        # same mismatch -- a permanent plan-loop. Throwing here surfaces
-        # the misconfiguration with a clear remediation path: align the
-        # plan's prefix with the existing NetNat, or remove the NetNat
-        # and let this resource create a fresh one.
+        # NetNat whose prefix differs from the plan would loop: Create
+        # records the host's prefix, Read sees it on refresh, the diff
+        # forces replacement (RequiresReplace on the prefix attr), and
+        # the replacement Create hits the same adoption path. Throw here
+        # with clear remediation instead.
         if ($existingNat.InternalIPInterfaceAddressPrefix -ne $NatInternalAddressPrefix) {
             throw "A NetNat named '$NatName' already exists with prefix " +
                 "'$($existingNat.InternalIPInterfaceAddressPrefix)', but the plan asks for " +

@@ -59,7 +59,7 @@ resource "hyperv_virtual_switch" "external" {
 ### Required
 
 - `name` (String) Switch name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a switch in place.
-- `switch_type` (String) Switch type. One of `External` (binds to a host NIC), `Internal` (host-VM only), `Private` (VM-VM only), or `NAT` (Internal switch with a registered `NetNat` instance providing outbound NAT). **Forces replacement** -- Hyper-V cannot convert a switch from one type to another. NAT requires `nat_name` and `nat_internal_address_prefix`; the provider enforces Microsoft's one-`NetNat`-per-host constraint at create time.
+- `switch_type` (String) Switch type. One of `External` (binds to a host NIC), `Internal` (host-VM only), `Private` (VM-VM only), or `NAT` (Internal switch with a registered `NetNat` instance providing outbound NAT). **Forces replacement** -- Hyper-V cannot convert a switch from one type to another. NAT requires `nat_name` and `nat_internal_address_prefix`. An existing NetNat with the same `nat_name` is idempotently adopted (re-apply / import safety); a name-matching NetNat with a different prefix fails the create with a clear remediation.
 
 ### Optional
 
