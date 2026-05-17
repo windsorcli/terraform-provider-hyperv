@@ -72,11 +72,11 @@ func NatStaticMappingRetry() ([]byte, error) {
 // verb -- every image_file schema field is RequiresReplace, so Update is a
 // Go-side no-op with no PS round-trip.
 //
-//go:embed image_file/get.ps1 image_file/new.ps1 image_file/remove.ps1
+//go:embed image_file/get.ps1 image_file/new.ps1 image_file/remove.ps1 image_file/sweep.ps1
 var ImageFile embed.FS
 
 // ImageFileScript returns the contents of image_file/<verb>.ps1 (verb in
-// {get, new, remove}).
+// {get, new, remove, sweep}).
 func ImageFileScript(verb string) ([]byte, error) {
 	return ImageFile.ReadFile("image_file/" + verb + ".ps1")
 }

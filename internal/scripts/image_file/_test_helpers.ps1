@@ -64,6 +64,36 @@ function Remove-Item {
     )
 }
 
+# Stubbed for sweep.ps1's directory enumeration.
+function Get-ChildItem {
+    [CmdletBinding()]
+    param(
+        [string] $LiteralPath,
+        [string] $Filter
+    )
+}
+
+# Get-ChildItem-shaped fixture for sweep tests. Mirrors the
+# vhd-side helper of the same name but lives here so the image_file
+# Pester suite doesn't cross-source vhd helpers.
+function New-HypervChildItemSample {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [string] $ParentDir = 'C:\hyperv\tfacc',
+        [bool]   $PSIsContainer = $false
+    )
+    # String-concat over Join-Path: PS 7 on macOS resolves the parent
+    # through the PSDrive registry and errors on C:. The fixture only
+    # needs a synthesized string.
+    [pscustomobject]@{
+        Name          = $Name
+        Extension     = [System.IO.Path]::GetExtension($Name)
+        FullName      = "${ParentDir}\${Name}"
+        PSIsContainer = $PSIsContainer
+    }
+}
+
 # Hyper-V cmdlets used by the dvd-aware replace helper (see new.ps1's
 # Invoke-HypervDvdSafeReplace). Stubbed here for the same parameter-binding
 # reason the rest of these stubs exist: PS 5.1 + Pester drops bound values
