@@ -3,6 +3,7 @@
 page_title: "hyperv_vhd Resource - hyperv"
 subcategory: ""
 description: |-
+  Requirements: Membership in the Hyper-V Administrators group on the target host (or equivalent rights granted through a JEA endpoint).
   Manages a VHD/VHDX file on the Hyper-V host. Three creation modes:
   fixed -- pre-allocates the full size_bytes on disk. Slow create, no runtime expansion.dynamic -- sparse VHDX. Initial on-disk size is minimal; the file grows as the guest writes blocks, up to size_bytes.differencing -- read-only parent + writable child. size_bytes and block_size_bytes are inherited from the parent and rejected if supplied.
   Format (VHD vs VHDX) is inferred from the path extension. VHDX is recommended for anything modern (4 KiB sector support, larger maximum size, better corruption resistance).
@@ -12,6 +13,8 @@ description: |-
 ---
 
 # hyperv_vhd (Resource)
+
+**Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or equivalent rights granted through a JEA endpoint).
 
 Manages a VHD/VHDX file on the Hyper-V host. Three creation modes:
 

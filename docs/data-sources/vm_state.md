@@ -3,11 +3,14 @@
 page_title: "hyperv_vm_state Data Source - hyperv"
 subcategory: ""
 description: |-
+  Requirements: Membership in the Hyper-V Administrators group on the target host (or read access to Get-VM via a JEA endpoint).
   Reads live power state and reported IP addresses for an existing Hyper-V virtual machine by name. Useful for HCL conditionals and downstream resources that gate on whether the VM is Running (e.g. provisioners that wait for the guest to come up) without managing the VM itself.
   Refreshed on every plan: an out-of-band Start-VM / Stop-VM surfaces immediately. Pairs with hyperv_vm.state.{desired, current, shutdown_mode} -- the resource manages transitions; this data source reports them.
 ---
 
 # hyperv_vm_state (Data Source)
+
+**Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or read access to `Get-VM` via a JEA endpoint).
 
 Reads live power state and reported IP addresses for an existing Hyper-V virtual machine by name. Useful for HCL conditionals and downstream resources that gate on whether the VM is `Running` (e.g. provisioners that wait for the guest to come up) without managing the VM itself.
 

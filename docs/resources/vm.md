@@ -3,6 +3,7 @@
 page_title: "hyperv_vm Resource - hyperv"
 subcategory: ""
 description: |-
+  Requirements: Membership in the Hyper-V Administrators group on the target host (or equivalent rights granted through a JEA endpoint).
   Manages a Hyper-V virtual machine. Configures name, generation, nested cpu and memory blocks (static or dynamic), secure_boot (gen 2), notes, the inline state block for power lifecycle (desired, current, shutdown_mode), and inline network_adapter[], hard_disk_drive[], dvd_drive[], and boot_order (gen 2 only) lists.
   Integration services, automatic start/stop actions, and checkpoints are not currently exposed. Generation 1 BIOS boot ordering (Set-VMBios -StartupOrder) is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.
   Power transitions are driven by the inline state block (desired = "Running", "Off", "Saved", "Paused"). Mutations to cpu.count, memory.startup_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping.
@@ -10,6 +11,8 @@ description: |-
 ---
 
 # hyperv_vm (Resource)
+
+**Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or equivalent rights granted through a JEA endpoint).
 
 Manages a Hyper-V virtual machine. Configures `name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), `secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle (`desired`, `current`, `shutdown_mode`), and inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only) lists.
 

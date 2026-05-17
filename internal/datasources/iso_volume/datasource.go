@@ -55,7 +55,10 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 // (content_base64, sha256, size_bytes, id).
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Synthesizes a deterministic ISO9660 seed volume on the runner and exposes " +
+		MarkdownDescription: "**Requirements:** None on the Hyper-V host — this data source runs entirely " +
+			"on the Terraform runner and produces bytes only. The placement primitive paired with it " +
+			"(`hyperv_image_file`) is what requires Hyper-V Administrators.\n\n" +
+			"Synthesizes a deterministic ISO9660 seed volume on the runner and exposes " +
 			"its bytes (base64-encoded), sha256, and size as Computed attributes. Pair with a " +
 			"placement primitive (`hyperv_image_file` in `literal_bytes` mode, or `local_file` + " +
 			"`hyperv_image_file` in `local_path` mode) to land the bytes on a Hyper-V host.\n\n" +

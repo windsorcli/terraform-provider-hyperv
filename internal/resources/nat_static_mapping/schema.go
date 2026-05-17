@@ -32,7 +32,14 @@ import (
 // is intentionally absent from this schema until that's implemented.
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "Manages a single static NAT port forward (TCP or UDP) plus an optional " +
+		MarkdownDescription: "**Requirements:** **Local Administrators** on the target host. " +
+			"Empirically verified on Windows Server 2022 (build 10.0.20348): both " +
+			"[`Add-NetNatStaticMapping`](https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping) " +
+			"and [`New-NetFirewallRule`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule) " +
+			"return \"Access denied\" when invoked by a user in `Hyper-V Administrators` alone. " +
+			"Microsoft's cmdlet reference pages do not document a privilege requirement; the floor " +
+			"here is tested rather than cited.\n\n" +
+			"Manages a single static NAT port forward (TCP or UDP) plus an optional " +
 			"inbound firewall allow rule. Targets an existing `NetNat` instance by name -- typically " +
 			"created via `hyperv_virtual_switch` with `switch_type = \"NAT\"`, but any pre-existing " +
 			"NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.\n\n" +

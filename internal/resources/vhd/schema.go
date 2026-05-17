@@ -18,7 +18,9 @@ import (
 // the resource (see resource.go).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "Manages a VHD/VHDX file on the Hyper-V host. Three creation modes:\n\n" +
+		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
+			"the target host (or equivalent rights granted through a JEA endpoint).\n\n" +
+			"Manages a VHD/VHDX file on the Hyper-V host. Three creation modes:\n\n" +
 			"  * **`fixed`** -- pre-allocates the full `size_bytes` on disk. Slow create, no runtime expansion.\n" +
 			"  * **`dynamic`** -- sparse VHDX. Initial on-disk size is minimal; the file grows as the guest writes blocks, up to `size_bytes`.\n" +
 			"  * **`differencing`** -- read-only parent + writable child. `size_bytes` and `block_size_bytes` are inherited from the parent and rejected if supplied.\n\n" +

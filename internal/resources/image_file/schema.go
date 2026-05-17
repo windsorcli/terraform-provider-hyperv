@@ -21,7 +21,10 @@ import (
 // when `task generate` runs tfplugindocs (see PLAN.md S15).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:\n\n" +
+		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
+			"the target host (or equivalent rights granted through a JEA endpoint). The connecting " +
+			"identity must also have write permission to `destination_path`.\n\n" +
+			"Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:\n\n" +
 			"  * **`url`-mode** -- the provider downloads the file via a streamed HTTP GET (`System.Net.Http.HttpClient`), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at `destination_path`.\n" +
 			"  * **`local_path`-mode** -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.\n" +
 			"  * **`literal_bytes`-mode** -- the provider takes a base64-encoded byte payload from `content_base64` (typically wired from `data.hyperv_iso_volume.content_base64` or another runner-side data source), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. Same host-side wire path as `local_path`-mode -- the runner writes the bytes to a tmpfile and streams from there. Use this for synthesized seeds (cidata, autounattend, Talos machineconfig) so a `local_file` middleman isn't required.\n" +

@@ -16,6 +16,16 @@ Manage the lifecycle of Microsoft Hyper-V virtual machines, switches, disks, and
 - **Built on [`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework).** Strict typed schemas, plan modifiers, validators, custom semantic-equality types, and Terraform protocol v6.
 - **Embedded PowerShell with a JSON contract.** Each operation ships an embedded `.ps1` through the chosen transport and round-trips JSON via stdin/stdout. Scripts are independently testable with [Pester](https://pester.dev/).
 
+## Requirements
+
+The connecting identity needs the privilege appropriate to each resource. The matrix below was verified empirically on **Windows Server 2022** (build 10.0.20348).
+
+- **Hyper-V Administrators** is sufficient for: `hyperv_vm`, `hyperv_vhd`, `hyperv_image_file`; data sources `hyperv_host`, `hyperv_vm_state`, `hyperv_virtual_switch`; and `hyperv_virtual_switch` with `switch_type = "Private"` or `"Internal"`. Per Microsoft, [members of this group have complete and unrestricted access to all the features in Hyper-V](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups).
+- **Local Administrators** is required for: `hyperv_nat_static_mapping` (`Add-NetNatStaticMapping` and `New-NetFirewallRule` return "Access denied" for Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = "NAT"` (the underlying `New-NetNat` returns the same). `switch_type = "External"` was not directly tested — Local Administrators is the recommended floor.
+- **No host-side requirement** for the `hyperv_iso_volume` data source — runs on the Terraform runner.
+
+**WinRM-backend transport.** Opening a WinRM/PSSession needs membership in `Administrators` or `Remote Management Users` in addition to the per-resource privilege above. `Administrators` implies this; a delegated identity in only `Hyper-V Administrators` does not. For least-privilege delegation, configure a [JEA endpoint](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview) and point the WinRM backend at it. The provider does not (and should not) set JEA up for you — that's host fabric configuration owned by DSC, GPO, or Intune.
+
 ## Supported resources and data sources
 
 | Resource | Subcategory | Notes |

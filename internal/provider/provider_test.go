@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -90,6 +93,80 @@ func TestProvider_DataSources(t *testing.T) {
 		if factory() == nil {
 			t.Errorf("data source factory %d returned nil", i)
 		}
+	}
+}
+
+// TestProvider_AllSchemas_DeclareRequirements asserts every registered
+// resource and data source's top-level MarkdownDescription opens with a
+// "**Requirements:**" paragraph. The provider-wide convention is that each
+// resource page tells operators which Windows privilege floor (Hyper-V
+// Administrators, local Administrators, or none) the resource needs. This
+// test catches the drift case: a new resource ships without the privilege
+// contract documented, breaking the convention before it reaches the
+// Registry.
+func TestProvider_AllSchemas_DeclareRequirements(t *testing.T) {
+	t.Parallel()
+
+	const marker = "**Requirements:**"
+	p := New("test")()
+	ctx := t.Context()
+
+	t.Run("resources", func(t *testing.T) {
+		t.Parallel()
+		for i, factory := range p.Resources(ctx) {
+			r := factory()
+			metaResp := &resource.MetadataResponse{}
+			r.Metadata(ctx, resource.MetadataRequest{ProviderTypeName: "hyperv"}, metaResp)
+
+			schemaResp := &resource.SchemaResponse{}
+			r.Schema(ctx, resource.SchemaRequest{}, schemaResp)
+			if schemaResp.Diagnostics.HasError() {
+				t.Errorf("resource %d (%s) schema diagnostics: %v", i, metaResp.TypeName, schemaResp.Diagnostics)
+				continue
+			}
+			if !strings.HasPrefix(strings.TrimSpace(schemaResp.Schema.MarkdownDescription), marker) {
+				t.Errorf("resource %s: MarkdownDescription must open with %q paragraph", metaResp.TypeName, marker)
+			}
+		}
+	})
+
+	t.Run("data sources", func(t *testing.T) {
+		t.Parallel()
+		for i, factory := range p.DataSources(ctx) {
+			d := factory()
+			metaResp := &datasource.MetadataResponse{}
+			d.Metadata(ctx, datasource.MetadataRequest{ProviderTypeName: "hyperv"}, metaResp)
+
+			schemaResp := &datasource.SchemaResponse{}
+			d.Schema(ctx, datasource.SchemaRequest{}, schemaResp)
+			if schemaResp.Diagnostics.HasError() {
+				t.Errorf("data source %d (%s) schema diagnostics: %v", i, metaResp.TypeName, schemaResp.Diagnostics)
+				continue
+			}
+			if !strings.HasPrefix(strings.TrimSpace(schemaResp.Schema.MarkdownDescription), marker) {
+				t.Errorf("data source %s: MarkdownDescription must open with %q paragraph", metaResp.TypeName, marker)
+			}
+		}
+	})
+}
+
+// TestProvider_Schema_DeclaresRequirements is the provider-level counterpart
+// to TestProvider_AllSchemas_DeclareRequirements: it pins the "Requirements
+// on the target host" section in the provider description so the Registry
+// landing page keeps its privilege-floor summary as resources evolve.
+func TestProvider_Schema_DeclaresRequirements(t *testing.T) {
+	t.Parallel()
+
+	p := New("test")()
+	resp := &provider.SchemaResponse{}
+	p.Schema(t.Context(), provider.SchemaRequest{}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+
+	const heading = "## Requirements on the target host"
+	if !strings.Contains(resp.Schema.MarkdownDescription, heading) {
+		t.Errorf("provider MarkdownDescription is missing %q section", heading)
 	}
 }
 

@@ -50,7 +50,9 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 // should use the hyperv_vm resource's state.
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Reads live power state and reported IP addresses for an existing Hyper-V " +
+		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
+			"the target host (or read access to `Get-VM` via a JEA endpoint).\n\n" +
+			"Reads live power state and reported IP addresses for an existing Hyper-V " +
 			"virtual machine by name. Useful for HCL conditionals and downstream resources that gate " +
 			"on whether the VM is `Running` (e.g. provisioners that wait for the guest to come up) " +
 			"without managing the VM itself.\n\n" +
