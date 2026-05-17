@@ -124,8 +124,8 @@ func TestProvider_AllSchemas_DeclareRequirements(t *testing.T) {
 				t.Errorf("resource %d (%s) schema diagnostics: %v", i, metaResp.TypeName, schemaResp.Diagnostics)
 				continue
 			}
-			if !strings.Contains(schemaResp.Schema.MarkdownDescription, marker) {
-				t.Errorf("resource %s: MarkdownDescription is missing %q paragraph", metaResp.TypeName, marker)
+			if !strings.HasPrefix(strings.TrimSpace(schemaResp.Schema.MarkdownDescription), marker) {
+				t.Errorf("resource %s: MarkdownDescription must open with %q paragraph", metaResp.TypeName, marker)
 			}
 		}
 	})
@@ -143,8 +143,8 @@ func TestProvider_AllSchemas_DeclareRequirements(t *testing.T) {
 				t.Errorf("data source %d (%s) schema diagnostics: %v", i, metaResp.TypeName, schemaResp.Diagnostics)
 				continue
 			}
-			if !strings.Contains(schemaResp.Schema.MarkdownDescription, marker) {
-				t.Errorf("data source %s: MarkdownDescription is missing %q paragraph", metaResp.TypeName, marker)
+			if !strings.HasPrefix(strings.TrimSpace(schemaResp.Schema.MarkdownDescription), marker) {
+				t.Errorf("data source %s: MarkdownDescription must open with %q paragraph", metaResp.TypeName, marker)
 			}
 		}
 	})
