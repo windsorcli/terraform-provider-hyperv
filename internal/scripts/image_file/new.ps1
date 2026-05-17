@@ -278,7 +278,7 @@ function Invoke-HypervDvdSafeReplace {
         # manual sweep -- not worth shadowing the primary outcome with.
         # No Test-Path guard: -ErrorAction SilentlyContinue handles the
         # missing-file case directly and the guard adds a TOCTOU window
-        # without protective value (spike #3).
+        # without protective value.
         Remove-Item -LiteralPath $pivotPath -Force -ErrorAction SilentlyContinue
     }
 }

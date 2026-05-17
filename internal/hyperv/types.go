@@ -9,7 +9,7 @@
 package hyperv
 
 // VMHost mirrors the subset of Get-VMHost output the provider exposes.
-// Field tags match the PowerShell property names captured by spike #2.
+// Field tags match the PowerShell property names emitted by Get-VMHost.
 type VMHost struct {
 	ComputerName          string `json:"ComputerName"`
 	LogicalProcessorCount int64  `json:"LogicalProcessorCount"`

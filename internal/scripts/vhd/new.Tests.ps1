@@ -141,7 +141,7 @@ Describe 'New-HypervVHDDifferencing' {
         # InvalidArgument with FullyQualifiedErrorId starting
         # "InvalidParameter,Microsoft.Vhd.*". The Go-side errors.go
         # mapCategory function pattern-matches that prefix to route the
-        # typed error -- see internal/hyperv/errors.go and spike #3.
+        # typed error -- see internal/hyperv/errors.go.
         Mock New-VHD {
             $exception = [System.ArgumentException]::new('parent path missing')
             $errorRecord = [System.Management.Automation.ErrorRecord]::new(

@@ -22,7 +22,7 @@
 #
 # Differencing on a missing/invalid parent returns InvalidArgument with
 # fullyQualifiedErrorId starting "InvalidParameter,Microsoft.Vhd." -- the
-# Go-side errors.go maps that to ErrInvalidParentPath (spike #3).
+# Go-side errors.go maps that to ErrInvalidParentPath.
 
 # Read-HypervVHDResult emits the canonical 8-field shape. Inline duplicate
 # of get.ps1's tail because the runtime concatenates only preamble + a

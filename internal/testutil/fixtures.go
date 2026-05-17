@@ -1,10 +1,10 @@
 package testutil
 
-// VMHostFixtureJSON is the canonical Get-VMHost output captured by spike #2
-// against a real Server 2022 host. Single source of truth for tests across
-// internal/hyperv and internal/datasources/host — drift between packages
-// would otherwise let one suite pass against stale shape data while the
-// other catches the change. See docs/spikes/02-json-contract.md.
+// VMHostFixtureJSON is the canonical Get-VMHost output captured against
+// a real Windows Server 2022 host. Single source of truth for tests
+// across internal/hyperv and internal/datasources/host — drift between
+// packages would otherwise let one suite pass against stale field data
+// while the other catches the change.
 const VMHostFixtureJSON = `{
 	"ComputerName": "WIN-IUNE600K56E",
 	"LogicalProcessorCount": 20,
