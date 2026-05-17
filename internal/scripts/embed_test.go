@@ -92,12 +92,12 @@ func TestVswitchScript_TestFilesNotEmbedded(t *testing.T) {
 }
 
 // ImageFileScript counterpart to TestVswitchScript_LoadsAllFourVerbs. Note
-// the verb set is {get, new, remove} only -- no "set" because every
-// image_file schema field is RequiresReplace.
+// the verb set is {get, new, remove, sweep} -- no "set" because every
+// image_file schema field is RequiresReplace; `sweep` is acctest-only.
 func TestImageFileScript_LoadsAllVerbs(t *testing.T) {
 	t.Parallel()
 
-	for _, verb := range []string{"get", "new", "remove"} {
+	for _, verb := range []string{"get", "new", "remove", "sweep"} {
 		body, err := ImageFileScript(verb)
 		if err != nil {
 			t.Errorf("ImageFileScript(%q): %v", verb, err)
@@ -117,6 +117,7 @@ func TestImageFileScript_TestFilesNotEmbedded(t *testing.T) {
 		"image_file/get.Tests.ps1",
 		"image_file/new.Tests.ps1",
 		"image_file/remove.Tests.ps1",
+		"image_file/sweep.Tests.ps1",
 		"image_file/_test_helpers.ps1",
 	} {
 		if _, err := ImageFile.ReadFile(name); err == nil {

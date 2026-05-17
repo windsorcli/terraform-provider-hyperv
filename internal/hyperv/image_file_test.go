@@ -1177,3 +1177,73 @@ func TestClient_RemoveImageFile_ForwardsForceTrueInStdin(t *testing.T) {
 		t.Errorf("stdin should forward force=true as snake_case JSON; got: %s", stdin)
 	}
 }
+
+// TestClient_SweepImageFiles_DecodesRemovedList pins the wire contract:
+// sweep.ps1 emits {"removed":[...]} and the client returns the slice.
+// Mirrors TestClient_SweepNetNats_DecodesRemovedList in netnat_test.go.
+func TestClient_SweepImageFiles_DecodesRemovedList(t *testing.T) {
+	t.Parallel()
+
+	stdout := `{"removed":["C:\\hyperv\\tfacc\\tfacc-img-a.bin","C:\\hyperv\\tfacc\\tfacc-img-b.iso"]}`
+	fr := testutil.NewFakeRunner().
+		On("function Invoke-HypervImageFileSweep").Return(stdout, "", 0)
+	c := NewClient(fr)
+
+	removed, err := c.SweepImageFiles(t.Context(), "C:\\hyperv\\tfacc", "tfacc-")
+	if err != nil {
+		t.Fatalf("SweepImageFiles: %v", err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("len = %d, want 2", len(removed))
+	}
+	if removed[0] != "C:\\hyperv\\tfacc\\tfacc-img-a.bin" || removed[1] != "C:\\hyperv\\tfacc\\tfacc-img-b.iso" {
+		t.Errorf("removed = %+v", removed)
+	}
+}
+
+// TestClient_SweepImageFiles_EmptyArray locks the zero-match return as
+// []string{}, not nil -- the PS -InputObject contract keeps the inner
+// shape array-typed.
+func TestClient_SweepImageFiles_EmptyArray(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Invoke-HypervImageFileSweep").Return(`{"removed":[]}`, "", 0)
+	c := NewClient(fr)
+
+	removed, err := c.SweepImageFiles(t.Context(), "C:\\hyperv\\tfacc", "tfacc-")
+	if err != nil {
+		t.Fatalf("SweepImageFiles: %v", err)
+	}
+	// len(nil) == 0, so the explicit nil check is what actually enforces
+	// the non-nil contract this test claims to lock.
+	if removed == nil {
+		t.Errorf("want non-nil empty slice, got nil")
+	}
+	if len(removed) != 0 {
+		t.Errorf("len = %d, want 0", len(removed))
+	}
+}
+
+// TestClient_SweepImageFiles_ForwardsStdinJSON pins the stdin field
+// names (parent_dir / name_prefix). A rename here without a matching
+// sweep.ps1 change would silently sweep nothing.
+func TestClient_SweepImageFiles_ForwardsStdinJSON(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Invoke-HypervImageFileSweep").Return(`{"removed":[]}`, "", 0)
+	c := NewClient(fr)
+
+	if _, err := c.SweepImageFiles(t.Context(), "C:\\hyperv\\tfacc", "tfacc-"); err != nil {
+		t.Fatalf("SweepImageFiles: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if !strings.Contains(stdin, `"parent_dir":"C:\\hyperv\\tfacc"`) {
+		t.Errorf("stdin missing parent_dir field; got: %s", stdin)
+	}
+	if !strings.Contains(stdin, `"name_prefix":"tfacc-"`) {
+		t.Errorf("stdin missing name_prefix field; got: %s", stdin)
+	}
+}

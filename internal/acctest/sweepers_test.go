@@ -223,4 +223,37 @@ func init() {
 			return sweepErr
 		},
 	})
+
+	// hyperv_image_file sweeps non-VHD-family files (ISOs, .bin
+	// fixtures, etc.) under HYPERV_TEST_VHD_DIR. Depends on hyperv_vm
+	// for the same reason hyperv_vhd does: a VM dvd_drive can hold an
+	// ISO open until the VM releases it. The script's extension
+	// filter keeps it out of the hyperv_vhd sweeper's lane.
+	resource.AddTestSweepers("hyperv_image_file", &resource.Sweeper{
+		Name:         "hyperv_image_file",
+		Dependencies: []string{"hyperv_vm"},
+		F: func(_ string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
+			defer cancel()
+
+			parentDir := os.Getenv("HYPERV_TEST_VHD_DIR")
+			if parentDir == "" {
+				log.Printf("[INFO] hyperv_image_file sweeper: HYPERV_TEST_VHD_DIR unset; nothing to sweep")
+				return nil
+			}
+
+			client, closeClient, err := acctest.NewClientForSweep(ctx)
+			if err != nil {
+				return err
+			}
+			defer closeClient()
+
+			removed, err := client.SweepImageFiles(ctx, parentDir, acctest.SweepPrefix)
+			if err != nil {
+				return err
+			}
+			log.Printf("[INFO] hyperv_image_file sweeper: removed %d orphan file(s) under %s with prefix %q: %v", len(removed), parentDir, acctest.SweepPrefix, removed)
+			return nil
+		},
+	})
 }

@@ -634,6 +634,37 @@ func (c *Client) NewImageFileFromHostPath(ctx context.Context, destinationPath s
 // called for host_path-mode resources -- the Go-side resource gates this
 // based on the source_mode tracked in state.
 //
+// imageFileSweepResult mirrors the JSON shape image_file/sweep.ps1
+// emits: the full paths of every file the sweeper removed.
+type imageFileSweepResult struct {
+	Removed []string `json:"removed"`
+}
+
+// SweepImageFiles removes orphan files under parentDir whose name starts
+// with prefix and whose extension is NOT in the VHD family (.vhd /
+// .vhdx / .avhd / .avhdx -- those are the hyperv_vhd sweeper's
+// territory). Empty result is a normal return; callers don't need to
+// special-case it. Backed by image_file/sweep.ps1.
+func (c *Client) SweepImageFiles(ctx context.Context, parentDir, prefix string) ([]string, error) {
+	body, err := scripts.ImageFileScript("sweep")
+	if err != nil {
+		return nil, fmt.Errorf("load image_file/sweep.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		ParentDir  string `json:"parent_dir"`
+		NamePrefix string `json:"name_prefix"`
+	}{ParentDir: parentDir, NamePrefix: prefix})
+	if err != nil {
+		return nil, fmt.Errorf("marshal sweep.ps1 input: %w", err)
+	}
+
+	var result imageFileSweepResult
+	if err := c.runScript(ctx, string(body), stdin, &result); err != nil {
+		return nil, err
+	}
+	return result.Removed, nil
+}
+
 // `force` opts into the detach-then-retry escape hatch in remove.ps1:
 // when the initial Remove-Item hits a sharing violation whose holders
 // are Hyper-V DVDs, the host script detaches each slot via
