@@ -1215,6 +1215,11 @@ func TestClient_SweepImageFiles_EmptyArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SweepImageFiles: %v", err)
 	}
+	// len(nil) == 0, so the explicit nil check is what actually enforces
+	// the non-nil contract this test claims to lock.
+	if removed == nil {
+		t.Errorf("want non-nil empty slice, got nil")
+	}
 	if len(removed) != 0 {
 		t.Errorf("len = %d, want 0", len(removed))
 	}
