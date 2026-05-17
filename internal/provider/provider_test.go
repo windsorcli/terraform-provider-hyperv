@@ -350,14 +350,14 @@ func TestClassifyAuthProbeError(t *testing.T) {
 			wantDetail:  []string{"Hyper-V Administrators"},
 		},
 		{
-			// Transport error never reaches the envelope parser, so
-			// errors.Is(err, ErrUnauthorized) is false — routes to the
-			// generic branch. The detail must surface the underlying
-			// message verbatim and offer the env-var escape hatch.
-			name:        "transport error routes to generic branch with HYPERV_SKIP_AUTH_PROBE hint",
-			err:         errors.New("ssh: connection refused"),
+			// Any non-ErrUnauthorized routes to the default branch. In
+			// production that's probe timeouts, ErrPSExecution, or
+			// unrecognized PS failures — real transport errors fail at
+			// conn.Open() upstream and never reach classifyAuthProbeError.
+			name:        "non-unauth error routes to generic branch with HYPERV_SKIP_AUTH_PROBE hint",
+			err:         errors.New("synthetic non-unauth failure"),
 			wantSummary: "Hyper-V provider authorization probe failed",
-			wantDetail:  []string{"connection refused", "HYPERV_SKIP_AUTH_PROBE", "opened cleanly"},
+			wantDetail:  []string{"synthetic non-unauth failure", "HYPERV_SKIP_AUTH_PROBE", "opened cleanly"},
 		},
 	}
 
