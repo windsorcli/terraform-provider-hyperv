@@ -109,13 +109,14 @@ func resourceSchema() schema.Schema {
 				Computed: true,
 				MarkdownDescription: "NAT instance name. **Required** when `switch_type = \"NAT\"`; rejected " +
 					"otherwise. Doubles as the resource-side identifier consumers reference. **Forces " +
-					"replacement** -- `New-NetNat -Name` is immutable. Must contain only letters, digits, " +
-					"underscores, dots, and hyphens; wildcard metacharacters (`*`, `?`, `[`) are rejected " +
-					"because `Get-NetNat -Name` would interpret them as a pattern.",
+					"replacement** -- `New-NetNat -Name` is immutable. Must start with a letter or digit " +
+					"and otherwise contain only letters, digits, underscores, dots, and hyphens; wildcard " +
+					"metacharacters (`*`, `?`, `[`) are rejected because `Get-NetNat -Name` would " +
+					"interpret them as a pattern.",
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						natNameRegex,
-						"must contain only letters, digits, underscores, dots, and hyphens (no spaces or wildcard metacharacters)",
+						"must start with a letter or digit and otherwise contain only letters, digits, underscores, dots, and hyphens (no spaces or wildcard metacharacters)",
 					),
 				},
 				PlanModifiers: []planmodifier.String{
