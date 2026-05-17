@@ -30,8 +30,9 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 
 | Resource | Subcategory | Notes |
 |---|---|---|
-| `hyperv_virtual_switch` | Networking | External / Internal / Private switches; NIC team binding; management OS share toggle. |
-| `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Modes: `url` (provider downloads + verifies SHA-256), `host_path` (attests the file already exists). |
+| `hyperv_virtual_switch` | Networking | External / Internal / Private / NAT switches; NIC team binding; management OS share toggle. NAT switches provision the underlying `NetNat` + host vNIC IP. |
+| `hyperv_nat_static_mapping` | Networking | TCP/UDP port forward (`Add-NetNatStaticMapping`) into a private/internal subnet, plus an optional inbound firewall allow rule. Functionally equivalent to `azurerm_lb_nat_rule` / `google_compute_forwarding_rule`. |
+| `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Four source modes: `url` (provider downloads + verifies SHA-256, with optional `gz`/`xz`/`zst`/`bz2` decompression), `local_path` (streams a runner-local file via the active backend), `literal_bytes` (base64 payload — pairs with `hyperv_iso_volume`), and `host_path` (attests the file already exists). |
 | `hyperv_vhd` | Storage | Fixed / dynamic / differencing VHD or VHDX. Resize supported for dynamic. |
 | `hyperv_vm` | Compute | Generation 1/2; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources). |
 
@@ -39,11 +40,12 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 |---|---|---|
 | `hyperv_host` | Host | Host metadata: VirtualMachinePath, VirtualHardDiskPath, EnableEnhancedSessionMode. |
 | `hyperv_virtual_switch` | Networking | Lookup by name. |
+| `hyperv_iso_volume` | Storage | Synthesizes a deterministic ISO9660 seed volume on the runner; emits base64 bytes + SHA-256 + size. Pairs with `hyperv_image_file` in `literal_bytes` mode to deliver cidata / autounattend / Talos machineconfig seeds to the host. No host-side requirement — runs entirely on the runner. |
 | `hyperv_vm_state` | Compute | Live power state and reported IP addresses for an existing VM. |
 
 ### Inline attachments, not sub-resources
 
-`hyperv_vm` ships with **inline** blocks for NICs, hard disks, DVDs, and power state — not separate `hyperv_vm_*` resources. Reconciliation is keyed on slot tuples (HDDs / DVDs) or display name (NICs); see the [`hyperv_vm` documentation](docs/resources/vm.md) for the full shape.
+`hyperv_vm` ships with **inline** blocks for NICs, hard disks, DVDs, boot order, and power state — not separate `hyperv_vm_*` resources. Reconciliation is keyed on slot tuples (HDDs / DVDs) or display name (NICs); see the [`hyperv_vm` documentation](docs/resources/vm.md) for the full attribute set.
 
 ### Out of scope / not yet implemented
 
@@ -54,9 +56,9 @@ The following are either deferred to post-1.0 or under active design — track a
 - Hyper-V integration services map (per-service enable/disable on `hyperv_vm`).
 - VM automatic start/stop actions (`AutomaticStartAction` / `AutomaticStopAction`).
 - Generation 1 BIOS startup order (`Set-VMBios -StartupOrder`).
-- VLAN tags and static MAC addresses on inline NICs.
+- VLAN tags on inline NICs (static MAC addresses are supported via `mac_address`).
 - Replication, live migration, SR-IOV, GPU partitioning, shielded VMs.
-- Additional `hyperv_image_file` modes (`local_path`, `content`, `cloud_init` NoCloud, `unattend` answer-file).
+- Additional `hyperv_image_file` source modes beyond the four shipped — e.g. a templated-content mode or a native answer-file synthesizer. The current `literal_bytes` mode paired with `hyperv_iso_volume` covers most cloud-init NoCloud / autounattend use cases without a new mode.
 
 ## Requirements
 
@@ -96,7 +98,7 @@ resource "hyperv_virtual_switch" "lab" {
 }
 
 resource "hyperv_image_file" "ubuntu" {
-  destination_path = "C:\\hyperv\\images\\ubuntu-22.04.vhdx"
+  destination_path = "C:/hyperv/images/ubuntu-22.04.vhdx"
   url = {
     url      = "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.vhdx"
     checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -104,13 +106,13 @@ resource "hyperv_image_file" "ubuntu" {
 }
 
 resource "hyperv_vhd" "vm01_root" {
-  path        = "C:\\hyperv\\vhds\\vm01-root.vhdx"
+  path        = "C:/hyperv/vhds/vm01-root.vhdx"
   vhd_type    = "differencing"
   parent_path = hyperv_image_file.ubuntu.destination_path
 }
 ```
 
-More examples — including the complete `hyperv_vm` resource shape with inline NICs, disks, DVDs, boot order, and dynamic memory — live under [`examples/`](examples/) and on the [Terraform Registry](https://registry.terraform.io/providers/windsorcli/hyperv/latest).
+More examples — including the complete `hyperv_vm` resource with inline NICs, disks, DVDs, boot order, and dynamic memory — live under [`examples/`](examples/) and on the [Terraform Registry](https://registry.terraform.io/providers/windsorcli/hyperv/latest).
 
 ## Configuration
 
@@ -137,7 +139,7 @@ provider "hyperv" {
 }
 ```
 
-The host needs OpenSSH Server enabled with PowerShell as the default shell. See [`docs/guides/host-setup.md`](docs/guides/host-setup.md).
+The host needs OpenSSH Server enabled with PowerShell as the default shell.
 
 ### WinRM backend
 
@@ -154,7 +156,7 @@ provider "hyperv" {
 }
 ```
 
-WinRM HTTPS with NTLM is the recommended configuration for workgroup hosts; Kerberos is supported in domain environments. See [`docs/guides/host-setup.md`](docs/guides/host-setup.md) for the host-side WSMan configuration.
+WinRM HTTPS with NTLM is the recommended configuration for workgroup hosts; Kerberos is supported in domain environments. The host needs WSMan/WinRM enabled with an HTTPS listener.
 
 ### Environment variables
 
@@ -241,7 +243,7 @@ To attach a debugger, build with `task build` and run the provider with `-debug`
 
 ## Contributing
 
-Contributions are welcome. For non-trivial changes — new resources, schema changes, new backends — please open an issue first to align on shape before writing code. Bug fixes and documentation improvements can go straight to a PR.
+Contributions are welcome. For non-trivial changes — new resources, schema changes, new backends — please open an issue first to align on design before writing code. Bug fixes and documentation improvements can go straight to a PR.
 
 The repository follows strict TDD: PowerShell scripts get Pester tests first to lock the JSON contract, then Go unit tests with a fake runner, then resource schema tests, then acceptance tests, then implementation.
 

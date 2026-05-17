@@ -1,6 +1,6 @@
 # Locks the Remove-HypervSwitch contract: -Force is always passed, the cmdlet
 # emits no stdout (caller passes dst=nil), and missing-switch errors propagate
-# so the entry block can convert them to the PLAN.md S5 envelope.
+# so the entry block can convert them to the structured error envelope.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1

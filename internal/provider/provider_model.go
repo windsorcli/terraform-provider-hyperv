@@ -4,8 +4,7 @@ import "github.com/hashicorp/terraform-plugin-framework/types"
 
 // HypervProviderModel mirrors the provider schema. All fields are typed
 // framework values so we can distinguish unset, explicitly-null, and
-// configured. See docs/PLAN.md §6 for the env-var precedence rules
-// (provider attribute > env var > zero/error).
+// configured. Env-var precedence: provider attribute > env var > zero/error.
 type HypervProviderModel struct {
 	Backend  types.String `tfsdk:"backend"`
 	Host     types.String `tfsdk:"host"`

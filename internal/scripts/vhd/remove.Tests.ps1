@@ -1,6 +1,6 @@
 # Locks the Remove-HypervVHD contract: -Force is always passed, the
 # function emits no stdout (caller passes dst=nil), missing-file errors
-# propagate so the entry block can convert them to the PLAN.md S5
+# propagate so the entry block can convert them to the structured error
 # envelope, and non-ObjectNotFound errors from the underlying cmdlets
 # propagate rather than being remapped to "missing".
 

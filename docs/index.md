@@ -93,7 +93,7 @@ Optional:
 
 `password` and `ccache_path` are mutually exclusive (a config validator rejects configs that set both, or neither, when `auth = "kerberos"`).
 
-`host` must be an FQDN (e.g. `hv-bench-01.hv.lab`), not a bare IP -- the SPN match keys on hostname. (see [below for nested schema](#nestedatt--winrm--kerberos))
+`host` must be an FQDN (e.g. `hv01.example.com`), not a bare IP -- the SPN match keys on hostname. (see [below for nested schema](#nestedatt--winrm--kerberos))
 - `use_https` (Boolean) Use HTTPS (port 5986). Default: `true`. Setting `false` requires the host's WSMan service to have `AllowUnencrypted = $true` (strongly discouraged). Falls back to `HYPERV_WINRM_USE_HTTPS`.
 
 <a id="nestedatt--winrm--kerberos"></a>

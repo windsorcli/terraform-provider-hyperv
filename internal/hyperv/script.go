@@ -33,7 +33,7 @@ const scriptHeartbeatInterval = 15 * time.Second
 // runScript is the single chokepoint between Go DTOs and PowerShell. Every
 // typed Client method routes through here:
 //
-//  1. Concatenate the embedded preamble (PLAN.md §5 contract) to the body.
+//  1. Concatenate the embedded preamble (common/preamble.ps1) to the body.
 //  2. Invoke the underlying Runner.
 //  3. Map non-zero exits via the structured-envelope parser to typed errors.
 //  4. Decode stdout JSON into `dst` if non-nil.

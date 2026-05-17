@@ -24,7 +24,7 @@ import (
 // GetImageFile reads metadata + SHA-256 for a file on the host. Returns
 // ErrNotFound when the file is absent (resource Read should call
 // RemoveResource), or ErrUnauthorized for permission errors. SHA-256 is
-// recomputed on every call -- intentional drift detection per PLAN.md S7.
+// recomputed on every call as intentional drift detection.
 func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, error) {
 	body, err := scripts.ImageFileScript("get")
 	if err != nil {

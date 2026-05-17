@@ -15,7 +15,7 @@ import (
 
 // resourceSchema returns the locked-in schema for hyperv_nat_static_mapping.
 // MarkdownDescription on each attribute drives the Registry-published
-// doc when `task generate` runs tfplugindocs (see PLAN.md S15).
+// doc when `task generate` runs tfplugindocs.
 //
 // Mutability summary:
 //
@@ -27,9 +27,9 @@ import (
 //	firewall_rule.name                                 -> RequiresReplace
 //	  (rename = NetFirewallRule recreate)
 //
-// Description handling: deferred for v1. PLAN.md S12.M6 sketches a
-// registry-sidecar approach so descriptions survive Read; the field
-// is intentionally absent from this schema until that's implemented.
+// Description handling: deferred for v1. The mapping has no native
+// description field on the host -- a registry-sidecar approach would
+// be needed for it to survive Read, which we haven't implemented.
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		MarkdownDescription: "**Requirements:** **Local Administrators** on the target host. " +
@@ -43,9 +43,8 @@ func resourceSchema() schema.Schema {
 			"inbound firewall allow rule. Targets an existing `NetNat` instance by name -- typically " +
 			"created via `hyperv_virtual_switch` with `switch_type = \"NAT\"`, but any pre-existing " +
 			"NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.\n\n" +
-			"Composes the bench host into a Windows-native reverse proxy in front of one or more VMs " +
-			"on a private network. Mirrors the shape of `azurerm_lb_nat_rule` and " +
-			"`google_compute_forwarding_rule`.",
+			"Functionally equivalent to `azurerm_lb_nat_rule` and `google_compute_forwarding_rule`: " +
+			"turns the Hyper-V host into a port-forwarder for VMs on a private internal network.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,

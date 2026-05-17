@@ -4,8 +4,7 @@ import "errors"
 
 // Sentinel errors the connection layer returns from RunScript / Open /
 // Healthcheck. The typed Hyper-V client (internal/hyperv) wraps these into
-// resource-relevant errors after parsing the script's stderr envelope — see
-// docs/PLAN.md §5 error categorization.
+// resource-relevant errors after parsing the script's stderr envelope.
 
 var (
 	// ErrUnreachable means the transport could not reach the host (DNS,

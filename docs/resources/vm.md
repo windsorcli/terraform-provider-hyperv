@@ -122,13 +122,13 @@ resource "hyperv_vm" "elastic" {
 
 # Storage, NICs, and DVD drives attach inline on the resource itself.
 
-# ---- Appliance-OS install flow (Talos shape) -----------------------------
+# ---- Appliance-OS install flow (Talos example) ---------------------------
 #
 # Boot-from-ISO appliance OSes install themselves to a blank VHDX and then
 # expect the install media to be ejected so subsequent boots come off disk.
-# Talos's canonical Hyper-V install is the headline shape: there is no
+# Talos's canonical Hyper-V install is the headline pattern: there is no
 # prebuilt Talos VHDX, only a `metal-amd64.iso` from Image Factory. The
-# pattern is two applies:
+# flow is two applies:
 #
 #   * Apply 1 (install): VM boots DVD-first off the install ISO. Talos
 #     copies itself to the VHDX, then self-powers-off when its install
@@ -148,8 +148,8 @@ resource "hyperv_vm" "elastic" {
 #     `state.desired = "Off"` between the two applies. Mechanical but
 #     adds a third plan/apply round-trip.
 #
-# The block below is the apply-1 (install) shape. Switch the marked
-# attributes to the apply-2 (run) shape after the install finishes; the
+# The block below is the apply-1 (install) config. Switch the marked
+# attributes to the apply-2 (run) form after the install finishes; the
 # resource's reconciliation detaches the DVD slot in place (no VM replace).
 #
 # `network_adapter[]` and `hard_disk_drive[]` stay constant across both
@@ -197,7 +197,7 @@ resource "hyperv_vm" "talos_controlplane" {
   }
 }
 
-# Apply-2 (run) shape of the same VM, shown commented-out so readers can
+# Apply-2 (run) config of the same VM, shown commented-out so readers can
 # see the post-install diff without reconstructing it from inline notes.
 # After Talos has installed itself to the VHDX (Apply 1) and the VM is
 # Off, replace the apply-1 block above with the contents of this block --

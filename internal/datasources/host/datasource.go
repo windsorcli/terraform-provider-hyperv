@@ -1,5 +1,5 @@
 // Package host implements the hyperv_host data source — read-only information
-// about the Hyper-V host. See docs/PLAN.md §7.
+// about the Hyper-V host.
 package host
 
 import (

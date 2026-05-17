@@ -13,7 +13,7 @@ import (
 
 // resourceSchema returns the locked-in schema for hyperv_virtual_switch.
 // MarkdownDescription on each attribute drives the Registry-published doc
-// when `task generate` runs tfplugindocs (see PLAN.md S15).
+// when `task generate` runs tfplugindocs.
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		MarkdownDescription: "**Requirements:** depend on `switch_type`. Empirically verified on " +
