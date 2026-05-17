@@ -100,9 +100,9 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 	}
 }
 
-// resourceSchema returns the locked-in schema for hyperv_vm (minimal M4
-// slice). MarkdownDescription on each attribute drives the Registry-
-// published doc when `task generate` runs tfplugindocs (PLAN.md S15).
+// resourceSchema returns the locked-in schema for hyperv_vm.
+// MarkdownDescription on each attribute drives the Registry-published
+// doc when `task generate` runs tfplugindocs.
 //
 // Schema versions:
 //

@@ -17,11 +17,11 @@ import (
 )
 
 // newConnection translates a HypervProviderModel into a configured
-// connection.Connection. Implements the §6 precedence rule: provider
-// attribute > env var > error/zero.
+// connection.Connection. Precedence: provider attribute > env var >
+// error/zero.
 //
 // This is the **only** place env vars are read. Resources never touch
-// os.Getenv directly per docs/PLAN.md §3.
+// os.Getenv directly.
 func newConnection(_ context.Context, m HypervProviderModel) (connection.Connection, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -46,7 +46,7 @@ func newConnection(_ context.Context, m HypervProviderModel) (connection.Connect
 
 // newSSHConnection translates a HypervProviderModel into a configured SSH
 // Connection. Resolves auth + host config from provider attributes with
-// HYPERV_SSH_* / HYPERV_HOST / etc. env-var fallbacks per docs/PLAN.md S6.
+// HYPERV_SSH_* / HYPERV_HOST / etc. env-var fallbacks.
 //
 // Returns nil with attribute-anchored diagnostics on configuration errors so
 // the operator sees which knob to adjust. The dial itself happens in Open

@@ -18,7 +18,7 @@ import (
 
 // resourceSchema returns the locked-in schema for hyperv_image_file.
 // MarkdownDescription on each attribute drives the Registry-published doc
-// when `task generate` runs tfplugindocs (see PLAN.md S15).
+// when `task generate` runs tfplugindocs.
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
@@ -139,7 +139,7 @@ func resourceSchema() schema.Schema {
 							"~10x slower than SSH for the same payload). The default " +
 							"host-direct flow (when `compression` is unset) lets the host " +
 							"pull the URL itself, which is faster for self-hosted artifacts " +
-							"on the same LAN as the bench.\n\n" +
+							"on the same LAN as the host.\n\n" +
 							"**`destination_path` is the decompressed file's path.** Specify " +
 							"e.g. `talos.vhdx`, **not** `talos.vhdx.xz` -- the on-disk file " +
 							"after decompression is the Hyper-V-consumable artifact.\n\n" +
@@ -231,8 +231,8 @@ func resourceSchema() schema.Schema {
 					"**No-op for `host_path`-mode** -- destroy was already a no-op in that mode (the user " +
 					"attested the file pre-existed, so the provider never deleted it). Setting the flag is " +
 					"harmless on `host_path` but communicates intent.\n\n" +
-					"**Caveat:** the bytes outlive the resource. Files-on-bench accumulate over time if you " +
-					"set this and never come back. There is no provider-level sweep; clean up out-of-band " +
+					"**Caveat:** the bytes outlive the resource. Files on the host accumulate over time if " +
+					"you set this and never come back. There is no provider-level sweep; clean up out-of-band " +
 					"or with a `null_resource` + `local-exec` if you need automated reclamation.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),

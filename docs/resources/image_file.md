@@ -104,7 +104,7 @@ With this flag set, the provider walks the host-side DVD enumeration, calls `Set
 
 **No-op for `host_path`-mode** -- destroy was already a no-op in that mode (the user attested the file pre-existed, so the provider never deleted it). Setting the flag is harmless on `host_path` but communicates intent.
 
-**Caveat:** the bytes outlive the resource. Files-on-bench accumulate over time if you set this and never come back. There is no provider-level sweep; clean up out-of-band or with a `null_resource` + `local-exec` if you need automated reclamation.
+**Caveat:** the bytes outlive the resource. Files on the host accumulate over time if you set this and never come back. There is no provider-level sweep; clean up out-of-band or with a `null_resource` + `local-exec` if you need automated reclamation.
 - `local_path` (String) Absolute path on the Terraform runner of the file to stream to the host. When set, the resource operates in `local_path`-mode: the provider opens the file on the runner, computes a SHA-256, and streams the bytes through the active connection backend (SSH or WinRM) to a sibling `.part` file under `destination_path`'s directory. The host-side script verifies the streamed bytes' SHA against the runner-computed value and atomic-renames into place. Mutually exclusive with `url` (a config validator rejects both set together).
 
 **Forces replacement** when changed -- streaming a different source file is conceptually a different resource. **Content changes at the same path are NOT a replace**: the runner-side file is hashed at plan time, and a different SHA than what's in state surfaces as a `sha256` diff that triggers in-place Update (re-stream + atomic rename).
@@ -141,7 +141,7 @@ When omitted the download is trusted (TLS-only) and the on-disk `sha256` compute
 
 **Why runner-side?** PowerShell 5.1 (the host floor) ships only `gzip` and `zip` decompressors via `System.IO.Compression`. Doing decompression on the runner instead lets every supported codec land without requiring third-party PowerShell modules on the Hyper-V host.
 
-**Tradeoff:** the runner-pipelined flow streams the full decompressed image runner -> host (bandwidth measured at the runner's NIC, throttled by the connection backend; WinRM is ~10x slower than SSH for the same payload). The default host-direct flow (when `compression` is unset) lets the host pull the URL itself, which is faster for self-hosted artifacts on the same LAN as the bench.
+**Tradeoff:** the runner-pipelined flow streams the full decompressed image runner -> host (bandwidth measured at the runner's NIC, throttled by the connection backend; WinRM is ~10x slower than SSH for the same payload). The default host-direct flow (when `compression` is unset) lets the host pull the URL itself, which is faster for self-hosted artifacts on the same LAN as the host.
 
 **`destination_path` is the decompressed file's path.** Specify e.g. `talos.vhdx`, **not** `talos.vhdx.xz` -- the on-disk file after decompression is the Hyper-V-consumable artifact.
 

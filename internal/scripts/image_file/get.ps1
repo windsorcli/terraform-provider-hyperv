@@ -12,7 +12,7 @@
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side so resource Read calls RemoveResource.
 #
-# SHA-256 is recomputed on every Read by design (PLAN.md S7 drift detection).
+# SHA-256 is recomputed on every Read by design (drift detection).
 # Image-heavy refreshes are slow as a result; documented in the resource.
 
 # Get-HypervImageFile reads file metadata + SHA-256. Test-Path returns $false

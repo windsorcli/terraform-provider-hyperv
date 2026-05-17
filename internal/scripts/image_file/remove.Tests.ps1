@@ -1,8 +1,8 @@
 # Locks the Remove-HypervImageFile contract: -Force is always passed, the
 # function emits no stdout (caller passes dst=nil), missing-file errors
-# propagate so the entry block can convert them to the PLAN.md S5 envelope,
-# and non-ObjectNotFound errors from the underlying cmdlets propagate
-# rather than being remapped to "missing".
+# propagate so the entry block can convert them to the structured error
+# envelope, and non-ObjectNotFound errors from the underlying cmdlets
+# propagate rather than being remapped to "missing".
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1

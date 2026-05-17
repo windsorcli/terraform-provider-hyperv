@@ -18,7 +18,7 @@
 #
 # Validation strategy: trust the Go-side TF schema validators. Cmdlet errors
 # (e.g. -SwitchType External requires -NetAdapterName) propagate through the
-# PLAN.md S5 envelope on the catch.
+# structured error envelope on the catch.
 #
 # NAT branch -- Hyper-V has no "NAT" switch_type natively. A NAT switch is
 # an Internal VMSwitch + a New-NetIPAddress on the host vNIC + a New-NetNat

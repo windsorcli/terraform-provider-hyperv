@@ -11,8 +11,7 @@
 // machine with no Hyper-V host pays nothing for their existence.
 //
 // See docs/contributing/acceptance-tests.md for the workbench setup
-// (env vars, pre-placed fixtures) and PLAN.md S9 Tier 2 for the test
-// strategy this implements.
+// (env vars, pre-placed fixtures).
 package acctest
 
 import (

@@ -5,7 +5,7 @@ subcategory: ""
 description: |-
   Requirements: Local Administrators on the target host. Empirically verified on Windows Server 2022 (build 10.0.20348): both Add-NetNatStaticMapping https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping and New-NetFirewallRule https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule return "Access denied" when invoked by a user in Hyper-V Administrators alone. Microsoft's cmdlet reference pages do not document a privilege requirement; the floor here is tested rather than cited.
   Manages a single static NAT port forward (TCP or UDP) plus an optional inbound firewall allow rule. Targets an existing NetNat instance by name -- typically created via hyperv_virtual_switch with switch_type = "NAT", but any pre-existing NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.
-  Composes the bench host into a Windows-native reverse proxy in front of one or more VMs on a private network. Mirrors the shape of azurerm_lb_nat_rule and google_compute_forwarding_rule.
+  Functionally equivalent to azurerm_lb_nat_rule and google_compute_forwarding_rule: turns the Hyper-V host into a port-forwarder for VMs on a private internal network.
 ---
 
 # hyperv_nat_static_mapping (Resource)
@@ -14,7 +14,7 @@ description: |-
 
 Manages a single static NAT port forward (TCP or UDP) plus an optional inbound firewall allow rule. Targets an existing `NetNat` instance by name -- typically created via `hyperv_virtual_switch` with `switch_type = "NAT"`, but any pre-existing NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.
 
-Composes the bench host into a Windows-native reverse proxy in front of one or more VMs on a private network. Mirrors the shape of `azurerm_lb_nat_rule` and `google_compute_forwarding_rule`.
+Functionally equivalent to `azurerm_lb_nat_rule` and `google_compute_forwarding_rule`: turns the Hyper-V host into a port-forwarder for VMs on a private internal network.
 
 
 
