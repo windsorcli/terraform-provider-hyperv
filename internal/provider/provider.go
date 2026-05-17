@@ -7,6 +7,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -198,6 +199,16 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 					"Set to `0s` to disable. Bump for legitimately slow cmdlets like " +
 					"`New-VHD` on a multi-GB fixed disk.",
 			},
+			"skip_auth_probe": schema.BoolAttribute{
+				Optional: true,
+				MarkdownDescription: "Skip the Configure-time `Get-VMHost` authorization probe. " +
+					"The probe verifies at plan time that the connecting identity can run a " +
+					"Hyper-V cmdlet, turning permission/transport failures into clean " +
+					"plan-time diagnostics instead of mid-apply mysteries. **Default: `false`** " +
+					"(probe runs). Set to `true` for `terraform validate` in CI environments " +
+					"without a reachable host. Falls back to `HYPERV_SKIP_AUTH_PROBE` " +
+					"(accepts `true`/`false`/`1`/`0`/`t`/`f`/`yes`/`no`).",
+			},
 			"local": schema.SingleNestedAttribute{
 				Optional:            true,
 				MarkdownDescription: "Local-backend-specific configuration.",
@@ -337,6 +348,34 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
+	// Wrap the transport in the typed client. Done before registerActive
+	// so the authorization probe below can use the client; on probe
+	// failure we Close() the still-unregistered connection inline.
+	client := hyperv.NewClient(conn)
+
+	// Authorization probe. Runs `Get-VMHost` to confirm the connecting
+	// identity can invoke a Hyper-V cmdlet -- converts permission /
+	// transport failures from mid-apply mysteries into Configure-time
+	// diagnostics. Skippable for hostless `terraform validate` via
+	// skip_auth_probe or HYPERV_SKIP_AUTH_PROBE.
+	skip, err := resolveBool(data.SkipAuthProbe, "HYPERV_SKIP_AUTH_PROBE", false)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("skip_auth_probe"),
+			"Invalid HYPERV_SKIP_AUTH_PROBE value",
+			err.Error(),
+		)
+		_ = conn.Close()
+		return
+	}
+	if !skip {
+		if _, err := client.GetVMHost(ctx); err != nil {
+			classifyAuthProbeError(conn.Backend(), err, &resp.Diagnostics)
+			_ = conn.Close()
+			return
+		}
+	}
+
 	// Enroll for signal-driven shutdown in main. The Configure ctx
 	// can't carry the cleanup hook itself -- it cancels when this
 	// handler returns, which would close the connection we just
@@ -348,12 +387,37 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		"backend": conn.Backend(),
 	})
 
-	// Wrap the transport in the typed client. Resources and data sources
-	// receive *hyperv.Client via req.ProviderData and never touch the raw
-	// connection.Runner directly.
-	client := hyperv.NewClient(conn)
 	resp.ResourceData = client
 	resp.DataSourceData = client
+}
+
+// classifyAuthProbeError converts a Get-VMHost probe failure into a
+// resp.Diagnostics entry whose Detail points at the right fix:
+// hyperv.ErrUnauthorized routes to the Hyper-V Administrators message;
+// everything else (timeouts, transport errors, unrecognized PS failures)
+// falls to the generic message that offers skip_auth_probe as the
+// escape hatch for hostless `terraform validate`.
+func classifyAuthProbeError(backend string, err error, diags *diag.Diagnostics) {
+	switch {
+	case errors.Is(err, hyperv.ErrUnauthorized):
+		diags.AddError(
+			"Hyper-V provider authorization probe failed",
+			fmt.Sprintf("The connecting identity (%s backend) cannot invoke `Get-VMHost`: %s\n\n"+
+				"This usually means the identity is not a member of `Hyper-V Administrators` on "+
+				"the target host. See the provider documentation's \"Requirements on the target "+
+				"host\" section for the full privilege matrix, or set `skip_auth_probe = true` "+
+				"to defer the check until first resource use (e.g. for `terraform validate` "+
+				"without a reachable host).", backend, err),
+		)
+	default:
+		diags.AddError(
+			"Hyper-V provider authorization probe failed",
+			fmt.Sprintf("The %s backend opened cleanly but `Get-VMHost` failed: %s\n\n"+
+				"Set `skip_auth_probe = true` (or `HYPERV_SKIP_AUTH_PROBE=true`) to defer the "+
+				"check until first resource use -- typical when running `terraform validate` "+
+				"in an environment without a reachable Hyper-V host.", backend, err),
+		)
+	}
 }
 
 func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource {
