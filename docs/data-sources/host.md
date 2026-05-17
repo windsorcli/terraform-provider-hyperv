@@ -3,10 +3,13 @@
 page_title: "hyperv_host Data Source - hyperv"
 subcategory: ""
 description: |-
+  Requirements: Membership in the Hyper-V Administrators group on the target host (or read access to Get-VMHost via a JEA endpoint).
   Information about the Hyper-V host. Useful in for_each patterns and for capability detection (e.g. branching on logical_processor_count or memory_capacity_bytes).
 ---
 
 # hyperv_host (Data Source)
+
+**Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or read access to `Get-VMHost` via a JEA endpoint).
 
 Information about the Hyper-V host. Useful in `for_each` patterns and for capability detection (e.g. branching on `logical_processor_count` or `memory_capacity_bytes`).
 

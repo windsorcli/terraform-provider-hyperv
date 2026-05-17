@@ -123,7 +123,9 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		Version: 5,
-		MarkdownDescription: "Manages a Hyper-V virtual machine. Configures " +
+		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
+			"the target host (or equivalent rights granted through a JEA endpoint).\n\n" +
+			"Manages a Hyper-V virtual machine. Configures " +
 			"`name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), " +
 			"`secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle " +
 			"(`desired`, `current`, `shutdown_mode`), and inline `network_adapter[]`, " +

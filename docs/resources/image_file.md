@@ -3,6 +3,7 @@
 page_title: "hyperv_image_file Resource - hyperv"
 subcategory: ""
 description: |-
+  Requirements: Membership in the Hyper-V Administrators group on the target host (or equivalent rights granted through a JEA endpoint). The connecting identity must also have write permission to destination_path.
   Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:
   url-mode -- the provider downloads the file via a streamed HTTP GET (System.Net.Http.HttpClient), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at destination_path.local_path-mode -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.literal_bytes-mode -- the provider takes a base64-encoded byte payload from content_base64 (typically wired from data.hyperv_iso_volume.content_base64 or another runner-side data source), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. Same host-side wire path as local_path-mode -- the runner writes the bytes to a tmpfile and streams from there. Use this for synthesized seeds (cidata, autounattend, Talos machineconfig) so a local_file middleman isn't required.host_path-mode -- the user attests the file already exists at destination_path. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.
   The mode is implicit: if the url block is present, the resource operates in url-mode; if local_path is set, local_path-mode; if content_base64 is set, literal_bytes-mode; otherwise host_path-mode. The three placement modes (url, local_path, content_base64) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.
@@ -11,6 +12,8 @@ description: |-
 ---
 
 # hyperv_image_file (Resource)
+
+**Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or equivalent rights granted through a JEA endpoint). The connecting identity must also have write permission to `destination_path`.
 
 Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:
 

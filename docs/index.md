@@ -3,6 +3,10 @@ page_title: "hyperv Provider"
 description: |-
   The Hyper-V provider manages the lifecycle of Hyper-V virtual machines, virtual switches, virtual disks, and related resources. It supports three execution backends (local, ssh, winrm) so the provider binary itself runs on Linux/macOS/Windows even though it manages Windows hosts.
   All attributes are optional. Each one falls back to a corresponding HYPERV_* environment variable. Provider-block attributes win when both are set.
+  Requirements on the target host
+  The connecting identity needs the privilege appropriate to each resource. The matrix below was verified empirically on Windows Server 2022 (build 10.0.20348).
+  Hyper-V Administrators is sufficient for: hyperv_vm, hyperv_vhd, hyperv_image_file; data sources hyperv_host, hyperv_vm_state, hyperv_virtual_switch; and hyperv_virtual_switch with switch_type = "Private" or "Internal". Per Microsoft, members of this group have complete and unrestricted access to all the features in Hyper-V https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups.Local Administrators is required for: hyperv_nat_static (Add-NetNatStaticMapping and New-NetFirewallRule both return "Access denied" for Hyper-V Administrators alone); and hyperv_virtual_switch with switch_type = "NAT" (the underlying New-NetNat returns the same). switch_type = "External" was not directly tested — Local Administrators is the recommended floor.No host-side requirement for hyperv_iso_volume — it runs on the Terraform runner.
+  WinRM-backend transport. Opening a WinRM/PSSession needs membership in Administrators or Remote Management Users (in addition to the per-resource privilege above). Administrators implies this; a delegated identity in only Hyper-V Administrators does not. For least-privilege delegation, configure a JEA https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview endpoint and point the WinRM backend at it; the provider itself does not configure JEA.
 ---
 
 # hyperv Provider
@@ -10,6 +14,16 @@ description: |-
 The Hyper-V provider manages the lifecycle of Hyper-V virtual machines, virtual switches, virtual disks, and related resources. It supports three execution backends (`local`, `ssh`, `winrm`) so the provider binary itself runs on Linux/macOS/Windows even though it manages Windows hosts.
 
 All attributes are optional. Each one falls back to a corresponding `HYPERV_*` environment variable. Provider-block attributes win when both are set.
+
+## Requirements on the target host
+
+The connecting identity needs the privilege appropriate to each resource. The matrix below was verified empirically on **Windows Server 2022** (build 10.0.20348).
+
+  * **Hyper-V Administrators** is sufficient for: `hyperv_vm`, `hyperv_vhd`, `hyperv_image_file`; data sources `hyperv_host`, `hyperv_vm_state`, `hyperv_virtual_switch`; and `hyperv_virtual_switch` with `switch_type = "Private"` or `"Internal"`. Per Microsoft, [members of this group have complete and unrestricted access to all the features in Hyper-V](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups).
+  * **Local Administrators** is required for: `hyperv_nat_static` (`Add-NetNatStaticMapping` and `New-NetFirewallRule` both return "Access denied" for Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = "NAT"` (the underlying `New-NetNat` returns the same). `switch_type = "External"` was not directly tested — Local Administrators is the recommended floor.
+  * **No host-side requirement** for `hyperv_iso_volume` — it runs on the Terraform runner.
+
+**WinRM-backend transport.** Opening a WinRM/PSSession needs membership in `Administrators` or `Remote Management Users` (in addition to the per-resource privilege above). `Administrators` implies this; a delegated identity in only `Hyper-V Administrators` does not. For least-privilege delegation, configure a [JEA](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview) endpoint and point the WinRM backend at it; the provider itself does not configure JEA.
 
 ## Example Usage
 

@@ -3,12 +3,15 @@
 page_title: "hyperv_iso_volume Data Source - hyperv"
 subcategory: ""
 description: |-
+  Requirements: None on the Hyper-V host — this data source runs entirely on the Terraform runner and produces bytes only. The placement primitive paired with it (hyperv_image_file) is what requires Hyper-V Administrators.
   Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its bytes (base64-encoded), sha256, and size as Computed attributes. Pair with a placement primitive (hyperv_image_file in literal_bytes mode, or local_file + hyperv_image_file in local_path mode) to land the bytes on a Hyper-V host.
   Why a data source rather than a managed resource? Synthesis is a filesystem-image operation, not a Hyper-V concern. Keeping it separate from host placement lets the placement primitive own the host-side lifecycle (incl. the replace_while_mounted escape hatch for files held open by a running VM's DVD), while this data source stays pure: same volume_label + same files -> byte-identical bytes -> stable sha256.
   Determinism contract: the synthesized bytes are stable across runners, OSes, and clocks. The Primary Volume Descriptor's timestamp and system-identifier fields are post-processed to fixed values; per-file timestamps are zero-valued by the upstream library; files are sorted by name before adding so HCL iteration order does not leak into the ISO.
 ---
 
 # hyperv_iso_volume (Data Source)
+
+**Requirements:** None on the Hyper-V host — this data source runs entirely on the Terraform runner and produces bytes only. The placement primitive paired with it (`hyperv_image_file`) is what requires Hyper-V Administrators.
 
 Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its bytes (base64-encoded), sha256, and size as Computed attributes. Pair with a placement primitive (`hyperv_image_file` in `literal_bytes` mode, or `local_file` + `hyperv_image_file` in `local_path` mode) to land the bytes on a Hyper-V host.
 

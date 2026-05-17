@@ -34,6 +34,7 @@ Thumbs.db
 /creds.txt
 /docs/spikes
 /docs/PLAN.md
+/docs/releases
 
 # Test artifacts
 testResults.xml

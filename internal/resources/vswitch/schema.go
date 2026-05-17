@@ -16,7 +16,20 @@ import (
 // when `task generate` runs tfplugindocs (see PLAN.md S15).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "Manages a Hyper-V virtual switch (External, Internal, or Private). " +
+		MarkdownDescription: "**Requirements:** depend on `switch_type`. Empirically verified on " +
+			"Windows Server 2022 (build 10.0.20348):\n\n" +
+			"  * `Private`, `Internal` — **Hyper-V Administrators** is sufficient. `New-VMSwitch` " +
+			"succeeds for both types under a user in `Hyper-V Administrators` alone (not in local " +
+			"`Administrators`).\n" +
+			"  * `NAT` — **local Administrators** is required. The underlying `New-NetNat` returns " +
+			"\"Access denied\" for `Hyper-V Administrators` alone.\n" +
+			"  * `External` — **local Administrators** is the recommended floor; not directly tested " +
+			"(binding a physical NIC under a low-privilege identity risks disrupting the management " +
+			"plane).\n\n" +
+			"WinRM-backend note: the connecting identity also needs `Administrators` or " +
+			"`Remote Management Users` membership for WinRM endpoint access — `Administrators` " +
+			"implies this, a delegated `Hyper-V Administrators`-only identity does not.\n\n" +
+			"Manages a Hyper-V virtual switch (External, Internal, or Private). " +
 			"Wraps the `New-VMSwitch` / `Set-VMSwitch` / `Remove-VMSwitch` cmdlets via a typed " +
 			"JSON contract.\n\n" +
 			"**Recovery from partial-create failure:** if `New-VMSwitch` succeeds on the host but the " +

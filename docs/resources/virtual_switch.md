@@ -3,11 +3,22 @@
 page_title: "hyperv_virtual_switch Resource - hyperv"
 subcategory: ""
 description: |-
+  Requirements: depend on switch_type. Empirically verified on Windows Server 2022 (build 10.0.20348):
+  Private, Internal — Hyper-V Administrators is sufficient. New-VMSwitch succeeds for both types under a user in Hyper-V Administrators alone (not in local Administrators).NAT — local Administrators is required. The underlying New-NetNat returns "Access denied" for Hyper-V Administrators alone.External — local Administrators is the recommended floor; not directly tested (binding a physical NIC under a low-privilege identity risks disrupting the management plane).
+  WinRM-backend note: the connecting identity also needs Administrators or Remote Management Users membership for WinRM endpoint access — Administrators implies this, a delegated Hyper-V Administrators-only identity does not.
   Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract.
   Recovery from partial-create failure: if New-VMSwitch succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent terraform apply will fail with switch already exists. Recover with terraform import hyperv_virtual_switch.<name> <switch-name> and re-plan.
 ---
 
 # hyperv_virtual_switch (Resource)
+
+**Requirements:** depend on `switch_type`. Empirically verified on Windows Server 2022 (build 10.0.20348):
+
+  * `Private`, `Internal` — **Hyper-V Administrators** is sufficient. `New-VMSwitch` succeeds for both types under a user in `Hyper-V Administrators` alone (not in local `Administrators`).
+  * `NAT` — **local Administrators** is required. The underlying `New-NetNat` returns "Access denied" for `Hyper-V Administrators` alone.
+  * `External` — **local Administrators** is the recommended floor; not directly tested (binding a physical NIC under a low-privilege identity risks disrupting the management plane).
+
+WinRM-backend note: the connecting identity also needs `Administrators` or `Remote Management Users` membership for WinRM endpoint access — `Administrators` implies this, a delegated `Hyper-V Administrators`-only identity does not.
 
 Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the `New-VMSwitch` / `Set-VMSwitch` / `Remove-VMSwitch` cmdlets via a typed JSON contract.
 
