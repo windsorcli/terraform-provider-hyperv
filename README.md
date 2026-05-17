@@ -56,7 +56,7 @@ The following are either deferred to post-1.0 or under active design — track a
 - Hyper-V integration services map (per-service enable/disable on `hyperv_vm`).
 - VM automatic start/stop actions (`AutomaticStartAction` / `AutomaticStopAction`).
 - Generation 1 BIOS startup order (`Set-VMBios -StartupOrder`).
-- VLAN tags on inline NICs (static MAC addresses are supported via `mac_address`).
+- Trunk and isolation VLAN modes on inline NICs (access-mode VLANs are supported via `vlan_id`; static MAC addresses via `mac_address`).
 - Replication, live migration, SR-IOV, GPU partitioning, shielded VMs.
 - Additional `hyperv_image_file` source modes beyond the four shipped — e.g. a templated-content mode or a native answer-file synthesizer. The current `literal_bytes` mode paired with `hyperv_iso_volume` covers most cloud-init NoCloud / autounattend use cases without a new mode.
 
