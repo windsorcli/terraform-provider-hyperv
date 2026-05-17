@@ -150,11 +150,11 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			"`hyperv_virtual_switch`; and `hyperv_virtual_switch` with `switch_type = \"Private\"` or " +
 			"`\"Internal\"`. Per Microsoft, [members of this group have complete and unrestricted " +
 			"access to all the features in Hyper-V](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups).\n" +
-			"  * **Local Administrators** is required for: `hyperv_nat_static` (`Add-NetNatStaticMapping` " +
-			"and `New-NetFirewallRule` both return \"Access denied\" for Hyper-V Administrators alone); " +
-			"and `hyperv_virtual_switch` with `switch_type = \"NAT\"` (the underlying `New-NetNat` " +
-			"returns the same). `switch_type = \"External\"` was not directly tested — Local " +
-			"Administrators is the recommended floor.\n" +
+			"  * **Local Administrators** is required for: `hyperv_nat_static_mapping` " +
+			"(`Add-NetNatStaticMapping` and `New-NetFirewallRule` both return \"Access denied\" for " +
+			"Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = \"NAT\"` " +
+			"(the underlying `New-NetNat` returns the same). `switch_type = \"External\"` was not " +
+			"directly tested — Local Administrators is the recommended floor.\n" +
 			"  * **No host-side requirement** for `hyperv_iso_volume` — it runs on the Terraform " +
 			"runner.\n\n" +
 			"**WinRM-backend transport.** Opening a WinRM/PSSession needs membership in " +
