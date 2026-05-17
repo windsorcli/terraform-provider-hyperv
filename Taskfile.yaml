@@ -153,6 +153,9 @@ tasks:
 
   test:unit:
     desc: Go unit tests (no TF_ACC)
+    env:
+      # No Hyper-V host on unit-test runners; skip the Configure probe.
+      HYPERV_SKIP_AUTH_PROBE: "true"
     cmds:
       # ./internal/... excludes the root main package, which has no tests
       # and would trip `go: no such tool "covdata"` on toolchains that
