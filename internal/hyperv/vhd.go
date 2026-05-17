@@ -139,8 +139,9 @@ func (c *Client) NewVHDDynamic(ctx context.Context, in NewVHDDynamicInput) (*VHD
 
 // NewVHDDifferencing creates a child that reads from in.ParentPath and
 // writes new blocks locally. Returns ErrInvalidParentPath when the parent
-// path is missing or invalid -- spike #3 documented the mapping from
-// New-VHD's "InvalidParameter,Microsoft.Vhd.*" envelope to this sentinel.
+// path is missing or invalid; the mapping comes from New-VHD's
+// "InvalidParameter,Microsoft.Vhd.*" error envelope, classified in
+// errors.go.
 //
 // Recovers from connection.ErrSessionDropped -- see NewVHDFixed. The
 // recovery's expectedVHD passes SizeBytes=0 ("skip size check") because

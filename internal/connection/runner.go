@@ -10,7 +10,7 @@ import "context"
 // internal/testutil, without faking lifecycle calls that don't matter for
 // the typed-client tests.
 //
-// Calling convention (verified by spike #2):
+// Calling convention:
 //
 //   - `script` is the full PowerShell body. The caller has already
 //     concatenated common/preamble.ps1 to the top. Backends transmit it as

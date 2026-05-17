@@ -90,7 +90,7 @@ function Write-HypervError {
 }
 
 # Write-HypervResult is sugar for the standard result emit. The terminal
-# `ConvertTo-Json -Depth 10 -Compress` pattern is locked in by spike #2:
+# `ConvertTo-Json -Depth 10 -Compress` is non-negotiable: ConvertTo-Json's
 # default depth=2 silently truncates nested objects to literal strings.
 function Write-HypervResult {
     [CmdletBinding()]

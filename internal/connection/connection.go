@@ -1,13 +1,12 @@
 // Package connection defines the transport abstraction the typed Hyper-V
 // client (internal/hyperv) uses to ship PowerShell scripts to a Windows host
-// and read their results back. Three backends are planned: local (exec
+// and read their results back. Three backends are implemented: local (exec
 // pwsh.exe directly), ssh (golang.org/x/crypto/ssh), and winrm
-// (github.com/masterzen/winrm). local and ssh are implemented; winrm ships in M3.
+// (github.com/masterzen/winrm).
 //
-// Design notes are in docs/PLAN.md §4. Spike findings shaped the contract:
-// docs/spikes/02-json-contract.md (script body via -EncodedCommand, stdin for
-// data, stderr stripped of CLIXML), and docs/spikes/04-ps-startup-latency.md
-// (per-call cost dominated by PS startup, not transport).
+// Contract highlights: script body via -EncodedCommand, stdin for data,
+// stderr has CLIXML progress noise stripped before reaching the Result.
+// Per-call cost is dominated by PowerShell startup, not transport.
 package connection
 
 import (
@@ -44,11 +43,11 @@ type Connection interface {
 
 // Result is what every script invocation returns. The transport layer
 // captures four pieces of information; the typed Hyper-V client maps them
-// into typed Go errors per docs/PLAN.md §5.
+// into typed Go errors.
 //
-// `Stderr` has CLIXML progress noise stripped (see docs/spikes/02-json-contract.md
-// finding 6) before reaching this struct. Real PS errors arrive as a JSON
-// envelope on stderr per the Write-HypervError contract.
+// `Stderr` has CLIXML progress noise stripped before reaching this struct.
+// Real PS errors arrive as a JSON envelope on stderr per the
+// Write-HypervError contract.
 //
 // `error` from RunScript is reserved for transport failures (connection
 // refused, auth failed, ctx canceled). PS-level failures come back via

@@ -116,9 +116,9 @@ function Remove-NetIPAddress {
     )
 }
 
-# New-HypervSwitchSample builds a PSCustomObject shaped like a real
-# Get-VMSwitch result, used as the canned return value from Mock blocks. The
-# shape mirrors what spike #2 captured on Server 2022 + PS 5.1.
+# New-HypervSwitchSample builds a PSCustomObject in the form of a real
+# Get-VMSwitch result, used as the canned return value from Mock blocks.
+# Fields mirror what Get-VMSwitch emits on Windows Server 2022 + PS 5.1.
 function New-HypervSwitchSample {
     [CmdletBinding()]
     param(

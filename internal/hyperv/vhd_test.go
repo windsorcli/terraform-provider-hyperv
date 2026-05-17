@@ -234,9 +234,9 @@ func TestClient_NewVHDDifferencing_StdinMatchesWireContract(t *testing.T) {
 	}
 }
 
-// NewVHDDifferencing maps the spike #3 envelope (InvalidArgument +
-// fullyQualifiedErrorId starting "InvalidParameter,Microsoft.Vhd.")
-// to ErrInvalidParentPath so the resource layer can surface a clean
+// NewVHDDifferencing maps New-VHD's error envelope (InvalidArgument +
+// fullyQualifiedErrorId starting "InvalidParameter,Microsoft.Vhd.") to
+// ErrInvalidParentPath so the resource layer can surface a clean
 // AddAttributeError on the parent_path attribute.
 func TestClient_NewVHDDifferencing_InvalidParentPathMapsToErrInvalidParentPath(t *testing.T) {
 	t.Parallel()
