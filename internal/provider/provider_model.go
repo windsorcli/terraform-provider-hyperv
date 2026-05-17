@@ -14,6 +14,12 @@ type HypervProviderModel struct {
 	Password types.String `tfsdk:"password"`
 	Timeout  types.String `tfsdk:"timeout"`
 
+	// SkipAuthProbe disables the Configure-time `Get-VMHost` probe that
+	// converts permission/transport failures from mid-apply mysteries into
+	// plan-time diagnostics. Default false (probe runs). Set to true for
+	// `terraform validate` in CI environments without a reachable host.
+	SkipAuthProbe types.Bool `tfsdk:"skip_auth_probe"`
+
 	Local *LocalConfig `tfsdk:"local"`
 	SSH   *SSHConfig   `tfsdk:"ssh"`
 	WinRM *WinRMConfig `tfsdk:"winrm"`

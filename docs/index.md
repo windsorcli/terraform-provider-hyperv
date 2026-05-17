@@ -53,6 +53,7 @@ provider "hyperv" {}
 - `local` (Attributes) Local-backend-specific configuration. (see [below for nested schema](#nestedatt--local))
 - `password` (String, Sensitive) Password. **Sensitive.** Falls back to `HYPERV_PASSWORD`.
 - `port` (Number) TCP port. Defaults to 22 (`ssh`) or 5986 (`winrm`). Falls back to `HYPERV_PORT`.
+- `skip_auth_probe` (Boolean) Skip the Configure-time `Get-VMHost` authorization probe. The probe verifies at plan time that the connecting identity can run a Hyper-V cmdlet, turning permission/transport failures into clean plan-time diagnostics instead of mid-apply mysteries. **Default: `false`** (probe runs). Set to `true` for `terraform validate` in CI environments without a reachable host. Falls back to `HYPERV_SKIP_AUTH_PROBE` (accepts `true`/`false`/`1`/`0`/`t`/`f`/`yes`/`no`).
 - `ssh` (Attributes) SSH-backend-specific configuration. (see [below for nested schema](#nestedatt--ssh))
 - `timeout` (String) Per-call PowerShell execution timeout as a Go duration (e.g. `5m`, `30s`). Defaults to `5m`. Falls back to `HYPERV_TIMEOUT`. Set to `0s` to disable. Bump for legitimately slow cmdlets like `New-VHD` on a multi-GB fixed disk.
 - `username` (String) Username. Required for `ssh` and `winrm`. Falls back to `HYPERV_USERNAME`.

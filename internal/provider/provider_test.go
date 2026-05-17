@@ -1,13 +1,18 @@
 package provider
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
 
 // Sanity check that the provider type satisfies the framework interface and
@@ -43,7 +48,7 @@ func TestProvider_Schema(t *testing.T) {
 
 	// Pin the §6 attribute names — these are locked after M1 per §13;
 	// changing any of them would be a breaking change.
-	wantAttrs := []string{"backend", "host", "port", "username", "password", "timeout", "local", "ssh", "winrm"}
+	wantAttrs := []string{"backend", "host", "port", "username", "password", "timeout", "skip_auth_probe", "local", "ssh", "winrm"}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
 			t.Errorf("missing top-level attribute %q", name)
@@ -301,6 +306,77 @@ func TestKerberosRealmRequiredValidator(t *testing.T) {
 			}
 			if !tc.wantError && diags.HasError() {
 				t.Errorf("expected no error, got %v", diags)
+			}
+		})
+	}
+}
+
+// TestClassifyAuthProbeError pins the diagnostic shape Configure emits when
+// the Get-VMHost probe fails. Two branches exist:
+//
+//   - hyperv.ErrUnauthorized: the connecting identity authenticated but
+//     lacks Hyper-V access. The summary names the probe; the detail must
+//     name the `Hyper-V Administrators` group floor and the
+//     `skip_auth_probe` escape hatch so the operator has both the fix and
+//     the override in front of them.
+//   - any other error: surface the underlying message verbatim and offer
+//     the skip flag as the validate-without-host escape hatch.
+//
+// We assert via substring rather than exact match — message tone is
+// allowed to evolve, but the load-bearing tokens (`Hyper-V Administrators`,
+// `skip_auth_probe`) must remain.
+func TestClassifyAuthProbeError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		err         error
+		wantSummary string
+		wantDetail  []string // substrings that MUST appear
+	}{
+		{
+			name:        "direct ErrUnauthorized routes to Hyper-V Admin guidance",
+			err:         hyperv.ErrUnauthorized,
+			wantSummary: "Hyper-V provider authorization probe failed",
+			wantDetail:  []string{"Hyper-V Administrators", "skip_auth_probe", "Get-VMHost"},
+		},
+		{
+			// %w-wrapped ErrUnauthorized must still route to the unauth
+			// branch — the typed client wraps with %w when emitting
+			// envelope errors, so this is the production path.
+			name:        "%w-wrapped ErrUnauthorized routes to Hyper-V Admin guidance",
+			err:         fmt.Errorf("get-vmhost: %w: PermissionDenied (cmdlet=Get-VMHost)", hyperv.ErrUnauthorized),
+			wantSummary: "Hyper-V provider authorization probe failed",
+			wantDetail:  []string{"Hyper-V Administrators"},
+		},
+		{
+			// Transport error never reaches the envelope parser, so
+			// errors.Is(err, ErrUnauthorized) is false — routes to the
+			// generic branch. The detail must surface the underlying
+			// message verbatim and offer the env-var escape hatch.
+			name:        "transport error routes to generic branch with HYPERV_SKIP_AUTH_PROBE hint",
+			err:         errors.New("ssh: connection refused"),
+			wantSummary: "Hyper-V provider authorization probe failed",
+			wantDetail:  []string{"connection refused", "HYPERV_SKIP_AUTH_PROBE", "opened cleanly"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var diags diag.Diagnostics
+			classifyAuthProbeError("ssh", tc.err, &diags)
+			if !diags.HasError() {
+				t.Fatalf("expected error diagnostic; got none")
+			}
+			got := diags.Errors()[0]
+			if got.Summary() != tc.wantSummary {
+				t.Errorf("summary = %q, want %q", got.Summary(), tc.wantSummary)
+			}
+			for _, want := range tc.wantDetail {
+				if !strings.Contains(got.Detail(), want) {
+					t.Errorf("detail missing %q; got: %s", want, got.Detail())
+				}
 			}
 		})
 	}
