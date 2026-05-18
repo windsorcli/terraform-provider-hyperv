@@ -161,7 +161,7 @@ func TestBuildSSHAuthMethods_FallsBackToKeyPath(t *testing.T) {
 func TestBuildSSHAuthMethods_PasswordOnly(t *testing.T) {
 	t.Parallel()
 
-	auths, err := buildSSHAuthMethods(SSHOptions{Password: "secret"})
+	auths, err := buildSSHAuthMethods(SSHOptions{Password: []byte("secret")})
 	if err != nil {
 		t.Fatalf("buildSSHAuthMethods: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBuildSSHAuthMethods_KeyAndPasswordBothOffered(t *testing.T) {
 
 	auths, err := buildSSHAuthMethods(SSHOptions{
 		PrivateKey: generateTestKey(t),
-		Password:   "secret",
+		Password:   []byte("secret"),
 	})
 	if err != nil {
 		t.Fatalf("buildSSHAuthMethods: %v", err)
@@ -554,5 +554,42 @@ func TestSCPStartCmd_QuotesRemoteDir(t *testing.T) {
 				t.Errorf("scpStartCmd(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSSH_NewSSHZerosCredentialBytes pins the credential-zeroization
+// contract for SSH: NewSSH consumes Password, Passphrase, and PrivateKey
+// during auth-method construction and zeros them before returning.
+// golang.org/x/crypto/ssh has already copied the values into its
+// auth-method closures; this scrubs the provider's input slices so the
+// caller's lingering reference no longer points at plaintext credentials.
+// Note: the zeroing happens at NewSSH time, not Close(), because the
+// SSH backend doesn't carry these fields past construction.
+func TestSSH_NewSSHZerosCredentialBytes(t *testing.T) {
+	t.Parallel()
+
+	password := []byte("password-secret")
+	privateKey := generateTestKey(t)
+	origPassword := password
+	origPrivateKey := privateKey
+	_, err := NewSSH(SSHOptions{
+		Host:           "host.example",
+		Username:       "Administrator",
+		Password:       password,
+		PrivateKey:     privateKey,
+		KnownHostsPath: writeKnownHostsFile(t),
+	})
+	if err != nil {
+		t.Fatalf("NewSSH: %v", err)
+	}
+	for i, b := range origPassword {
+		if b != 0 {
+			t.Errorf("password[%d] = %d, want 0", i, b)
+		}
+	}
+	for i, b := range origPrivateKey {
+		if b != 0 {
+			t.Errorf("privateKey[%d] = %d, want 0", i, b)
+		}
 	}
 }

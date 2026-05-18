@@ -36,10 +36,15 @@ type SSHOptions struct {
 	//   3. Password         (fallback only -- key auth is preferred)
 	//
 	// Passphrase decrypts the key when set.
+	//
+	// All three sensitive fields use []byte so Close() can zero the
+	// long-lived copy held by the backend. Libraries we hand the value
+	// to (golang.org/x/crypto/ssh) make their own copies; zeroing here
+	// covers the provider's own state, not theirs.
 	PrivateKey     []byte
 	PrivateKeyPath string
 	Passphrase     []byte
-	Password       string
+	Password       []byte
 
 	// KnownHostsPath is the file used for host key verification. Default:
 	// ~/.ssh/known_hosts. Empty path falls back to the default. A missing
@@ -269,6 +274,10 @@ func (b *sshBackend) Open(ctx context.Context) error {
 
 // Close shuts down the persistent client and stops the keepalive
 // goroutine. Idempotent.
+//
+// No credential bytes to zero here -- they're consumed once in NewSSH
+// (via buildSSHAuthMethods) and never carried onto the backend; see
+// NewSSH for the zero-after-use hygiene path.
 func (b *sshBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -752,7 +761,18 @@ func runSessionWithCtx(ctx context.Context, session *ssh.Session, cmd string) er
 // buildSSHAuthMethods resolves the auth-method precedence: raw key bytes >
 // key file path > password. Returns an empty slice if nothing is set;
 // the caller turns that into a configuration error.
+//
+// Credential hygiene: opts.PrivateKey, opts.Passphrase, opts.Password,
+// and the locally-read keyBytes are zeroed before this function returns.
+// golang.org/x/crypto/ssh has already copied the values into its
+// auth-method closures by then; the library's copies stay live for the
+// connection's lifetime but our own input slices (which the caller still
+// holds via the shared underlying array) are scrubbed.
 func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
+	defer zeroBytes(opts.PrivateKey)
+	defer zeroBytes(opts.Passphrase)
+	defer zeroBytes(opts.Password)
+
 	var auths []ssh.AuthMethod
 
 	if len(opts.PrivateKey) > 0 {
@@ -770,6 +790,7 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ssh: read private_key_path %s: %w", opts.PrivateKeyPath, err)
 		}
+		defer zeroBytes(keyBytes)
 		signer, err := parsePrivateKey(keyBytes, opts.Passphrase)
 		if err != nil {
 			return nil, fmt.Errorf("ssh: parse %s: %w", opts.PrivateKeyPath, err)
@@ -777,8 +798,11 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 		auths = append(auths, ssh.PublicKeys(signer))
 	}
 
-	if opts.Password != "" {
-		auths = append(auths, ssh.Password(opts.Password))
+	if len(opts.Password) > 0 {
+		// ssh.Password takes a string; the library copies it into its
+		// own auth-method closure. Our []byte is zeroed by the deferred
+		// zeroBytes above; the library's copy is outside our reach.
+		auths = append(auths, ssh.Password(string(opts.Password)))
 	}
 
 	return auths, nil
