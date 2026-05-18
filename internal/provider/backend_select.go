@@ -114,6 +114,11 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 		return nil
 	}
 
+	// []byte(string) allocates a new copy of the bytes; the source
+	// strings (resolveString's return) remain in the framework's
+	// reflection layer until GC. Zeroing inside the connection layer
+	// scrubs our copy; the framework-owned originals are outside our
+	// reach. See connection.zeroBytes and SSHOptions.Password.
 	conn, err := connection.NewSSH(connection.SSHOptions{
 		Host:           host,
 		Port:           port,
@@ -353,6 +358,11 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		return nil
 	}
 
+	// []byte(string) allocates a new copy of the bytes; the source
+	// string (resolveString's return) remains in the framework's
+	// reflection layer until GC. Zeroing inside the connection layer
+	// scrubs our copy; the framework-owned original is outside our
+	// reach. See connection.zeroBytes and WinRMOptions.Password.
 	conn, err := connection.NewWinRM(connection.WinRMOptions{
 		Host:           host,
 		Port:           port,
