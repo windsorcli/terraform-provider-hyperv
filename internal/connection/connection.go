@@ -58,3 +58,20 @@ type Result struct {
 	ExitCode int
 	Duration time.Duration
 }
+
+// zeroBytes overwrites b in place. Used by Close() implementations and
+// the buildSSHAuthMethods hygiene path to scrub credential copies the
+// provider holds (passwords, passphrases, key material).
+//
+// The loop's writes survive because the slice header escapes via a
+// struct field the runtime can see; Go gives no formal guarantee
+// against dead-store elimination, but empirically the compiler treats
+// this case as a possible observer and keeps the stores. This is
+// hygiene for the provider's own state, not a guarantee against
+// memory inspection — copies the libraries we hand credentials to
+// may have made are outside our reach.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}

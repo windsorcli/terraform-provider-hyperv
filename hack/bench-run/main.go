@@ -31,7 +31,7 @@ func main() {
 	conn, err := connection.NewWinRM(connection.WinRMOptions{
 		Host:     os.Getenv("HYPERV_HOST"),
 		Username: os.Getenv("HYPERV_USERNAME"),
-		Password: os.Getenv("HYPERV_PASSWORD"),
+		Password: []byte(os.Getenv("HYPERV_PASSWORD")),
 		UseHTTPS: true,
 		Insecure: true,
 		Auth:     "ntlm",

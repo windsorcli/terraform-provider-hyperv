@@ -57,7 +57,7 @@ func NewClientForSweep(ctx context.Context) (*hyperv.Client, func(), error) {
 			Username:       os.Getenv("HYPERV_USERNAME"),
 			PrivateKeyPath: os.Getenv("HYPERV_SSH_PRIVATE_KEY_PATH"),
 			Passphrase:     []byte(os.Getenv("HYPERV_SSH_PASSPHRASE")),
-			Password:       os.Getenv("HYPERV_PASSWORD"),
+			Password:       []byte(os.Getenv("HYPERV_PASSWORD")),
 			KnownHostsPath: os.Getenv("HYPERV_SSH_KNOWN_HOSTS_PATH"),
 		})
 	case "winrm":
@@ -69,7 +69,7 @@ func NewClientForSweep(ctx context.Context) (*hyperv.Client, func(), error) {
 			Host:          os.Getenv("HYPERV_HOST"),
 			Port:          port,
 			Username:      os.Getenv("HYPERV_USERNAME"),
-			Password:      os.Getenv("HYPERV_PASSWORD"),
+			Password:      []byte(os.Getenv("HYPERV_PASSWORD")),
 			UseHTTPS:      parseBoolEnvOr("HYPERV_WINRM_USE_HTTPS", true),
 			Insecure:      parseBoolEnvOr("HYPERV_WINRM_INSECURE", false),
 			Auth:          os.Getenv("HYPERV_WINRM_AUTH"),

@@ -28,7 +28,11 @@ type WinRMOptions struct {
 	Host     string // required
 	Port     int    // default 5986 (HTTPS) or 5985 (HTTP)
 	Username string // required
-	Password string // required for ntlm/basic
+	// Password is []byte so Close() can zero the long-lived copy held
+	// by the backend. masterzen/winrm copies the value into its own
+	// EndpointParams when we construct the client; that copy is outside
+	// our reach, but our state stays clean across the connection's life.
+	Password []byte // required for ntlm/basic; for kerberos, mutually exclusive with KrbCCachePath
 
 	UseHTTPS bool   // default true; flip to false only for diagnosing TLS-only failures
 	Insecure bool   // skip TLS certificate verification (default false)
@@ -118,7 +122,7 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 	}
 	switch auth {
 	case "ntlm", "basic":
-		if opts.Password == "" {
+		if len(opts.Password) == 0 {
 			return nil, fmt.Errorf("winrm: %s auth requires a password", auth)
 		}
 	case "kerberos":
@@ -127,7 +131,7 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 		}
 		// Password XOR ccache: exactly one credential source. Both is
 		// ambiguous (which wins?), neither leaves no way to authenticate.
-		hasPassword := opts.Password != ""
+		hasPassword := len(opts.Password) > 0
 		hasCCache := opts.KrbCCachePath != ""
 		if hasPassword && hasCCache {
 			return nil, errors.New("winrm: kerberos auth: password and kerberos.ccache_path are mutually exclusive (pick one)")
@@ -274,7 +278,10 @@ func (b *winrmBackend) Open(ctx context.Context) error {
 
 	params := buildWinRMParams(b.opts)
 
-	client, err := winrm.NewClientWithParameters(endpoint, b.opts.Username, b.opts.Password, params)
+	// masterzen takes the password as a string and copies it into its
+	// EndpointParams; our []byte stays the canonical copy and gets
+	// zeroed at Close().
+	client, err := winrm.NewClientWithParameters(endpoint, b.opts.Username, string(b.opts.Password), params)
 	if err != nil {
 		return fmt.Errorf("winrm: build client: %w", err)
 	}
@@ -290,13 +297,27 @@ func (b *winrmBackend) Open(ctx context.Context) error {
 	return nil
 }
 
-// Close releases the backend's persistent state. WinRM has none beyond the
-// cached client struct, so this is essentially a flag flip. Idempotent.
+// Close releases the backend's persistent state and zeros the password
+// bytes we hold. WinRM has no transport state beyond the cached client
+// struct, so the flag flip is otherwise a no-op. Idempotent.
+//
+// One-shot after Close: zeroing `b.opts.Password` makes the backend
+// non-reusable. Open() reads `b.opts.Password` and a post-Close Open
+// would silently auth with all-zero bytes. The current provider
+// lifecycle is single-Configure + single-Close, so this is fine; any
+// future caller introducing a reconnect-on-failure path must rebuild
+// the backend via NewWinRM rather than calling Open() again on the
+// closed one.
+//
+// masterzen/winrm has already copied the password into its own
+// EndpointParams by the time Close() runs; that copy is outside our
+// reach. Zeroing here covers the provider's own state.
 func (b *winrmBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.client = nil
 	b.opened = false
+	zeroBytes(b.opts.Password)
 	return nil
 }
 
@@ -493,7 +514,7 @@ func buildWinRMParams(opts WinRMOptions) *winrm.Parameters {
 		}
 		settings := &winrm.Settings{
 			WinRMUsername: opts.Username,
-			WinRMPassword: opts.Password,
+			WinRMPassword: string(opts.Password),
 			WinRMHost:     opts.Host,
 			WinRMPort:     opts.Port,
 			WinRMProto:    proto,

@@ -14,7 +14,7 @@ func main() {
 	conn, err := connection.NewSSH(connection.SSHOptions{
 		Host:           os.Getenv("HYPERV_HOST"),
 		Username:       os.Getenv("HYPERV_USERNAME"),
-		Password:       os.Getenv("HYPERV_PASSWORD"),
+		Password:       []byte(os.Getenv("HYPERV_PASSWORD")),
 		KnownHostsPath: os.ExpandEnv("$HOME/.ssh/known_hosts"),
 		CommandTimeout: 90 * time.Second,
 	})

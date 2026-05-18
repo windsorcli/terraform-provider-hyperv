@@ -16,7 +16,7 @@ import (
 func TestNewWinRM_RequiresHost(t *testing.T) {
 	_, err := NewWinRM(WinRMOptions{
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "host") {
 		t.Fatalf("err = %v, want substring 'host'", err)
@@ -29,7 +29,7 @@ func TestNewWinRM_RequiresHost(t *testing.T) {
 func TestNewWinRM_RequiresUsername(t *testing.T) {
 	_, err := NewWinRM(WinRMOptions{
 		Host:     "host",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "username") {
 		t.Fatalf("err = %v, want substring 'username'", err)
@@ -81,7 +81,7 @@ func TestNewWinRM_KerberosValidationErrors(t *testing.T) {
 			opts: WinRMOptions{
 				Host:     "hv.example.com",
 				Username: "Administrator",
-				Password: "x",
+				Password: []byte("x"),
 				Auth:     "kerberos",
 			},
 			want: "realm",
@@ -91,7 +91,7 @@ func TestNewWinRM_KerberosValidationErrors(t *testing.T) {
 			opts: WinRMOptions{
 				Host:          "hv.example.com",
 				Username:      "Administrator",
-				Password:      "x",
+				Password:      []byte("x"),
 				Auth:          "kerberos",
 				KrbRealm:      "EXAMPLE.COM",
 				KrbCCachePath: "/tmp/krb5cc",
@@ -132,7 +132,7 @@ func TestNewWinRM_KerberosPasswordMode(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "hv-bench-01.hv.lab",
 		Username: "Administrator",
-		Password: "secret",
+		Password: []byte("secret"),
 		Auth:     "kerberos",
 		KrbRealm: "HV.LAB",
 	})
@@ -177,7 +177,7 @@ func TestNewWinRM_KerberosCCacheMode(t *testing.T) {
 	if b.opts.KrbCCachePath != "/tmp/krb5cc_501" {
 		t.Errorf("KrbCCachePath = %q, want /tmp/krb5cc_501", b.opts.KrbCCachePath)
 	}
-	if b.opts.Password != "" {
+	if len(b.opts.Password) != 0 {
 		t.Errorf("Password = %q, want empty (ccache mode does not require it)", b.opts.Password)
 	}
 }
@@ -192,7 +192,7 @@ func TestNewWinRM_KerberosExplicitSPN(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "hv-bench-01.hv.lab",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 		Auth:     "kerberos",
 		KrbRealm: "HV.LAB",
 		KrbSpn:   "HTTP/wsman.hv.lab",
@@ -220,7 +220,7 @@ func TestNewWinRM_KerberosKrb5ConfigFromEnv(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "hv.example.com",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 		Auth:     "kerberos",
 		KrbRealm: "EXAMPLE.COM",
 	})
@@ -249,7 +249,7 @@ func TestBuildWinRMParams_KerberosSetsTransportDecorator(t *testing.T) {
 		Host:          "hv.example.com",
 		Port:          5986,
 		Username:      "Administrator",
-		Password:      "x",
+		Password:      []byte("x"),
 		UseHTTPS:      true,
 		Auth:          "kerberos",
 		KrbRealm:      "EXAMPLE.COM",
@@ -276,7 +276,7 @@ func TestNewWinRM_RejectsUnknownAuth(t *testing.T) {
 	_, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 		Auth:     "bogus",
 	})
 	if err == nil || !strings.Contains(err.Error(), "auth") {
@@ -290,7 +290,7 @@ func TestNewWinRM_DefaultPortHTTPS(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 		UseHTTPS: true,
 	})
 	if err != nil {
@@ -312,7 +312,7 @@ func TestNewWinRM_DefaultPortHTTP(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 		UseHTTPS: false,
 	})
 	if err != nil {
@@ -337,7 +337,7 @@ func TestNewWinRM_PortOutOfRange(t *testing.T) {
 		_, err := NewWinRM(WinRMOptions{
 			Host:     "host",
 			Username: "Administrator",
-			Password: "x",
+			Password: []byte("x"),
 			Port:     port,
 		})
 		if err == nil || !strings.Contains(err.Error(), "port") {
@@ -353,7 +353,7 @@ func TestNewWinRM_AuthDefaultsToNTLM(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
@@ -374,7 +374,7 @@ func TestWinRM_BackendIdentifier(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
@@ -391,7 +391,7 @@ func TestWinRM_CloseIdempotent(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
@@ -479,7 +479,7 @@ func TestWinRM_RunScriptBeforeOpen(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
@@ -496,7 +496,7 @@ func TestWinRM_StreamFileBeforeOpen(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     "host",
 		Username: "Administrator",
-		Password: "x",
+		Password: []byte("x"),
 	})
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
@@ -654,5 +654,36 @@ func TestLineWrappedWriter_CloseIdempotent(t *testing.T) {
 	}
 	if got, want := buf.String(), "ab\n"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestWinRM_CloseZerosPasswordBytes pins the credential-zeroization
+// contract: Close() must overwrite the password bytes the backend
+// holds. The backend's opts.Password slice shares its underlying
+// array with the slice the caller passed in, so the original slice
+// also ends up zero-filled after Close() returns. Hygiene measure
+// for our long-lived state; masterzen/winrm has already copied the
+// value into its EndpointParams and that copy stays untouched.
+func TestWinRM_CloseZerosPasswordBytes(t *testing.T) {
+	t.Parallel()
+
+	password := []byte("super-secret")
+	original := password
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     "host.example",
+		Username: "Administrator",
+		Password: password,
+		Auth:     "ntlm",
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for i, b := range original {
+		if b != 0 {
+			t.Errorf("original[%d] = %d, want 0 (Close should have zeroed all bytes)", i, b)
+		}
 	}
 }
