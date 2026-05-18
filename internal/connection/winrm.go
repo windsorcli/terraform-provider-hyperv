@@ -56,9 +56,10 @@ type WinRMOptions struct {
 	KrbConfigPath string
 	KrbCCachePath string
 
-	// Timeout bounds an individual WinRM operation (dial, auth, request).
-	// Default 30s. Distinct from CommandTimeout, which bounds the remote
-	// PowerShell call.
+	// Timeout sets `http.Client.Timeout` for every WSMan request.
+	// Default 0 (no wall-clock cap) -- file transfers can run for
+	// arbitrarily long. Dead hosts still surface via the OS-level TCP
+	// dial timeout (~60-120s); ctx cancellation handles user Ctrl+C.
 	Timeout time.Duration
 
 	// CommandTimeout bounds a single RunScript call. Default 5m. A wedged
@@ -75,7 +76,6 @@ type WinRMOptions struct {
 const (
 	defaultWinRMPortHTTPS      = 5986
 	defaultWinRMPortHTTP       = 5985
-	defaultWinRMTimeout        = 30 * time.Second
 	defaultWinRMCommandTimeout = 5 * time.Minute
 	defaultWinRMPwshPath       = "powershell.exe"
 	defaultWinRMAuth           = "ntlm"
@@ -155,14 +155,11 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 		return nil, fmt.Errorf("winrm: port must be between 1 and 65535; got %d", port)
 	}
 
-	timeout := opts.Timeout
-	if timeout == 0 {
-		timeout = defaultWinRMTimeout
-	}
 	commandTimeout := opts.CommandTimeout
 	if commandTimeout == 0 {
 		commandTimeout = defaultWinRMCommandTimeout
 	}
+	timeout := opts.Timeout
 
 	pwshPath := opts.PwshPath
 	if pwshPath == "" {
@@ -329,9 +326,10 @@ func (b *winrmBackend) Close() error {
 //
 // Performance note: WinRM's WS-Management transport adds 33% encoding
 // overhead and is empirically ~10x slower than the SSH backend's SCP
-// path for the same payload. Files larger than a few hundred MiB are
-// supported but slow; for multi-GiB artifacts prefer the SSH backend or
-// stage the file out-of-band and use host_path-mode.
+// path for the same payload. No wall-clock cap is applied -- arbitrarily
+// large payloads transfer at the cost of arbitrarily long apply times.
+// For multi-GiB artifacts prefer the SSH backend or stage out-of-band
+// and use host_path-mode.
 //
 // The remote parent directory must already exist; the receiver does not
 // mkdir. Resources that need parent-dir creation should issue a one-line
@@ -343,12 +341,6 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	b.mu.Unlock()
 	if !opened || client == nil {
 		return errors.New("winrm: backend not open -- call Open first")
-	}
-
-	if b.opts.CommandTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, b.opts.CommandTimeout)
-		defer cancel()
 	}
 
 	src, err := os.Open(localPath) // #nosec G304 -- localPath is operator-supplied via resource config
