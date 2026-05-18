@@ -58,8 +58,10 @@ type WinRMOptions struct {
 
 	// Timeout sets `http.Client.Timeout` for every WSMan request.
 	// Default 0 (no wall-clock cap) -- file transfers can run for
-	// arbitrarily long. Dead hosts still surface via the OS-level TCP
-	// dial timeout (~60-120s); ctx cancellation handles user Ctrl+C.
+	// arbitrarily long. The initial TCP dial is bounded by the OS;
+	// a connection that stalls mid-transfer (host freezes, packets
+	// silently dropped) holds the apply until ctx cancellation
+	// (operator Ctrl+C).
 	Timeout time.Duration
 
 	// CommandTimeout bounds a single RunScript call. Default 5m. A wedged
