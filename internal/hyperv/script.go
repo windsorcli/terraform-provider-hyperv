@@ -68,7 +68,16 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 		return nil
 	}
 	if len(bytes.TrimSpace(res.Stdout)) == 0 {
-		return fmt.Errorf("%w: exit 0 but empty stdout (preamble or encoding pin failed?)", ErrPSExecution)
+		// Empty stdout with exit 0 has three plausible causes: the
+		// script's entry block never ran (something killed PS cleanly
+		// before any output), the transport lost stdout (Windows
+		// OpenSSH channel-close race under load), or the script ran
+		// fine but only wrote to CLIXML-stripped stderr. Surface every
+		// signal we have so the next reproduction tells us which.
+		return fmt.Errorf("%w: exit 0 but empty stdout; "+
+			"script_bytes=%d duration=%s stderr_bytes=%d stderr=%q",
+			ErrPSExecution, len(full), res.Duration,
+			len(res.Stderr), strings.TrimSpace(string(res.Stderr)))
 	}
 	if err := json.Unmarshal(res.Stdout, dst); err != nil {
 		return fmt.Errorf("%w: decode result: %w; stdout=%s", ErrPSExecution, err, string(res.Stdout))
