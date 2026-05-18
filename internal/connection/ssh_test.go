@@ -577,7 +577,7 @@ func TestSSH_NewSSHZerosCredentialBytes(t *testing.T) {
 		Username:       "Administrator",
 		Password:       password,
 		PrivateKey:     privateKey,
-		KnownHostsPath: "/dev/null",
+		KnownHostsPath: writeKnownHostsFile(t),
 	})
 	if err != nil {
 		t.Fatalf("NewSSH: %v", err)
