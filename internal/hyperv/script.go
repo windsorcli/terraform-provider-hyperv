@@ -68,7 +68,10 @@ func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, d
 		return nil
 	}
 	if len(bytes.TrimSpace(res.Stdout)) == 0 {
-		return fmt.Errorf("%w: exit 0 but empty stdout (preamble or encoding pin failed?)", ErrPSExecution)
+		return fmt.Errorf("%w: exit 0 but empty stdout; "+
+			"script_bytes=%d duration=%s stderr_bytes=%d stderr=%q",
+			ErrPSExecution, len(full), res.Duration,
+			len(res.Stderr), strings.TrimSpace(string(res.Stderr)))
 	}
 	if err := json.Unmarshal(res.Stdout, dst); err != nil {
 		return fmt.Errorf("%w: decode result: %w; stdout=%s", ErrPSExecution, err, string(res.Stdout))

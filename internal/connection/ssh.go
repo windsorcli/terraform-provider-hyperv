@@ -678,6 +678,10 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 // destination directory is missing. Resources that need parent-dir
 // creation should issue a one-line `New-Item -ItemType Directory -Force`
 // via RunScript before calling this.
+//
+// No wall-clock cap is applied -- transfers run as long as the payload
+// requires. SSH keepalive (alive=false on a stalled session) and ctx
+// cancellation are the remaining bounds.
 func (b *sshBackend) StreamFile(ctx context.Context, localPath, remotePath string) error {
 	b.mu.Lock()
 	client := b.client
