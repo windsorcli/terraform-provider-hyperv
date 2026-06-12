@@ -632,7 +632,7 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 	if err != nil {
 		return "", fmt.Errorf("winrm: soap post: %w", err)
 	}
-	defer soapResp.Body.Close()
+	defer func() { _ = soapResp.Body.Close() }()
 
 	respBody, err := io.ReadAll(soapResp.Body)
 	if err != nil {
