@@ -698,6 +698,7 @@ func decryptWinRMEncryptedResponse(respBody []byte, session interface {
 			payload = payload[:idx]
 		}
 		payload = bytes.ReplaceAll(payload, []byte("\tContent-Type: application/octet-stream\r\n"), nil)
+		payload = bytes.TrimRight(payload, "\r\n")
 
 		if len(payload) < 4 {
 			return nil, fmt.Errorf("winrm: encrypted payload too short (%d bytes)", len(payload))
