@@ -250,7 +250,7 @@ func BenchCanReach(t *testing.T, client *hyperv.Client, url string) bool {
 			`Add-Type -AssemblyName System.Net.Http; `+
 			`$h = [System.Net.Http.HttpClient]::new(); `+
 			`$h.Timeout = [System.TimeSpan]::FromSeconds(5); `+
-			`try { $null = $h.GetAsync(%[1]q).GetAwaiter().GetResult() } finally { $h.Dispose() }; `+
+			`try { $null = $h.GetAsync('%s').GetAwaiter().GetResult() } finally { $h.Dispose() }; `+
 			`'ok'`+
 			`} catch { 'unreachable' }`,
 		url)
