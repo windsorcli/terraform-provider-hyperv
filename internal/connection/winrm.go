@@ -551,6 +551,7 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 		TLSClientConfig:       tlsCfg,
 		ResponseHeaderTimeout: t.endpoint.Timeout,
 	}
+	defer httpTransport.CloseIdleConnections()
 	httpClient := &http.Client{Transport: httpTransport}
 
 	// ntlmhttplib.Client without Encryption option: used only for transport
