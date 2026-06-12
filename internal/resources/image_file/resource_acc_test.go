@@ -289,6 +289,10 @@ func TestAcc_ImageFile_urlGzip(t *testing.T) {
 	url := srv.URL + "/fixture.bin.gz"
 	checksum := "sha256:" + compressedHex
 
+	if !acctest.BenchCanReach(t, client, url) {
+		t.Skipf("bench cannot reach fixture server at %s (asymmetric routing); skipping url-mode test", url)
+	}
+
 	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-gz")+".bin"))
 
 	resource.Test(t, resource.TestCase{
@@ -364,6 +368,10 @@ func TestAcc_ImageFile_urlXz(t *testing.T) {
 	url := srv.URL + "/fixture.bin.xz"
 	checksum := "sha256:" + compressedHex
 
+	if !acctest.BenchCanReach(t, client, url) {
+		t.Skipf("bench cannot reach fixture server at %s (asymmetric routing); skipping url-mode test", url)
+	}
+
 	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-xz")+".bin"))
 
 	resource.Test(t, resource.TestCase{
@@ -428,6 +436,10 @@ func TestAcc_ImageFile_urlZstd(t *testing.T) {
 	srv := acctest.ServeFixture(t, runnerIP, compressed)
 	url := srv.URL + "/fixture.bin.zst"
 	checksum := "sha256:" + compressedHex
+
+	if !acctest.BenchCanReach(t, client, url) {
+		t.Skipf("bench cannot reach fixture server at %s (asymmetric routing); skipping url-mode test", url)
+	}
 
 	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-zst")+".bin"))
 
