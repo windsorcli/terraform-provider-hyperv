@@ -193,6 +193,16 @@ func TestAcc_ImageFile_url(t *testing.T) {
 	url := srv.URL + "/fixture.bin"
 	checksum := "sha256:" + hexSum
 
+	// Pre-flight: verify the bench can reach the fixture server. The UDP
+	// routing-table trick in RunnerIPForBench reveals the runner's source IP
+	// but cannot tell whether the bench has a return path to it. Tailscale
+	// subnet routing is the common case where it doesn't: the Mac routes to
+	// the bench via Tailscale (source = 100.x.x.x Tailscale CGNAT), but the
+	// bench has no Tailscale and cannot route back to 100.x.x.x.
+	if !acctest.BenchCanReach(t, client, url) {
+		t.Skipf("bench cannot reach fixture server at %s (asymmetric routing); skipping url-mode test", url)
+	}
+
 	// Forward-slash form for the same reason as TestAcc_ImageFile_hostPath
 	// -- exercises pathtype.Path's StringSemanticEquals against the bench.
 	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-url")+".bin"))
