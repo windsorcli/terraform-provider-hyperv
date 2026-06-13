@@ -35,7 +35,7 @@ func TestWinRMBenchSmoke(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     host,
 		Username: user,
-		Password: pw,
+		Password: []byte(pw),
 		UseHTTPS: true,
 		Insecure: true, // self-signed cert on the dev bench
 		Auth:     "ntlm",
@@ -108,7 +108,7 @@ func TestWinRMBenchSmoke_StreamFile(t *testing.T) {
 	conn, err := NewWinRM(WinRMOptions{
 		Host:     host,
 		Username: user,
-		Password: pw,
+		Password: []byte(pw),
 		UseHTTPS: true,
 		Insecure: true,
 		Auth:     "ntlm",
@@ -227,7 +227,7 @@ func TestWinRMBenchSmoke_Kerberos(t *testing.T) {
 		opts.KrbCCachePath = ccache
 		mode = "ccache"
 	} else {
-		opts.Password = pw
+		opts.Password = []byte(pw)
 	}
 
 	conn, err := NewWinRM(opts)
