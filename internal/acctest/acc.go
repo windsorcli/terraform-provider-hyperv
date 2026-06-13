@@ -235,6 +235,33 @@ func ServeFixture(t *testing.T, ip string, body []byte) *httptest.Server {
 	return srv
 }
 
+// BenchCanReach returns true when an HTTP GET from the bench to url
+// succeeds within 5 s. Used as a skip guard for url-mode fixture-server
+// tests: if the bench is on a different network from the runner (e.g.
+// reached via Tailscale subnet routing), the runner's source IP may not
+// be reachable from the bench and any test that requires the bench to
+// download from the runner must skip.
+func BenchCanReach(t *testing.T, client *hyperv.Client, url string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	script := fmt.Sprintf(
+		`try {`+
+			`Add-Type -AssemblyName System.Net.Http; `+
+			`$h = [System.Net.Http.HttpClient]::new(); `+
+			`$h.Timeout = [System.TimeSpan]::FromSeconds(5); `+
+			`try { $null = $h.GetAsync('%s').GetAwaiter().GetResult() } finally { $h.Dispose() }; `+
+			`'ok'`+
+			`} catch { 'unreachable' }`,
+		url)
+	res, err := client.RunScript(ctx, script, nil)
+	if err != nil {
+		t.Logf("BenchCanReach: RunScript error: %v", err)
+		return false
+	}
+	return strings.TrimSpace(string(res.Stdout)) == "ok"
+}
+
 // NewClient builds a *hyperv.Client from the bench's HYPERV_* env vars.
 // Used by CheckDestroy assertions that need to query Hyper-V directly --
 // the provider's own client is owned by the framework's per-test
