@@ -670,7 +670,7 @@ const winrmProtocolString = "application/HTTP-SPNEGO-session-encrypted"
 // Windows WinRM service can validate the decrypted payload size.
 func buildWinRMEncryptedBody(plaintext, sealed, signature []byte) []byte {
 	dashBoundary := "--" + winrmMIMEBoundary
-	blob := binary.LittleEndian.AppendUint32(nil, uint32(len(signature))) //nolint:gosec // G115: NTLM signatures are always 16 bytes
+	blob := binary.LittleEndian.AppendUint32(nil, uint32(len(signature))) // #nosec G115 -- NTLM signatures are always 16 bytes
 	blob = append(blob, signature...)
 	blob = append(blob, sealed...)
 
