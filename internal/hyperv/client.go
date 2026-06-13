@@ -1,7 +1,6 @@
 package hyperv
 
 import (
-	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -84,13 +83,6 @@ func NewClient(r connection.Runner, opts ...ClientOption) *Client {
 		opt(c)
 	}
 	return c
-}
-
-// RunScript executes a PowerShell script on the remote host via the
-// underlying runner. Exposed so acceptance-test helpers can run
-// connectivity pre-checks without needing a separate connection.
-func (c *Client) RunScript(ctx context.Context, script string, stdinJSON []byte) (connection.Result, error) {
-	return c.runner.RunScript(ctx, script, stdinJSON)
 }
 
 // defaultHTTPClient builds the runner-pipelined fetch client off a clone
