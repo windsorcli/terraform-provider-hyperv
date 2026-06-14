@@ -11,6 +11,8 @@ BeforeAll {
 
 Describe 'New-HypervImageFileFromUrl' {
 
+    BeforeEach { Mock New-Item { } }
+
     Context 'happy path (url mode)' {
 
         It 'downloads to a sibling .part file in the destination directory' {
@@ -182,6 +184,47 @@ Describe 'New-HypervImageFileFromUrl' {
             Should -Invoke Remove-Item -Times 0 -Exactly
         }
     }
+
+    Context 'parent directory creation (url mode)' {
+
+        It 'creates the parent directory of the destination path before writing the .part file' {
+            # New-Item -Force is a no-op if the directory already exists, so this
+            # call is safe on first-apply (missing dir) and subsequent applies
+            # (dir present). The test uses Split-Path on the same literal path so
+            # the expected-dir computation is platform-consistent across Mac (where
+            # backslash paths have no directory component) and Windows (where they do).
+            Mock Save-HypervHttpFile { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Test-Path { $false }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            New-HypervImageFileFromUrl `
+                -DestinationPath 'C:\images\ubuntu.vhdx' `
+                -Url 'https://example.com/ubuntu.vhdx' `
+                -ExpectedSha256 'expected' | Out-Null
+
+            $expectedDir = Split-Path -LiteralPath 'C:\images\ubuntu.vhdx'
+            Should -Invoke New-Item -Times 1 -Exactly -ParameterFilter {
+                $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $expectedDir
+            }
+        }
+
+        It 'does not throw when the parent directory already exists' {
+            Mock Save-HypervHttpFile { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Test-Path { $false }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            { New-HypervImageFileFromUrl `
+                -DestinationPath 'C:\images\ubuntu.vhdx' `
+                -Url 'https://example.com/ubuntu.vhdx' `
+                -ExpectedSha256 'expected' } | Should -Not -Throw
+        }
+    }
 }
 
 Describe 'New-HypervImageFileFromHostPath' {
@@ -213,6 +256,21 @@ Describe 'New-HypervImageFileFromHostPath' {
 
             Should -Invoke Save-HypervHttpFile -Times 0 -Exactly
             Should -Invoke Move-Item           -Times 0 -Exactly
+        }
+
+        It 'never creates the parent directory (verify-only: path must already be complete)' {
+            # host_path mode attests that the file exists at the declared path;
+            # silently creating the parent directory would be misleading -- if
+            # the directory is missing the file can't exist there either, and the
+            # ObjectNotFound error from Test-Path is the correct signal.
+            Mock Test-Path { $true }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Get-FileHash { New-HypervImageFileHashSample }
+            Mock New-Item { }
+
+            New-HypervImageFileFromHostPath -DestinationPath 'C:\share\foo.vhdx' | Out-Null
+
+            Should -Invoke New-Item -Times 0 -Exactly
         }
     }
 
@@ -255,6 +313,8 @@ Describe 'New-HypervImageFileFromHostPath' {
 }
 
 Describe 'New-HypervImageFileFromLocalPath' {
+
+    BeforeEach { Mock New-Item { } }
 
     Context 'happy path (local_path mode)' {
 
@@ -731,6 +791,45 @@ Describe 'New-HypervImageFileFromLocalPath' {
             Should -Invoke Set-VMDvdDrive -Times 0 -Exactly
             Should -Invoke Copy-Item      -Times 0 -Exactly
             Should -Invoke Move-Item      -Times 1 -Exactly
+        }
+    }
+
+    Context 'parent directory creation (local_path mode)' {
+
+        It 'creates the parent directory of the destination path before renaming the staging file' {
+            # New-Item -Force is a no-op if the directory already exists, so this
+            # call is safe on both first-apply (missing dir) and subsequent applies
+            # (dir present). The test uses Split-Path on the same literal path so
+            # the expected-dir computation is platform-consistent across Mac (where
+            # backslash paths have no directory component) and Windows.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            New-HypervImageFileFromLocalPath `
+                -DestinationPath 'C:\images\ubuntu.vhdx' `
+                -StagingPath     'C:\images\ubuntu.vhdx.part-abc123' `
+                -ExpectedSha256  'expected' | Out-Null
+
+            $expectedDir = Split-Path -LiteralPath 'C:\images\ubuntu.vhdx'
+            Should -Invoke New-Item -Times 1 -Exactly -ParameterFilter {
+                $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $expectedDir
+            }
+        }
+
+        It 'does not throw when the parent directory already exists' {
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            { New-HypervImageFileFromLocalPath `
+                -DestinationPath 'C:\images\ubuntu.vhdx' `
+                -StagingPath     'C:\images\ubuntu.vhdx.part-abc123' `
+                -ExpectedSha256  'expected' } | Should -Not -Throw
         }
     }
 }

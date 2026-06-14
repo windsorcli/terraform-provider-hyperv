@@ -107,6 +107,11 @@ function New-HypervImageFileFromUrl {
         [Parameter(Mandatory)] [string] $Url,
         [Parameter()]          [string] $ExpectedSha256 = ''
     )
+    # Create the destination directory if absent. New-Item -Force is a no-op when
+    # the directory already exists; -ErrorAction Stop surfaces a permission failure
+    # as a terminating error rather than a silent skip.
+    New-Item -ItemType Directory -Force `
+        -Path (Split-Path -LiteralPath $DestinationPath) -ErrorAction Stop | Out-Null
     $tempPath = "$DestinationPath.part-$([guid]::NewGuid().ToString('n'))"
     try {
         Save-HypervHttpFile -Url $Url -OutFile $tempPath
@@ -304,6 +309,12 @@ function New-HypervImageFileFromLocalPath {
         [Parameter(Mandatory)] [string] $ExpectedSha256,
         [switch]                        $ReplaceWhileMounted
     )
+    # Create the destination directory if absent. Same -Force/-ErrorAction Stop
+    # pattern as url-mode: idempotent when the directory already exists, explicit
+    # failure on permission errors rather than a confusing DirectoryNotFoundException
+    # from the downstream Move-Item.
+    New-Item -ItemType Directory -Force `
+        -Path (Split-Path -LiteralPath $DestinationPath) -ErrorAction Stop | Out-Null
     try {
         if (-not (Test-Path -LiteralPath $StagingPath -PathType Leaf)) {
             $exception = [System.Management.Automation.ItemNotFoundException]::new(
