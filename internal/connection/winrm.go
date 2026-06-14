@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -359,14 +360,19 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	}
 	defer func() { _ = src.Close() }()
 
-	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> WinRM
-	// stdin. The line wrap is what lets the PS receiver process input
-	// via ReadLine, keeping its working set proportional to one base64
-	// line (~57 decoded bytes) instead of the entire payload. The
-	// goroutine drives the encoder and closes the pipe when done so
-	// RunWithContextWithInput sees clean EOF.
+	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> bufio
+	// buffer -> WinRM stdin. The bufio layer batches many small line
+	// writes into large pipe writes, reducing WinRM Send-Input round-trips
+	// from O(lines) to O(file_size / streamFileBufSize). The line wrap
+	// still lets the PS receiver decode each line independently via
+	// ReadLine + FromBase64String with constant host memory pressure.
+	//
+	// Close order is load-bearing: enc must flush its padding bytes into
+	// lw before lw emits its trailing newline into bufW, and bufW must
+	// flush its remaining bytes into pw before pw signals EOF.
 	pr, pw := io.Pipe()
-	lw := newLineWrappedWriter(pw, base64LineLen)
+	bufW := bufio.NewWriterSize(pw, streamFileBufSize)
+	lw := newLineWrappedWriter(bufW, base64LineLen)
 	enc := base64.NewEncoder(base64.StdEncoding, lw)
 
 	go func() {
@@ -377,7 +383,10 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 			if err := enc.Close(); err != nil {
 				return err
 			}
-			return lw.Close()
+			if err := lw.Close(); err != nil {
+				return err
+			}
+			return bufW.Flush()
 		}()
 		if err != nil {
 			_ = pw.CloseWithError(err)
@@ -408,6 +417,17 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 // each line is a self-contained base64 string the receiver can
 // FromBase64String without joining lines.
 const base64LineLen = 76
+
+// streamFileBufSize is the bufio buffer between the line-wrapped writer
+// and the pipe writer in StreamFile. Each Flush produces one large pipe
+// write that the WinRM library sends as a single Send-Input envelope,
+// reducing round-trips from O(lines) to O(file_size/streamFileBufSize).
+//
+// The ceiling is the WinRM shell's MaxEnvelopeSizekb setting (default
+// 500 KB = 512 000 bytes on Server 2022). 400 KB leaves comfortable
+// headroom for SOAP/XML framing overhead. Confirm against the bench
+// host's actual MaxEnvelopeSizekb before raising this value.
+const streamFileBufSize = 400 * 1024
 
 // buildWinRMStreamFileScript emits a single-statement PS body that reads
 // newline-delimited base64 from stdin and writes the decoded bytes to
@@ -565,15 +585,14 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 		return "", fmt.Errorf("winrm: create ntlmhttp client: %w", err)
 	}
 
+	scheme := "http"
+	if t.endpoint.HTTPS {
+		scheme = "https"
+	}
 	endpointURL := (&url.URL{
-		Scheme: func() string {
-			if t.endpoint.HTTPS {
-				return "https"
-			}
-			return "http"
-		}(),
-		Host: net.JoinHostPort(t.endpoint.Host, strconv.Itoa(t.endpoint.Port)),
-		Path: "/wsman",
+		Scheme: scheme,
+		Host:   net.JoinHostPort(t.endpoint.Host, strconv.Itoa(t.endpoint.Port)),
+		Path:   "/wsman",
 	}).String()
 
 	// Phase 1: empty POST to establish the NTLM session. ntlmhttplib performs
