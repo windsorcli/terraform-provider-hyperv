@@ -266,9 +266,10 @@ func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec str
 // Adapter notes per codec:
 //
 //   - gz: gzip.NewReader returns *gzip.Reader, already an io.ReadCloser.
-//   - xz: ulikunitz/xz returns *xz.Reader (Reader-only) -- wrap with
-//     io.NopCloser. The package allocates only Go memory, no goroutines
-//     or finalizers, so a real Close is unnecessary.
+//   - xz: ulikunitz/xz returns *xz.Reader (Reader-only) -- wrap in
+//     xzReader (typed error sentinel adapter) then io.NopCloser. The
+//     package allocates only Go memory, no goroutines or finalizers,
+//     so a real Close is unnecessary.
 //   - zst: klauspost zstd.NewReader returns *zstd.Decoder whose Close()
 //     returns no value (signature is Close()), so it doesn't satisfy
 //     io.Closer directly. zstdReadCloser shims it. The Decoder spawns
@@ -285,7 +286,7 @@ func newDecompressor(codec string, src io.Reader) (io.ReadCloser, error) {
 		if err != nil {
 			return nil, err
 		}
-		return io.NopCloser(r), nil
+		return io.NopCloser(&xzReader{r: r}), nil
 	case "zst":
 		d, err := zstd.NewReader(src)
 		if err != nil {
@@ -314,11 +315,30 @@ func (z zstdReadCloser) Close() error {
 	return nil
 }
 
+// xzStreamError wraps a decoding error returned by ulikunitz/xz during Read
+// so that isDecompressionStreamError can use errors.As instead of
+// string-prefix matching against internal package messages.
+type xzStreamError struct{ cause error }
+
+func (e *xzStreamError) Error() string { return e.cause.Error() }
+func (e *xzStreamError) Unwrap() error { return e.cause }
+
+// xzReader wraps *xz.Reader and re-wraps any non-EOF Read error as
+// *xzStreamError, giving callers a stable typed sentinel.
+type xzReader struct{ r *xz.Reader }
+
+func (x *xzReader) Read(p []byte) (int, error) {
+	n, err := x.r.Read(p)
+	if err != nil && err != io.EOF {
+		return n, &xzStreamError{cause: err}
+	}
+	return n, err
+}
+
 // isDecompressionStreamError reports whether err -- surfaced from
 // io.Copy through the codec's Reader -- is data corruption rather than
 // a transport-level fault. Per-codec because each library exposes its
-// own typed sentinels (or, in xz's case, doesn't expose stable typed
-// sentinels at all and relies on its eager-fail-on-NewReader path).
+// own typed sentinels.
 //
 // Returning false on transport-shaped errors is load-bearing: the
 // callers anchor ErrDecompressionFailed on `url.compression` in the
@@ -330,28 +350,8 @@ func isDecompressionStreamError(codec string, err error) bool {
 	case "gz":
 		return errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader)
 	case "xz":
-		// ulikunitz/xz exposes no exported error sentinels and emits
-		// failures from three different internal packages with
-		// inconsistent prefixes:
-		//
-		//   - "xz: ..."         (top-level package: header/footer/index)
-		//   - "lzma: ..."       (lzma sub-package: chunk/state errors)
-		//   - "writeMatch: ..." (decoder dictionary: distance/length OOB)
-		//
-		// Network and ctx errors carry none of these markers (the
-		// underlying Reader passes them through verbatim), so the
-		// prefix set cleanly separates "publisher served corrupt xz"
-		// from "link dropped mid-pull." This heuristic is brittle to
-		// upstream message renames; the xz mid-stream regression test
-		// pins enough of the surface that a drift surfaces loudly
-		// rather than silently degrading.
-		if err == nil {
-			return false
-		}
-		s := err.Error()
-		return strings.HasPrefix(s, "xz: ") ||
-			strings.HasPrefix(s, "lzma: ") ||
-			strings.HasPrefix(s, "writeMatch:")
+		var e *xzStreamError
+		return errors.As(err, &e)
 	case "zst":
 		// klauspost/compress/zstd defers magic-header validation to
 		// the first Read rather than NewReader, so ErrMagicMismatch
