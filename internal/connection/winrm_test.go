@@ -714,10 +714,11 @@ func buildEncryptedResponseBody(payload []byte, originalLen int) []byte {
 // makePayload encodes sig + sealed into the wire format: 4-byte LE sigLen
 // followed by the signature bytes followed by the sealed bytes.
 func makePayload(sig, sealed []byte) []byte {
-	hdr := make([]byte, 4)
-	binary.LittleEndian.PutUint32(hdr, uint32(len(sig)))
-	out := append(hdr, sig...)
-	return append(out, sealed...)
+	buf := make([]byte, 4+len(sig)+len(sealed))
+	binary.LittleEndian.PutUint32(buf, uint32(len(sig)))
+	copy(buf[4:], sig)
+	copy(buf[4+len(sig):], sealed)
+	return buf
 }
 
 // TestDecryptWinRMEncryptedResponse_Normal verifies the happy path: a
