@@ -3,6 +3,7 @@ package hyperv
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -829,11 +830,11 @@ func TestClient_NewImageFileFromURL_XzDecompressionFailed(t *testing.T) {
 // xz mid-stream corruption (valid header, broken block) must also
 // surface as ErrDecompressionFailed. The eager-fail path at NewReader
 // doesn't cover bytes that pass the header check then fail at block
-// decode; ulikunitz/xz has no exported error sentinels, so
-// isDecompressionStreamError matches on the package's message-prefix
-// markers ("xz:", "lzma:", "writeMatch:"). This test pins that
-// contract by corrupting a byte well past the header and asserting
-// the typed sentinel still flows through.
+// decode; xzReader wraps Read errors as *xzStreamError so
+// isDecompressionStreamError can use errors.As rather than
+// string-prefix matching. This test pins that contract by corrupting
+// a byte well past the header and asserting the typed sentinel still
+// flows through.
 func TestClient_NewImageFileFromURL_XzMidStreamCorruption(t *testing.T) {
 	t.Parallel()
 
@@ -873,6 +874,43 @@ func TestClient_NewImageFileFromURL_XzMidStreamCorruption(t *testing.T) {
 	if len(fr.StreamCalls()) != 0 {
 		t.Errorf("StreamCalls = %d, want 0 (mid-stream corruption must short-circuit)",
 			len(fr.StreamCalls()))
+	}
+}
+
+// A context cancellation mid-pull must surface as a context error, not
+// ErrDecompressionFailed. xzReader must pass transport errors through
+// unwrapped so the caller can distinguish a dropped connection from
+// corrupt xz data.
+func TestClient_NewImageFileFromURL_XzContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	plain := bytes.Repeat([]byte("xz transport error fixture "), 200)
+	compressed := xzBytes(t, plain)
+
+	// Serve the xz bytes, but cancel the context before any bytes are read
+	// so the HTTP body reader returns context.Canceled through xzReader.Read.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(compressed)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(ctx, NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/x.vhdx",
+		URL:             srv.URL + "/payload.xz",
+		Compression:     "xz",
+	})
+	if errors.Is(err, ErrDecompressionFailed) {
+		t.Errorf("err = %v, got ErrDecompressionFailed; transport error must not be remapped", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 
