@@ -189,10 +189,10 @@ Describe 'New-HypervImageFileFromUrl' {
 
         It 'creates the parent directory of the destination path before writing the .part file' {
             # New-Item -Force is a no-op if the directory already exists, so this
-            # call is safe on first-apply (missing dir) and subsequent applies
-            # (dir present). The test uses Split-Path on the same literal path so
-            # the expected-dir computation is platform-consistent across Mac (where
-            # backslash paths have no directory component) and Windows (where they do).
+            # call is safe on first-apply (missing dir) and subsequent applies (dir
+            # present). On non-Windows Pester runs Split-Path returns '' for backslash
+            # paths, triggering the $dir guard and skipping New-Item -- both outcomes
+            # are verified below via the platform-conditional branch.
             Mock Save-HypervHttpFile { }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
             Mock Move-Item { }
@@ -205,9 +205,15 @@ Describe 'New-HypervImageFileFromUrl' {
                 -Url 'https://example.com/ubuntu.vhdx' `
                 -ExpectedSha256 'expected' | Out-Null
 
-            $expectedDir = Split-Path -LiteralPath 'C:\images\ubuntu.vhdx'
-            Should -Invoke New-Item -Times 1 -Exactly -ParameterFilter {
-                $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $expectedDir
+            $dir = Split-Path -LiteralPath 'C:\images\ubuntu.vhdx'
+            if ($dir) {
+                Should -Invoke New-Item -Times 1 -Exactly -ParameterFilter {
+                    $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $dir
+                }
+            } else {
+                # Non-Windows: backslash paths yield '' from Split-Path; the guard
+                # skips New-Item entirely -- the function must still not throw.
+                Should -Invoke New-Item -Times 0 -Exactly
             }
         }
 
@@ -223,6 +229,27 @@ Describe 'New-HypervImageFileFromUrl' {
                 -DestinationPath 'C:\images\ubuntu.vhdx' `
                 -Url 'https://example.com/ubuntu.vhdx' `
                 -ExpectedSha256 'expected' } | Should -Not -Throw
+        }
+
+        It 'skips New-Item when destination has no directory component (bare filename)' {
+            # Locks the $dir guard: Split-Path returns '' for a bare filename on every
+            # platform, so New-Item must not be called -- calling it with -Path ''
+            # would throw ParameterBindingValidationException before the download begins.
+            # In production the schema validator rejects relative paths; this test locks
+            # the script-layer contract independently.
+            Mock Save-HypervHttpFile { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Test-Path { $false }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            { New-HypervImageFileFromUrl `
+                -DestinationPath 'ubuntu.vhdx' `
+                -Url 'https://example.com/ubuntu.vhdx' `
+                -ExpectedSha256 'expected' } | Should -Not -Throw
+
+            Should -Invoke New-Item -Times 0 -Exactly
         }
     }
 }
@@ -797,11 +824,9 @@ Describe 'New-HypervImageFileFromLocalPath' {
     Context 'parent directory creation (local_path mode)' {
 
         It 'creates the parent directory of the destination path before renaming the staging file' {
-            # New-Item -Force is a no-op if the directory already exists, so this
-            # call is safe on both first-apply (missing dir) and subsequent applies
-            # (dir present). The test uses Split-Path on the same literal path so
-            # the expected-dir computation is platform-consistent across Mac (where
-            # backslash paths have no directory component) and Windows.
+            # Same platform-conditional pattern as url-mode: on non-Windows Pester
+            # runs Split-Path returns '' for backslash paths, the $dir guard skips
+            # New-Item, and the function must still not throw.
             Mock Test-Path { $true }
             Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
             Mock Move-Item { }
@@ -813,9 +838,13 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -StagingPath     'C:\images\ubuntu.vhdx.part-abc123' `
                 -ExpectedSha256  'expected' | Out-Null
 
-            $expectedDir = Split-Path -LiteralPath 'C:\images\ubuntu.vhdx'
-            Should -Invoke New-Item -Times 1 -Exactly -ParameterFilter {
-                $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $expectedDir
+            $dir = Split-Path -LiteralPath 'C:\images\ubuntu.vhdx'
+            if ($dir) {
+                Should -Invoke New-Item -Times 1 -Exactly -ParameterFilter {
+                    $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $dir
+                }
+            } else {
+                Should -Invoke New-Item -Times 0 -Exactly
             }
         }
 
@@ -830,6 +859,23 @@ Describe 'New-HypervImageFileFromLocalPath' {
                 -DestinationPath 'C:\images\ubuntu.vhdx' `
                 -StagingPath     'C:\images\ubuntu.vhdx.part-abc123' `
                 -ExpectedSha256  'expected' } | Should -Not -Throw
+        }
+
+        It 'skips New-Item when destination has no directory component (bare filename)' {
+            # Locks the $dir guard for local_path mode: a bare filename produces ''
+            # from Split-Path on every platform, so New-Item must not be called.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            { New-HypervImageFileFromLocalPath `
+                -DestinationPath 'ubuntu.vhdx' `
+                -StagingPath     'ubuntu.vhdx.part-abc123' `
+                -ExpectedSha256  'expected' } | Should -Not -Throw
+
+            Should -Invoke New-Item -Times 0 -Exactly
         }
     }
 }
