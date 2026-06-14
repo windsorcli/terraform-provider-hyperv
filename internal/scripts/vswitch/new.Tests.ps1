@@ -360,11 +360,13 @@ Describe 'New-HypervSwitch' {
         }
 
         It 'rejects a NatInternalAddressPrefix that is not a valid CIDR' {
-            { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
-                -NatName 'windsor-nat' `
-                -NatInternalAddressPrefix 'not-a-cidr' `
-                -NatHostAddress '192.168.100.1' } |
-                Should -Throw -ExpectedMessage "*not a valid CIDR*"
+            foreach ($bad in @('not-a-cidr', '1/24', '1.2.3.4.5/24')) {
+                { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                    -NatName 'windsor-nat' `
+                    -NatInternalAddressPrefix $bad `
+                    -NatHostAddress '192.168.100.1' } |
+                    Should -Throw -ExpectedMessage "*not a valid CIDR*"
+            }
         }
     }
 }
