@@ -818,7 +818,7 @@ func TestParseWinRMOriginalContentLength(t *testing.T) {
 		{"type=application/soap+xml;charset=UTF-8;Length=1234", 1234, false},
 		{"Length=0", 0, false},
 		{"charset=UTF-8;Length=99;type=application/soap+xml", 99, false},
-		{"type=application/soap+xml;charset=UTF-8", 0, true},  // missing Length
+		{"type=application/soap+xml;charset=UTF-8", 0, true},            // missing Length
 		{"type=application/soap+xml;charset=UTF-8;Length=abc", 0, true}, // non-numeric
 	}
 	for _, c := range cases {
