@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -330,6 +331,15 @@ type xzReader struct{ r *xz.Reader }
 func (x *xzReader) Read(p []byte) (int, error) {
 	n, err := x.r.Read(p)
 	if err != nil && err != io.EOF {
+		// Pass transport errors through unwrapped so the caller can
+		// distinguish a dropped connection from corrupt xz data.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return n, err
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) {
+			return n, err
+		}
 		return n, &xzStreamError{cause: err}
 	}
 	return n, err
