@@ -765,6 +765,9 @@ func parseWinRMOriginalContentLength(line string) (int, error) {
 			if err != nil {
 				return 0, fmt.Errorf("invalid OriginalContent Length %q: %w", field, err)
 			}
+			if n < 0 {
+				return 0, fmt.Errorf("invalid OriginalContent Length %q: must be non-negative", field)
+			}
 			return n, nil
 		}
 	}
