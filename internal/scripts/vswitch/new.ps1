@@ -137,7 +137,11 @@ function New-HypervNatSwitch {
     }
 
     # Derive PrefixLength from the CIDR. The Go-side schema validator
-    # already shape-checked this string, so split-and-int is safe.
+    # already shape-checked this string at plan time; this guard is
+    # belt-and-braces for direct script invocations that bypass validation.
+    if ($NatInternalAddressPrefix -notmatch '^[\d.]+/\d+$') {
+        throw "nat_internal_address_prefix '$NatInternalAddressPrefix' is not a valid CIDR (expected 'A.B.C.D/N')."
+    }
     $prefixLength = [int]($NatInternalAddressPrefix.Split('/')[1])
 
     $vmsArgs = @{

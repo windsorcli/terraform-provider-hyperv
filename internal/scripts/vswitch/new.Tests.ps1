@@ -358,5 +358,13 @@ Describe 'New-HypervSwitch' {
                 -NatHostAddress '192.168.100.1' } |
                 Should -Throw -ExpectedMessage '*original NetNat failure*'
         }
+
+        It 'rejects a NatInternalAddressPrefix that is not a valid CIDR' {
+            { New-HypervSwitch -Name 'windsor-nat' -SwitchType 'NAT' `
+                -NatName 'windsor-nat' `
+                -NatInternalAddressPrefix 'not-a-cidr' `
+                -NatHostAddress '192.168.100.1' } |
+                Should -Throw -ExpectedMessage "*not a valid CIDR*"
+        }
     }
 }
