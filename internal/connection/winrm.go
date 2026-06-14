@@ -423,11 +423,14 @@ const base64LineLen = 76
 // write that the WinRM library sends as a single Send-Input envelope,
 // reducing round-trips from O(lines) to O(file_size/streamFileBufSize).
 //
-// The ceiling is the WinRM shell's MaxEnvelopeSizekb setting (default
-// 500 KB = 512 000 bytes on Server 2022). 400 KB leaves comfortable
-// headroom for SOAP/XML framing overhead. Confirm against the bench
-// host's actual MaxEnvelopeSizekb before raising this value.
-const streamFileBufSize = 400 * 1024
+// Size constraint: the buffer already contains base64 text. WinRM
+// base64-encodes stdin a second time inside the <rsp:Stream> element,
+// so the on-wire size is bufSize × 4/3. The safe ceiling before SOAP
+// framing is MaxEnvelopeSizekb × 3/4: with the default 500 KB envelope
+// (500 × 1024 = 512 000 bytes) that is 384 000 bytes. 360 KB leaves
+// ~20 KB for SOAP/XML framing overhead and keeps us comfortably under
+// the limit on unmodified Server 2022 hosts.
+const streamFileBufSize = 360 * 1024
 
 // buildWinRMStreamFileScript emits a single-statement PS body that reads
 // newline-delimited base64 from stdin and writes the decoded bytes to
