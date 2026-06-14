@@ -3,6 +3,8 @@ package connection
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -684,6 +686,157 @@ func TestWinRM_CloseZerosPasswordBytes(t *testing.T) {
 	for i, b := range original {
 		if b != 0 {
 			t.Errorf("original[%d] = %d, want 0 (Close should have zeroed all bytes)", i, b)
+		}
+	}
+}
+
+// identitySession is a test double for the NTLM session: Unwrap returns sealed
+// unchanged so tests can control plaintext without real NTLM crypto.
+type identitySession struct{}
+
+func (identitySession) Unwrap(sealed, _ []byte) ([]byte, error) { return sealed, nil }
+
+// buildEncryptedResponseBody constructs a WS-Management multipart/encrypted
+// response body in the format Windows WinRM uses (tab-indented headers, no
+// blank line before binary body). originalLen must equal len(payload) - 4 -
+// sigLen (i.e. the sealed data length, which equals the plaintext length for
+// NTLM RC4).
+func buildEncryptedResponseBody(payload []byte, originalLen int) []byte {
+	dashBoundary := "--" + winrmMIMEBoundary
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%s\r\n\tContent-Type: %s\r\n\tOriginalContent: type=application/soap+xml;charset=UTF-8;Length=%d\r\n%s\r\n\tContent-Type: application/octet-stream\r\n",
+		dashBoundary, winrmProtocolString, originalLen, dashBoundary)
+	buf.Write(payload)
+	fmt.Fprintf(&buf, "\r\n%s--\r\n", dashBoundary)
+	return buf.Bytes()
+}
+
+// makePayload encodes sig + sealed into the wire format: 4-byte LE sigLen
+// followed by the signature bytes followed by the sealed bytes.
+func makePayload(sig, sealed []byte) []byte {
+	buf := make([]byte, 4+len(sig)+len(sealed))
+	binary.LittleEndian.PutUint32(buf, uint32(len(sig)))
+	copy(buf[4:], sig)
+	copy(buf[4+len(sig):], sealed)
+	return buf
+}
+
+// TestDecryptWinRMEncryptedResponse_Normal verifies the happy path: a
+// well-formed single-part response decrypts to the expected plaintext.
+func TestDecryptWinRMEncryptedResponse_Normal(t *testing.T) {
+	t.Parallel()
+	plaintext := []byte("<s:Envelope>hello</s:Envelope>")
+	sig := make([]byte, 16)
+	payload := makePayload(sig, plaintext)
+	body := buildEncryptedResponseBody(payload, len(plaintext))
+
+	got, err := decryptWinRMEncryptedResponse(body, identitySession{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("got %q, want %q", got, plaintext)
+	}
+}
+
+// TestDecryptWinRMEncryptedResponse_BoundaryInPayload is the core regression
+// test. The binary payload contains the exact MIME boundary bytes. The old
+// bytes.Split approach would produce phantom parts and fail; the new
+// OriginalContent-length approach must return the correct plaintext.
+func TestDecryptWinRMEncryptedResponse_BoundaryInPayload(t *testing.T) {
+	t.Parallel()
+	// Embed the boundary string in the middle of the plaintext.
+	boundary := "--" + winrmMIMEBoundary + "\r\n"
+	plaintext := append(append([]byte("prefix"), []byte(boundary)...), []byte("suffix")...)
+
+	sig := make([]byte, 16)
+	payload := makePayload(sig, plaintext)
+	body := buildEncryptedResponseBody(payload, len(plaintext))
+
+	got, err := decryptWinRMEncryptedResponse(body, identitySession{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("got %q, want %q", got, plaintext)
+	}
+}
+
+// TestDecryptWinRMEncryptedResponse_WS2019TrailingCRLF verifies the WS2019
+// variant: Windows Server 2019 appends \r\n after the binary payload before
+// the closing boundary. The length-based extraction must ignore those bytes.
+func TestDecryptWinRMEncryptedResponse_WS2019TrailingCRLF(t *testing.T) {
+	t.Parallel()
+	plaintext := []byte("<s:Envelope>ws2019</s:Envelope>")
+	sig := make([]byte, 16)
+	payload := makePayload(sig, plaintext)
+
+	// Manually construct a body with an extra \r\n after the payload.
+	dashBoundary := "--" + winrmMIMEBoundary
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%s\r\n\tContent-Type: %s\r\n\tOriginalContent: type=application/soap+xml;charset=UTF-8;Length=%d\r\n%s\r\n\tContent-Type: application/octet-stream\r\n",
+		dashBoundary, winrmProtocolString, len(plaintext), dashBoundary)
+	buf.Write(payload)
+	buf.WriteString("\r\n\r\n") // WS2019 adds extra CRLF here
+	fmt.Fprintf(&buf, "%s--\r\n", dashBoundary)
+
+	got, err := decryptWinRMEncryptedResponse(buf.Bytes(), identitySession{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("got %q, want %q", got, plaintext)
+	}
+}
+
+// TestDecryptWinRMEncryptedResponse_MissingOriginalContent verifies that a
+// response without an OriginalContent header is rejected with a clear error.
+func TestDecryptWinRMEncryptedResponse_MissingOriginalContent(t *testing.T) {
+	t.Parallel()
+	dashBoundary := "--" + winrmMIMEBoundary
+	var buf bytes.Buffer
+	// Omit the OriginalContent header entirely.
+	fmt.Fprintf(&buf, "%s\r\n\tContent-Type: %s\r\n%s\r\n\tContent-Type: application/octet-stream\r\n",
+		dashBoundary, winrmProtocolString, dashBoundary)
+	buf.Write([]byte{0, 0, 0, 0}) // minimal payload
+	fmt.Fprintf(&buf, "\r\n%s--\r\n", dashBoundary)
+
+	_, err := decryptWinRMEncryptedResponse(buf.Bytes(), identitySession{})
+	if err == nil || !strings.Contains(err.Error(), "OriginalContent") {
+		t.Fatalf("err = %v, want substring 'OriginalContent'", err)
+	}
+}
+
+// TestParseWinRMOriginalContentLength exercises the header field parser in
+// isolation, including field-order independence and error cases.
+func TestParseWinRMOriginalContentLength(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		line    string
+		want    int
+		wantErr bool
+	}{
+		{"type=application/soap+xml;charset=UTF-8;Length=1234", 1234, false},
+		{"Length=0", 0, false},
+		{"charset=UTF-8;Length=99;type=application/soap+xml", 99, false},
+		{"type=application/soap+xml;charset=UTF-8", 0, true},            // missing Length
+		{"type=application/soap+xml;charset=UTF-8;Length=abc", 0, true}, // non-numeric
+		{"Length=-1", 0, true}, // negative length
+	}
+	for _, c := range cases {
+		got, err := parseWinRMOriginalContentLength(c.line)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("line %q: got %d, want error", c.line, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("line %q: unexpected error %v", c.line, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("line %q: got %d, want %d", c.line, got, c.want)
 		}
 	}
 }

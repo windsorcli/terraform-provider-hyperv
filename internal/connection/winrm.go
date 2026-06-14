@@ -684,39 +684,94 @@ func buildWinRMEncryptedBody(plaintext, sealed, signature []byte) []byte {
 
 // decryptWinRMEncryptedResponse parses the WS-Management multipart/encrypted
 // response body and decrypts each MIME part using the NTLM session.
+//
+// The WS-Management format uses tab-indented pseudo-headers with no blank line
+// between headers and the binary body — it is not standard MIME and cannot be
+// parsed by mime/multipart. Instead we locate the octet-stream anchor (an ASCII
+// string) to find where binary data starts, then extract exactly
+// 4 + sigLen + originalContentLen bytes using the OriginalContent: Length value
+// from the preceding metadata part. This avoids any boundary search inside
+// binary ciphertext, which bytes.Split would misparse if the ciphertext happened
+// to contain the boundary bytes.
 func decryptWinRMEncryptedResponse(respBody []byte, session interface {
 	Unwrap([]byte, []byte) ([]byte, error)
 }) ([]byte, error) {
-	dashBoundary := []byte("--" + winrmMIMEBoundary)
-	parts := bytes.Split(respBody, append(dashBoundary, '\r', '\n'))
+	// anchor is the fixed ASCII string that precedes the binary payload in every
+	// WS-Management encrypted part. Searching for it is safe: it is long enough
+	// that the probability of collision inside ciphertext is negligible, and we
+	// advance rest past each extracted payload so binary data is never scanned.
+	anchor := []byte("--" + winrmMIMEBoundary + "\r\n\tContent-Type: application/octet-stream\r\n")
+	const origPrefix = "\tOriginalContent: "
 
 	var message []byte
-	for i := 1; i+1 < len(parts); i += 2 {
-		payload := parts[i+1]
-		// Trim the trailing boundary (and everything after it).
-		if idx := bytes.Index(payload, dashBoundary); idx >= 0 {
-			payload = payload[:idx]
-		}
-		payload = bytes.ReplaceAll(payload, []byte("\tContent-Type: application/octet-stream\r\n"), nil)
-		payload = bytes.TrimRight(payload, "\r\n")
+	rest := respBody
 
+	for {
+		idx := bytes.Index(rest, anchor)
+		if idx < 0 {
+			break
+		}
+
+		// Parse OriginalContent: Length=N from the metadata part that precedes
+		// this anchor. LastIndex is used so that any preamble (or an earlier
+		// part in a multi-part response) doesn't shadow the relevant header.
+		meta := rest[:idx]
+		origIdx := bytes.LastIndex(meta, []byte(origPrefix))
+		if origIdx < 0 {
+			return nil, fmt.Errorf("winrm: encrypted response missing OriginalContent header")
+		}
+		origLine := meta[origIdx+len(origPrefix):]
+		if end := bytes.IndexByte(origLine, '\r'); end >= 0 {
+			origLine = origLine[:end]
+		}
+		originalLen, err := parseWinRMOriginalContentLength(string(origLine))
+		if err != nil {
+			return nil, fmt.Errorf("winrm: %w", err)
+		}
+
+		payload := rest[idx+len(anchor):]
 		if len(payload) < 4 {
 			return nil, fmt.Errorf("winrm: encrypted payload too short (%d bytes)", len(payload))
 		}
 		sigLen := int(binary.LittleEndian.Uint32(payload[:4]))
-		if len(payload) < 4+sigLen {
-			return nil, fmt.Errorf("winrm: encrypted payload truncated (need %d, have %d)", 4+sigLen, len(payload))
+		need := 4 + sigLen + originalLen
+		if len(payload) < need {
+			return nil, fmt.Errorf("winrm: encrypted payload truncated (need %d, have %d)", need, len(payload))
 		}
 		sig := payload[4 : 4+sigLen]
-		sealed := payload[4+sigLen:]
+		sealed := payload[4+sigLen : need]
 
 		decrypted, err := session.Unwrap(sealed, sig)
 		if err != nil {
 			return nil, err
 		}
 		message = append(message, decrypted...)
+		rest = rest[idx+len(anchor)+need:]
+	}
+
+	if len(message) == 0 {
+		return nil, fmt.Errorf("winrm: no encrypted parts found in response")
 	}
 	return message, nil
+}
+
+// parseWinRMOriginalContentLength extracts the Length field from a
+// WS-Management OriginalContent header value such as
+// "type=application/soap+xml;charset=UTF-8;Length=1234".
+func parseWinRMOriginalContentLength(line string) (int, error) {
+	for _, field := range strings.Split(line, ";") {
+		if strings.HasPrefix(field, "Length=") {
+			n, err := strconv.Atoi(strings.TrimPrefix(field, "Length="))
+			if err != nil {
+				return 0, fmt.Errorf("invalid OriginalContent Length %q: %w", field, err)
+			}
+			if n < 0 {
+				return 0, fmt.Errorf("invalid OriginalContent Length %q: must be non-negative", field)
+			}
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("OriginalContent header missing Length field in %q", line)
 }
 
 // buildWinRMParams constructs the per-backend WSMan parameters from the
