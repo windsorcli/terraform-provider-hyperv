@@ -361,11 +361,18 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	defer func() { _ = src.Close() }()
 
 	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> bufio
-	// buffer -> WinRM stdin. The bufio layer batches many small line
-	// writes into large pipe writes, reducing WinRM Send-Input round-trips
-	// from O(lines) to O(file_size / streamFileBufSize). The line wrap
-	// still lets the PS receiver decode each line independently via
-	// ReadLine + FromBase64String with constant host memory pressure.
+	// writer (pw side) -> io.Pipe -> bufio reader (pr side) -> WinRM stdin.
+	// Two-layer buffering:
+	//   write side: bufio.Writer(streamFileBufSize) coalesces the 76-byte
+	//     line writes into streamFileBufSize-sized pipe writes.
+	//   read side: bufio.Reader(streamFileBufSize) exposes WriteTo so the
+	//     io.Copy inside RunWithContextWithInput delivers streamFileBufSize
+	//     chunks to commandWriter.Write instead of 32 KB.
+	// commandWriter then splits at EnvelopeSize-1000 (~150 KB) per
+	// SendInput call, reducing WinRM round-trips from O(file/32 KB) to
+	// O(file/150 KB) -- a ~5× cut in NTLM handshake overhead for large files.
+	// The line wrap still lets the PS receiver decode each line independently
+	// via ReadLine + FromBase64String with constant host memory pressure.
 	//
 	// Close order is load-bearing: enc must flush its padding bytes into
 	// lw before lw emits its trailing newline into bufW, and bufW must
@@ -398,8 +405,16 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
 		b.opts.PwshPath, encodePSScript(buildWinRMStreamFileScript(remotePath)))
 
+	// bufio.Reader wrapping the pipe reader has a WriteTo method, so
+	// io.Copy inside RunWithContextWithInput uses the WriteTo path instead
+	// of its default 32 KB internal buffer. WriteTo delivers streamFileBufSize
+	// chunks to commandWriter.Write, which the WinRM library then splits at
+	// EnvelopeSize-1000 (~150 KB) per SendInput call. This reduces the
+	// round-trip count from O(file_size/32KB) ≈ 10,000 to O(file_size/150KB)
+	// ≈ 2,100 for a 320 MB ISO, cutting NTLM handshake overhead by ~5×.
+	bufferedPr := bufio.NewReaderSize(pr, streamFileBufSize)
 	var stdout, stderr bytes.Buffer
-	code, runErr := client.RunWithContextWithInput(ctx, cmd, &stdout, &stderr, pr)
+	code, runErr := client.RunWithContextWithInput(ctx, cmd, &stdout, &stderr, bufferedPr)
 	if runErr != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
