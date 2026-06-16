@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -839,4 +841,161 @@ func TestParseWinRMOriginalContentLength(t *testing.T) {
 			t.Errorf("line %q: got %d, want %d", c.line, got, c.want)
 		}
 	}
+}
+
+// chunkWriter limits each Write to chunkSz bytes, forwarding to dst. This
+// exercises the partial-write retry path in streamFileWriteAll without
+// triggering the zero-progress backoff (nw > 0 on every call, no sleep).
+type chunkWriter struct {
+	dst     *bytes.Buffer
+	chunkSz int
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if n > w.chunkSz {
+		n = w.chunkSz
+	}
+	return w.dst.Write(p[:n])
+}
+
+// zeroThenOKWriter returns (0, err) for the first fails calls, then forwards
+// to dst. Used to exercise zero-progress backoff and retry recovery.
+type zeroThenOKWriter struct {
+	dst   *bytes.Buffer
+	fails int
+	err   error
+}
+
+func (w *zeroThenOKWriter) Write(p []byte) (int, error) {
+	if w.fails > 0 {
+		w.fails--
+		return 0, w.err
+	}
+	return w.dst.Write(p)
+}
+
+func TestStreamFileWriteAll(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all at once", func(t *testing.T) {
+		t.Parallel()
+		data := []byte("hello, world")
+		var buf bytes.Buffer
+		if err := streamFileWriteAll(&buf, data); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(buf.Bytes(), data) {
+			t.Errorf("got %q, want %q", buf.Bytes(), data)
+		}
+	})
+
+	t.Run("partial chunk writer drains all data", func(t *testing.T) {
+		t.Parallel()
+		data := bytes.Repeat([]byte("ab"), 1000) // 2000 bytes
+		var buf bytes.Buffer
+		w := &chunkWriter{dst: &buf, chunkSz: 7} // odd chunk size crosses boundaries
+		if err := streamFileWriteAll(w, data); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(buf.Bytes(), data) {
+			t.Errorf("content mismatch after %d chunked writes", len(data)/7+1)
+		}
+	})
+
+	t.Run("one zero-progress failure then recovery", func(t *testing.T) {
+		// First Write returns (0, ErrShortWrite); streamFileWriteAll sleeps
+		// 250 ms then retries. Second call succeeds. The sleep is real but
+		// acceptable for a correctness test.
+		data := []byte("retry me")
+		var buf bytes.Buffer
+		w := &zeroThenOKWriter{dst: &buf, fails: 1, err: io.ErrShortWrite}
+		if err := streamFileWriteAll(w, data); err != nil {
+			t.Fatalf("unexpected error after recovery: %v", err)
+		}
+		if !bytes.Equal(buf.Bytes(), data) {
+			t.Errorf("got %q, want %q after recovery", buf.Bytes(), data)
+		}
+	})
+
+	t.Run("persistent zero-progress exhausts retries", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipped in -short mode: sleeps ~7.75 s exhausting backoff")
+		}
+		// streamFileMaxSendRetries+1 failures so the backoff counter exceeds
+		// the limit. dst is never reached so nil is safe.
+		w := &zeroThenOKWriter{fails: streamFileMaxSendRetries + 1, err: io.ErrShortWrite}
+		err := streamFileWriteAll(w, []byte("stall"))
+		if err == nil {
+			t.Fatal("want error after exhausting retries, got nil")
+		}
+	})
+}
+
+// errorReader always returns (0, err) to simulate a failing read source.
+type errorReader struct{ err error }
+
+func (r *errorReader) Read(_ []byte) (int, error) { return 0, r.err }
+
+func TestStreamFileStdin(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty reader writes nothing", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		if err := streamFileStdin(context.Background(), &buf, bytes.NewReader(nil)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("got %d bytes written, want 0", buf.Len())
+		}
+	})
+
+	t.Run("all data forwarded correctly", func(t *testing.T) {
+		t.Parallel()
+		data := bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 512) // 2 KiB
+		var buf bytes.Buffer
+		if err := streamFileStdin(context.Background(), &buf, bytes.NewReader(data)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(buf.Bytes(), data) {
+			t.Errorf("content mismatch: got %d bytes, want %d", buf.Len(), len(data))
+		}
+	})
+
+	t.Run("multi-chunk crosses buffer boundaries", func(t *testing.T) {
+		t.Parallel()
+		// 3.5 × streamFileBufSize exercises three full chunks plus a trailing
+		// partial, covering the boundary and flush logic in the read loop.
+		size := streamFileBufSize*3 + streamFileBufSize/2
+		data := bytes.Repeat([]byte{0x5A}, size)
+		var buf bytes.Buffer
+		if err := streamFileStdin(context.Background(), &buf, bytes.NewReader(data)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if buf.Len() != size {
+			t.Errorf("got %d bytes, want %d", buf.Len(), size)
+		}
+	})
+
+	t.Run("cancelled context returns error before first read", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var buf bytes.Buffer
+		err := streamFileStdin(ctx, &buf, bytes.NewReader([]byte("data")))
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("want context.Canceled, got %v", err)
+		}
+	})
+
+	t.Run("read error propagates", func(t *testing.T) {
+		t.Parallel()
+		sentinel := fmt.Errorf("read failed")
+		var buf bytes.Buffer
+		err := streamFileStdin(context.Background(), &buf, &errorReader{err: sentinel})
+		if !errors.Is(err, sentinel) {
+			t.Errorf("want sentinel error, got %v", err)
+		}
+	})
 }

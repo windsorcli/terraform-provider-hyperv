@@ -124,10 +124,9 @@ func TestWinRMBenchSmoke_StreamFile(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// 256 KiB of random bytes. Big enough that the stream crosses many
-	// pipe / WS-Management chunk boundaries, small enough that an
-	// underperforming bench still completes in seconds.
-	payload := make([]byte, 256*1024)
+	// 1.5 MiB of random bytes: six full 256 KB bufio chunks plus a half-chunk
+	// remainder, exercising multi-chunk boundary and trailing-flush behaviour.
+	payload := make([]byte, streamFileBufSize*6+streamFileBufSize/2)
 	if _, err := rand.New(rand.NewSource(time.Now().UnixNano())).Read(payload); err != nil {
 		t.Fatalf("generate payload: %v", err)
 	}
