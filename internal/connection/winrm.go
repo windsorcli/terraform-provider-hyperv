@@ -362,17 +362,10 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 
 	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> bufio
 	// writer (pw side) -> io.Pipe -> bufio reader (pr side) -> WinRM stdin.
-	// Two-layer buffering:
-	//   write side: bufio.Writer(streamFileBufSize) coalesces the 76-byte
-	//     line writes into streamFileBufSize-sized pipe writes.
-	//   read side: bufio.Reader(streamFileBufSize) exposes WriteTo so the
-	//     io.Copy inside RunWithContextWithInput delivers streamFileBufSize
-	//     chunks to commandWriter.Write instead of 32 KB.
-	// commandWriter then splits at EnvelopeSize-1000 (~150 KB) per
-	// SendInput call, reducing WinRM round-trips from O(file/32 KB) to
-	// O(file/150 KB) -- a ~5× cut in NTLM handshake overhead for large files.
-	// The line wrap still lets the PS receiver decode each line independently
-	// via ReadLine + FromBase64String with constant host memory pressure.
+	// bufio.Writer coalesces the 76-byte line writes into streamFileBufSize
+	// pipe flushes, so commandWriter sees large chunks rather than one per
+	// base64 line. The line wrap lets the PS receiver decode each line
+	// independently via ReadLine + FromBase64String.
 	//
 	// Close order is load-bearing: enc must flush its padding bytes into
 	// lw before lw emits its trailing newline into bufW, and bufW must
@@ -402,30 +395,131 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 		}
 	}()
 
-	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
+	cmdStr := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
 		b.opts.PwshPath, encodePSScript(buildWinRMStreamFileScript(remotePath)))
 
-	// bufio.Reader wrapping the pipe reader has a WriteTo method, so
-	// io.Copy inside RunWithContextWithInput uses the WriteTo path instead
-	// of its default 32 KB internal buffer. WriteTo delivers streamFileBufSize
-	// chunks to commandWriter.Write, which the WinRM library then splits at
-	// EnvelopeSize-1000 (~150 KB) per SendInput call. This reduces the
-	// round-trip count from O(file_size/32KB) ≈ 10,000 to O(file_size/150KB)
-	// ≈ 2,100 for a 320 MB ISO, cutting NTLM handshake overhead by ~5×.
-	bufferedPr := bufio.NewReaderSize(pr, streamFileBufSize)
+	// Feed stdin via our own loop instead of RunWithContextWithInput.
+	// RunWithContextWithInput discards stdin write errors with
+	//   _, _ = io.Copy(cmd.Stdin, stdin)
+	// so a failed sendInput call causes silent stream truncation that only
+	// surfaces as a checksum mismatch after the full staging+verify pass.
+	// Our loop tracks the written count on partial writes, advances past
+	// confirmed bytes, and retries zero-progress failures with backoff.
+	shell, err := client.CreateShell()
+	if err != nil {
+		return fmt.Errorf("winrm: create shell: %w", err)
+	}
+	defer func() { _ = shell.Close() }()
+
+	winrmCmd, err := shell.ExecuteWithContext(ctx, cmdStr)
+	if err != nil {
+		return fmt.Errorf("winrm: execute: %w", err)
+	}
+
 	var stdout, stderr bytes.Buffer
-	code, runErr := client.RunWithContextWithInput(ctx, cmd, &stdout, &stderr, bufferedPr)
-	if runErr != nil {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&stdout, winrmCmd.Stdout)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&stderr, winrmCmd.Stderr)
+	}()
+
+	bufferedPr := bufio.NewReaderSize(pr, streamFileBufSize)
+	stdinErr := streamFileStdin(ctx, winrmCmd.Stdin, bufferedPr)
+	_ = pr.Close()
+	_ = winrmCmd.Stdin.Close()
+
+	// winrmCmd.Wait() polls GetCommandState until the PS script exits.
+	// If the host crashes or the PS script hangs after receiving stdin, Wait
+	// blocks forever. Run it in a goroutine and enforce a ceiling so we
+	// surface a clean error instead of hanging the apply indefinitely.
+	const streamWaitTimeout = 10 * time.Minute
+	waitDone := make(chan struct{})
+	go func() {
+		winrmCmd.Wait()
+		wg.Wait()
+		_ = winrmCmd.Close()
+		close(waitDone)
+	}()
+
+	timer := time.NewTimer(streamWaitTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		return fmt.Errorf("%w: context cancelled waiting for stream-file script: %v", ErrTimeout, ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("winrm: stream-file script did not complete within %v (host may be unresponsive)", streamWaitTimeout)
+	}
+
+	if stdinErr != nil {
+		return fmt.Errorf("winrm: stream file stdin: %w", stdinErr)
+	}
+	if code := winrmCmd.ExitCode(); code != 0 {
 		if ctx.Err() != nil {
 			return fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
 		}
-		return fmt.Errorf("winrm: stream file: %w", runErr)
-	}
-	if code != 0 {
 		return fmt.Errorf("winrm: stream file exit %d: %s", code, stderr.String())
 	}
 	return nil
 }
+
+// streamFileStdin feeds r into w chunk by chunk, handling partial writes
+// via streamFileWriteAll. Context cancellation is checked between chunks.
+func streamFileStdin(ctx context.Context, w io.Writer, r io.Reader) error {
+	buf := make([]byte, streamFileBufSize)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := streamFileWriteAll(w, buf[:n]); err != nil {
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+// streamFileWriteAll writes all of data to w. When Write returns a partial
+// count (io.ErrShortWrite from a failed WinRM sendInput), it advances past
+// the confirmed bytes and retries. Zero-progress failures (nw == 0) are
+// retried with exponential backoff up to streamFileMaxSendRetries times
+// before returning an error.
+func streamFileWriteAll(w io.Writer, data []byte) error {
+	zeroProgress := 0
+	for len(data) > 0 {
+		nw, err := w.Write(data)
+		if nw > 0 {
+			data = data[nw:]
+			zeroProgress = 0
+		}
+		if err == nil {
+			continue
+		}
+		zeroProgress++
+		if zeroProgress > streamFileMaxSendRetries {
+			return fmt.Errorf("stdin send stalled after %d zero-progress errors: %w", zeroProgress-1, err)
+		}
+		time.Sleep(time.Duration(1<<(zeroProgress-1)) * 250 * time.Millisecond)
+	}
+	return nil
+}
+
+// streamFileMaxSendRetries is the number of consecutive zero-progress Write
+// calls (each sendInput sent zero bytes) before streamFileWriteAll gives up.
+const streamFileMaxSendRetries = 5
 
 // base64LineLen is the line length the line-wrapping writer inserts
 // newlines at. 76 is the MIME-canonical width and a multiple of 4, so
@@ -433,10 +527,12 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 // FromBase64String without joining lines.
 const base64LineLen = 76
 
-// streamFileBufSize is the bufio buffer between the line-wrapped writer
-// and the pipe writer in StreamFile. Each Flush produces one large pipe
-// write that the WinRM library sends as a single Send-Input envelope,
-// reducing round-trips from O(lines) to O(file_size/streamFileBufSize).
+// streamFileBufSize controls two buffers in StreamFile:
+//   - bufio.Writer on the write side: coalesces 76-byte base64 line writes
+//     into large pipe flushes, so commandWriter.Write sees chunks near this
+//     size rather than one tiny write per base64 line.
+//   - bufio.Reader on the read side: provides large chunks to streamFileStdin
+//     so each Read gives commandWriter.Write a full envelope's worth of data.
 //
 // Size budget (stock WS2019/2022 host, MaxEnvelopeSizekb = 500):
 //
