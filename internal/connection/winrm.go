@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -359,14 +360,19 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	}
 	defer func() { _ = src.Close() }()
 
-	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> WinRM
-	// stdin. The line wrap is what lets the PS receiver process input
-	// via ReadLine, keeping its working set proportional to one base64
-	// line (~57 decoded bytes) instead of the entire payload. The
-	// goroutine drives the encoder and closes the pipe when done so
-	// RunWithContextWithInput sees clean EOF.
+	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> bufio
+	// writer (pw side) -> io.Pipe -> bufio reader (pr side) -> WinRM stdin.
+	// bufio.Writer coalesces the 76-byte line writes into streamFileBufSize
+	// pipe flushes, so commandWriter sees large chunks rather than one per
+	// base64 line. The line wrap lets the PS receiver decode each line
+	// independently via ReadLine + FromBase64String.
+	//
+	// Close order is load-bearing: enc must flush its padding bytes into
+	// lw before lw emits its trailing newline into bufW, and bufW must
+	// flush its remaining bytes into pw before pw signals EOF.
 	pr, pw := io.Pipe()
-	lw := newLineWrappedWriter(pw, base64LineLen)
+	bufW := bufio.NewWriterSize(pw, streamFileBufSize)
+	lw := newLineWrappedWriter(bufW, base64LineLen)
 	enc := base64.NewEncoder(base64.StdEncoding, lw)
 
 	go func() {
@@ -377,7 +383,10 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 			if err := enc.Close(); err != nil {
 				return err
 			}
-			return lw.Close()
+			if err := lw.Close(); err != nil {
+				return err
+			}
+			return bufW.Flush()
 		}()
 		if err != nil {
 			_ = pw.CloseWithError(err)
@@ -386,28 +395,158 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 		}
 	}()
 
-	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
+	cmdStr := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
 		b.opts.PwshPath, encodePSScript(buildWinRMStreamFileScript(remotePath)))
 
+	// Feed stdin via our own loop instead of RunWithContextWithInput.
+	// RunWithContextWithInput discards stdin write errors with
+	//   _, _ = io.Copy(cmd.Stdin, stdin)
+	// so a failed sendInput call causes silent stream truncation that only
+	// surfaces as a checksum mismatch after the full staging+verify pass.
+	// Our loop tracks the written count on partial writes, advances past
+	// confirmed bytes, and retries zero-progress failures with backoff.
+	shell, err := client.CreateShell()
+	if err != nil {
+		return fmt.Errorf("winrm: create shell: %w", err)
+	}
+	defer func() { _ = shell.Close() }()
+
+	winrmCmd, err := shell.ExecuteWithContext(ctx, cmdStr)
+	if err != nil {
+		return fmt.Errorf("winrm: execute: %w", err)
+	}
+
 	var stdout, stderr bytes.Buffer
-	code, runErr := client.RunWithContextWithInput(ctx, cmd, &stdout, &stderr, pr)
-	if runErr != nil {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&stdout, winrmCmd.Stdout)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&stderr, winrmCmd.Stderr)
+	}()
+
+	bufferedPr := bufio.NewReaderSize(pr, streamFileBufSize)
+	stdinErr := streamFileStdin(ctx, winrmCmd.Stdin, bufferedPr)
+	_ = pr.Close()
+	_ = winrmCmd.Stdin.Close()
+
+	// winrmCmd.Wait() polls GetCommandState until the PS script exits.
+	// If the host crashes or the PS script hangs after receiving stdin, Wait
+	// blocks forever. Run it in a goroutine and enforce a ceiling so we
+	// surface a clean error instead of hanging the apply indefinitely.
+	const streamWaitTimeout = 10 * time.Minute
+	waitDone := make(chan struct{})
+	go func() {
+		winrmCmd.Wait()
+		wg.Wait()
+		_ = winrmCmd.Close()
+		close(waitDone)
+	}()
+
+	timer := time.NewTimer(streamWaitTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		return fmt.Errorf("%w: context cancelled waiting for stream-file script: %v", ErrTimeout, ctx.Err())
+	case <-timer.C:
+		return fmt.Errorf("winrm: stream-file script did not complete within %v (host may be unresponsive)", streamWaitTimeout)
+	}
+
+	if stdinErr != nil {
+		return fmt.Errorf("winrm: stream file stdin: %w", stdinErr)
+	}
+	if code := winrmCmd.ExitCode(); code != 0 {
 		if ctx.Err() != nil {
 			return fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
 		}
-		return fmt.Errorf("winrm: stream file: %w", runErr)
-	}
-	if code != 0 {
 		return fmt.Errorf("winrm: stream file exit %d: %s", code, stderr.String())
 	}
 	return nil
 }
+
+// streamFileStdin feeds r into w chunk by chunk, handling partial writes
+// via streamFileWriteAll. Context cancellation is checked between chunks.
+func streamFileStdin(ctx context.Context, w io.Writer, r io.Reader) error {
+	buf := make([]byte, streamFileBufSize)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := streamFileWriteAll(w, buf[:n]); err != nil {
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+// streamFileWriteAll writes all of data to w. When Write returns a partial
+// count (io.ErrShortWrite from a failed WinRM sendInput), it advances past
+// the confirmed bytes and retries. Zero-progress failures (nw == 0) are
+// retried with exponential backoff up to streamFileMaxSendRetries times
+// before returning an error.
+func streamFileWriteAll(w io.Writer, data []byte) error {
+	zeroProgress := 0
+	for len(data) > 0 {
+		nw, err := w.Write(data)
+		if nw > 0 {
+			data = data[nw:]
+			zeroProgress = 0
+		}
+		if err == nil {
+			continue
+		}
+		zeroProgress++
+		if zeroProgress > streamFileMaxSendRetries {
+			return fmt.Errorf("stdin send stalled after %d zero-progress errors: %w", zeroProgress-1, err)
+		}
+		time.Sleep(time.Duration(1<<(zeroProgress-1)) * 250 * time.Millisecond)
+	}
+	return nil
+}
+
+// streamFileMaxSendRetries is the number of consecutive zero-progress Write
+// calls (each sendInput sent zero bytes) before streamFileWriteAll gives up.
+const streamFileMaxSendRetries = 5
 
 // base64LineLen is the line length the line-wrapping writer inserts
 // newlines at. 76 is the MIME-canonical width and a multiple of 4, so
 // each line is a self-contained base64 string the receiver can
 // FromBase64String without joining lines.
 const base64LineLen = 76
+
+// streamFileBufSize controls two buffers in StreamFile:
+//   - bufio.Writer on the write side: coalesces 76-byte base64 line writes
+//     into large pipe flushes, so commandWriter.Write sees chunks near this
+//     size rather than one tiny write per base64 line.
+//   - bufio.Reader on the read side: provides large chunks to streamFileStdin
+//     so each Read gives commandWriter.Write a full envelope's worth of data.
+//
+// Size budget (stock WS2019/2022 host, MaxEnvelopeSizekb = 500):
+//
+//	envelope ceiling    512 000 bytes  (500 × 1024)
+//	NTLM + SOAP framing  ~40 000 bytes  (multipart boundaries, sig, XML)
+//	second base64 ratio      × 4/3
+//
+//	bufSize × 4/3 + 40 000 ≤ 512 000
+//	bufSize ≤ (512 000 − 40 000) × 3/4 ≈ 354 000 bytes
+//
+// 256 KB (262 144 bytes) gives an on-wire payload of ~341 KB and leaves
+// ~130 KB of headroom — conservative enough to survive hosts with a
+// slightly lower effective limit due to NTLM session overhead.
+const streamFileBufSize = 256 * 1024
 
 // buildWinRMStreamFileScript emits a single-statement PS body that reads
 // newline-delimited base64 from stdin and writes the decoded bytes to
@@ -565,15 +704,14 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 		return "", fmt.Errorf("winrm: create ntlmhttp client: %w", err)
 	}
 
+	scheme := "http"
+	if t.endpoint.HTTPS {
+		scheme = "https"
+	}
 	endpointURL := (&url.URL{
-		Scheme: func() string {
-			if t.endpoint.HTTPS {
-				return "https"
-			}
-			return "http"
-		}(),
-		Host: net.JoinHostPort(t.endpoint.Host, strconv.Itoa(t.endpoint.Port)),
-		Path: "/wsman",
+		Scheme: scheme,
+		Host:   net.JoinHostPort(t.endpoint.Host, strconv.Itoa(t.endpoint.Port)),
+		Path:   "/wsman",
 	}).String()
 
 	// Phase 1: empty POST to establish the NTLM session. ntlmhttplib performs

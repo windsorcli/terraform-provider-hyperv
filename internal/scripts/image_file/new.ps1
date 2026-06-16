@@ -12,7 +12,7 @@
 #   stdout JSON : same shape as get.ps1 (Path, SizeBytes, Sha256).
 #
 # Mode semantics:
-#   url        - download via HttpClient to a sibling .part file in the
+#   url        - download via HttpWebRequest to a sibling .part file in the
 #                destination directory, verify SHA-256 against
 #                expected_sha256, then atomic-rename (Move-Item) to
 #                destination_path. NTFS rename within a volume is atomic;
@@ -28,54 +28,43 @@
 #                destination_path. Same .part-in-destination-dir,
 #                same Move-Item-is-atomic guarantee as url mode.
 #
-# Why HttpClient (not BITS or Invoke-WebRequest):
+# Why HttpWebRequest (not HttpClient, BITS, or Invoke-WebRequest):
+#   - HttpClient on .NET Framework 4.x (PS 5.1 / Server 2019) fails TLS
+#     handshake with "Could not create SSL/TLS secure channel" against some
+#     HTTPS endpoints (confirmed against factory.talos.dev on WS2019).
+#     HttpWebRequest uses the same Schannel path as Invoke-WebRequest and
+#     works correctly on both PS 5.1 and PS 7.
 #   - Start-BitsTransfer requires an interactive user session (HRESULT
 #     0x800704DD over SSH/WinRM "Network" logon).
 #   - Invoke-WebRequest -OutFile on PS 5.1 buffers the response body in
 #     memory before writing to disk -- fine for small files, OOMs on the
 #     multi-GB VHDX images this resource exists to fetch.
-#   - HttpClient streams via CopyToAsync, runs in any session type, and is
-#     Microsoft's recommended primitive in 2026 (WebClient is [Obsolete]
-#     since .NET 6 even though still functional on .NET Framework).
 
-# Save-HypervHttpFile downloads $Url to $OutFile via System.Net.Http.HttpClient
-# with a streamed response copy. ResponseHeadersRead returns as soon as the
-# headers arrive so the body is consumed via the stream without buffering;
-# CopyTo writes to disk incrementally. EnsureSuccessStatusCode raises on any
-# non-2xx so transport-level failures surface through the catch in the
+# Save-HypervHttpFile downloads $Url to $OutFile via HttpWebRequest with a
+# streamed response copy. GetResponseStream() returns the body as a stream
+# so CopyTo writes to disk incrementally without buffering. Non-2xx responses
+# raise a WebException so transport failures surface through the catch in the
 # entry block.
-#
-# SslProtocols.None on the handler delegates protocol selection to the OS
-# (Schannel), which picks TLS 1.3 first on Server 2022 and falls back to
-# TLS 1.2 on older hosts. This bypasses the legacy ServicePointManager
-# global, which HttpClient ignores on .NET 5+/PS 7 anyway.
 function Save-HypervHttpFile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Url,
         [Parameter(Mandatory)] [string] $OutFile
     )
-    # System.Net.Http isn't auto-loaded on Windows PowerShell 5.1 (the
-    # Server 2019 floor); Add-Type with -AssemblyName is a no-op when the
-    # assembly is already loaded (PS 7+) so it's safe to call unconditionally.
-    Add-Type -AssemblyName System.Net.Http
-    $handler = [System.Net.Http.HttpClientHandler]::new()
-    $handler.SslProtocols = [System.Security.Authentication.SslProtocols]::None
-    $client = [System.Net.Http.HttpClient]::new($handler)
+    # Explicitly pin TLS 1.2 via ServicePointManager — WS2019 defaults can
+    # include TLS 1.0/1.1 which modern servers reject.
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $request.Method = 'GET'
+    $response = $request.GetResponse()
     try {
-        $response = $client.GetAsync(
-            $Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-        ).GetAwaiter().GetResult()
+        $stream = $response.GetResponseStream()
         try {
-            $response.EnsureSuccessStatusCode() | Out-Null
-            $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-            try {
-                $file = [System.IO.File]::Create($OutFile)
-                try   { $stream.CopyTo($file) }
-                finally { $file.Dispose() }
-            } finally { $stream.Dispose() }
-        } finally { $response.Dispose() }
-    } finally { $client.Dispose() }
+            $file = [System.IO.File]::Create($OutFile)
+            try   { $stream.CopyTo($file) }
+            finally { $file.Dispose() }
+        } finally { $stream.Dispose() }
+    } finally { $response.Dispose() }
 }
 
 # Read-HypervImageFileResult emits the canonical three-field result shape.
