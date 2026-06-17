@@ -61,6 +61,9 @@ func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, err
 // lingers at the canonical destination). Returns ErrDecompressionFailed
 // from the runner-pipelined path when the gzip stream is corrupt.
 func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
+	if in.RunnerDownload && normalizeCompression(in.Compression) != "" {
+		return nil, fmt.Errorf("runner_download and compression are mutually exclusive: runner_download streams raw bytes without decompression")
+	}
 	if in.RunnerDownload {
 		return c.newImageFileFromRunnerDownload(ctx, in)
 	}

@@ -1156,6 +1156,34 @@ func TestClient_NewImageFileFromURL_NoCompressionUsesHostDirectFlow(t *testing.T
 	}
 }
 
+// RunnerDownload=true with a non-empty Compression is rejected immediately
+// with a plain error — the two options are mutually exclusive because the
+// runner download path streams raw bytes without decompressing.
+func TestClient_NewImageFileFromURL_RunnerDownloadWithCompressionErrors(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner()
+	c := NewClient(fr)
+
+	for _, codec := range []string{"gz", "xz", "zst", "bz2"} {
+		t.Run(codec, func(t *testing.T) {
+			_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+				DestinationPath: "C:/hyperv/images/x.vhdx",
+				URL:             "https://example.com/x.vhdx." + codec,
+				RunnerDownload:  true,
+				Compression:     codec,
+			})
+			if err == nil {
+				t.Fatal("expected error for runner_download+compression combination")
+			}
+			if len(fr.StreamCalls()) != 0 || len(fr.Calls()) != 0 {
+				t.Errorf("no transport calls expected; got streams=%d calls=%d",
+					len(fr.StreamCalls()), len(fr.Calls()))
+			}
+		})
+	}
+}
+
 // RunnerDownload=true routes NewImageFileFromURL through the runner-
 // pipelined fetch path: the runner downloads the URL into a local
 // tmpfile, computes SHA-256, streams to a host-side .part sibling of
