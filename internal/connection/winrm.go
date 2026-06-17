@@ -660,7 +660,6 @@ type ntlmEncryptionTransporter struct {
 	endpoint *winrm.Endpoint
 
 	mu            sync.Mutex
-	ntlmClient    *ntlmssp.Client          // NTLM state machine; replaced on each invalidation
 	httpClient    *http.Client             // fast-path: sends encrypted SOAP on keep-alive conn
 	httpTransport *http.Transport          // underlying transport; DialContext injects handshake conn
 	injectedConn  *bufReaderConn           // authenticated conn to inject on first fast-path dial
@@ -703,21 +702,17 @@ func (t *ntlmEncryptionTransporter) invalidateSession() {
 		t.injectedConn = nil
 	}
 	t.httpTransport = nil
-	t.ntlmClient = nil
 	t.httpClient = nil
 	t.sessionReady = false
 	t.session = nil
 }
 
-// ensureClients initialises the HTTP/NTLM client objects if they have not been
-// created yet (or were dropped by invalidateSession). No I/O is performed here;
-// the actual NTLM handshake is deferred to postOnce's slow path.
-// Must be called with t.mu held.
-func (t *ntlmEncryptionTransporter) ensureClients() error {
-	if t.ntlmClient != nil {
-		return nil
-	}
-
+// newNTLMClient creates a fresh ntlmssp.Client from the transporter's stored
+// credentials. Called once per slow-path handshake so each handshake uses an
+// independent state machine — the ntlmssp.Client is not goroutine-safe across
+// concurrent Authenticate calls, so sharing it between simultaneous re-auth
+// attempts would corrupt the Type3 token.
+func (t *ntlmEncryptionTransporter) newNTLMClient() (*ntlmssp.Client, error) {
 	var userName, domain string
 	if idx := strings.Index(t.username, "@"); idx >= 0 {
 		userName, domain = t.username[:idx], t.username[idx+1:]
@@ -726,14 +721,24 @@ func (t *ntlmEncryptionTransporter) ensureClients() error {
 	} else {
 		userName = t.username
 	}
-
-	ntlmClient, err := ntlmssp.NewClient(
+	c, err := ntlmssp.NewClient(
 		ntlmssp.SetUserInfo(userName, t.password),
 		ntlmssp.SetDomain(domain),
 		ntlmssp.SetVersion(ntlmssp.DefaultVersion()),
 	)
 	if err != nil {
-		return fmt.Errorf("winrm: create ntlm client: %w", err)
+		return nil, fmt.Errorf("winrm: create ntlm client: %w", err)
+	}
+	return c, nil
+}
+
+// ensureClients initialises the HTTP transport and client if they have not been
+// created yet (or were dropped by invalidateSession). No I/O is performed here;
+// the actual NTLM handshake is deferred to postOnce's slow path.
+// Must be called with t.mu held.
+func (t *ntlmEncryptionTransporter) ensureClients() error {
+	if t.httpTransport != nil {
+		return nil
 	}
 
 	tlsCfg := &tls.Config{InsecureSkipVerify: t.endpoint.Insecure} // #nosec G402
@@ -763,7 +768,6 @@ func (t *ntlmEncryptionTransporter) ensureClients() error {
 		ResponseHeaderTimeout: maxDuration(t.endpoint.Timeout, 5*time.Minute),
 	}
 
-	t.ntlmClient = ntlmClient
 	t.httpTransport = httpTransport
 	t.httpClient = &http.Client{Transport: httpTransport}
 	return nil
@@ -815,7 +819,6 @@ func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string,
 		return "", err
 	}
 	sessionReady := t.sessionReady
-	ntlmClient := t.ntlmClient
 	httpClient := t.httpClient
 	session := t.session
 	t.mu.Unlock()
@@ -825,6 +828,14 @@ func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string,
 
 	if !sessionReady {
 		// --- Slow path: raw-TCP NTLM handshake ---
+		// Create a fresh client per invocation — ntlmssp.Client is a stateful
+		// state machine and is not safe for concurrent Authenticate calls.
+		// Sharing it across simultaneous re-auth goroutines corrupts the Type3
+		// token, causing Windows to reject the handshake with 401.
+		ntlmClient, err := t.newNTLMClient()
+		if err != nil {
+			return "", err
+		}
 
 		rawConn, err := t.dialRaw()
 		if err != nil {
