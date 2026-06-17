@@ -199,6 +199,7 @@ type NewImageFileFromURLInput struct {
 	URL             string `json:"url"`
 	ExpectedSha256  string `json:"expected_sha256"`
 	Compression     string `json:"-"`
+	RunnerDownload  bool   `json:"-"`
 }
 
 // NewImageFileFromLocalPathInput is the public input shape for the

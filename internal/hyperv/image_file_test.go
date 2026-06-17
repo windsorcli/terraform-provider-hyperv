@@ -1156,6 +1156,139 @@ func TestClient_NewImageFileFromURL_NoCompressionUsesHostDirectFlow(t *testing.T
 	}
 }
 
+// RunnerDownload=true routes NewImageFileFromURL through the runner-
+// pipelined fetch path: the runner downloads the URL into a local
+// tmpfile, computes SHA-256, streams to a host-side .part sibling of
+// destination_path, then dispatches new.ps1 in local_path mode.
+// This test pins the wire shape on every boundary the pipeline crosses.
+func TestClient_NewImageFileFromURL_RunnerDownloadPipeline(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("runner-download pipeline fixture\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	in := NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/runner.vhdx",
+		URL:             srv.URL + "/runner.vhdx",
+		RunnerDownload:  true,
+	}
+	if _, err := c.NewImageFileFromURL(t.Context(), in); err != nil {
+		t.Fatalf("NewImageFileFromURL: %v", err)
+	}
+
+	streams := fr.StreamCalls()
+	if len(streams) != 1 {
+		t.Fatalf("StreamCalls = %d, want 1", len(streams))
+	}
+	if streams[0].LocalPath == "" {
+		t.Errorf("stream.LocalPath is empty; want a runner-side tmpfile path")
+	}
+	if !strings.HasPrefix(streams[0].RemotePath, "C:/hyperv/images/runner.vhdx.part-") {
+		t.Errorf("stream.RemotePath = %q, want a `<destination>.part-*` sibling",
+			streams[0].RemotePath)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls = %d, want 1", len(calls))
+	}
+	stdin := string(calls[0].StdinJSON)
+	for _, want := range []string{
+		`"destination_path":"C:/hyperv/images/runner.vhdx"`,
+		`"source_mode":"local_path"`,
+		`"expected_sha256":"` + hexSum(payload) + `"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+	// staging_path must match the path StreamFile wrote to.
+	var got struct {
+		StagingPath string `json:"staging_path"`
+	}
+	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+		t.Fatalf("stdin not valid JSON: %v", err)
+	}
+	if got.StagingPath != streams[0].RemotePath {
+		t.Errorf("stdin.staging_path = %q, want %q (must match StreamFile destination)",
+			got.StagingPath, streams[0].RemotePath)
+	}
+	// URL must not leak into the local_path-mode wire shape.
+	if strings.Contains(stdin, `"url"`) {
+		t.Errorf("stdin should omit 'url' for local_path dispatch; got: %s", stdin)
+	}
+}
+
+// RunnerDownload=true with a wrong ExpectedSha256 maps to ErrChecksumMismatch
+// before StreamFile is called — same short-circuit as the compressed-URL path.
+func TestClient_NewImageFileFromURL_RunnerDownloadChecksumMismatch(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("runner-download checksum mismatch fixture\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/runner.vhdx",
+		URL:             srv.URL + "/runner.vhdx",
+		ExpectedSha256:  strings.Repeat("a", 64),
+		RunnerDownload:  true,
+	})
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("err = %v, want ErrChecksumMismatch", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (checksum mismatch must short-circuit before stream)",
+			len(fr.StreamCalls()))
+	}
+}
+
+// RunnerDownload=true with a non-2xx HTTP response surfaces an error and
+// short-circuits before any StreamFile or RunScript call.
+func TestClient_NewImageFileFromURL_RunnerDownloadHTTPNon2xx(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromURL(t.Context(), NewImageFileFromURLInput{
+		DestinationPath: "C:/hyperv/images/runner.vhdx",
+		URL:             srv.URL + "/runner.vhdx",
+		RunnerDownload:  true,
+	})
+	if err == nil {
+		t.Fatal("expected error for non-2xx HTTP response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("err = %v, want substring '500'", err)
+	}
+	if len(fr.StreamCalls()) != 0 {
+		t.Errorf("StreamCalls = %d, want 0 (non-2xx must short-circuit)", len(fr.StreamCalls()))
+	}
+}
+
 // RemoveImageFile returns no error on empty stdout + exit 0 (dst=nil
 // through runScript). Pester locked the empty-stdout contract in
 // remove.Tests.ps1.
