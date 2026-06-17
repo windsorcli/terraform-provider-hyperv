@@ -285,7 +285,7 @@ func (c *Client) pipeHTTPToFile(ctx context.Context, rawURL string, dst io.Write
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("%w: GET %s: status %d", ErrPSExecution, rawURL, resp.StatusCode)
+		return "", fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
 	}
 
 	hasher := sha256.New()
