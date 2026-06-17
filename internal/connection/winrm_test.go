@@ -3,10 +3,12 @@ package connection
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -996,6 +998,114 @@ func TestStreamFileStdin(t *testing.T) {
 		err := streamFileStdin(context.Background(), &buf, &errorReader{err: sentinel})
 		if !errors.Is(err, sentinel) {
 			t.Errorf("want sentinel error, got %v", err)
+		}
+	})
+}
+
+func TestProcessSoapResponse(t *testing.T) {
+	t.Parallel()
+	tr := &ntlmEncryptionTransporter{}
+
+	t.Run("200 soap+xml passthrough", func(t *testing.T) {
+		t.Parallel()
+		body := []byte("<s:Envelope>ok</s:Envelope>")
+		got, err := tr.processSoapResponse(http.StatusOK, "application/soap+xml;charset=UTF-8", body, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != string(body) {
+			t.Errorf("got %q, want %q", got, body)
+		}
+	})
+
+	t.Run("401 returns session-expired error", func(t *testing.T) {
+		t.Parallel()
+		_, err := tr.processSoapResponse(http.StatusUnauthorized, "text/html", []byte("unauth"), nil)
+		if err == nil || !strings.Contains(err.Error(), "session expired") {
+			t.Fatalf("err = %v, want 'session expired'", err)
+		}
+	})
+
+	t.Run("non-200 non-401 returns error with body snippet", func(t *testing.T) {
+		t.Parallel()
+		_, err := tr.processSoapResponse(http.StatusInternalServerError, "text/plain", []byte("server exploded"), nil)
+		if err == nil || !strings.Contains(err.Error(), "500") {
+			t.Fatalf("err = %v, want status 500 in message", err)
+		}
+		if !strings.Contains(err.Error(), "server exploded") {
+			t.Errorf("err = %v, want body snippet in message", err)
+		}
+	})
+
+	t.Run("non-200 body snippet capped at 512 bytes", func(t *testing.T) {
+		t.Parallel()
+		long := bytes.Repeat([]byte("x"), 600)
+		_, err := tr.processSoapResponse(http.StatusBadRequest, "text/plain", long, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		// The error message should contain the 512-byte cap, not all 600 bytes.
+		if strings.Contains(err.Error(), strings.Repeat("x", 513)) {
+			t.Errorf("error message not capped: %v", err)
+		}
+	})
+
+	t.Run("200 unexpected content type returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := tr.processSoapResponse(http.StatusOK, "text/html", []byte("<html>"), nil)
+		if err == nil || !strings.Contains(err.Error(), "unexpected content type") {
+			t.Fatalf("err = %v, want 'unexpected content type'", err)
+		}
+	})
+}
+
+func TestExtractNTLMChallenge(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid challenge decoded", func(t *testing.T) {
+		t.Parallel()
+		challenge := []byte("NTLM challenge bytes")
+		encoded := base64.StdEncoding.EncodeToString(challenge)
+		resp := &http.Response{
+			Header: http.Header{"Www-Authenticate": []string{"Negotiate " + encoded}},
+		}
+		got, err := extractNTLMChallenge(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(got, challenge) {
+			t.Errorf("got %q, want %q", got, challenge)
+		}
+	})
+
+	t.Run("no WWW-Authenticate header returns error", func(t *testing.T) {
+		t.Parallel()
+		resp := &http.Response{Header: http.Header{}}
+		_, err := extractNTLMChallenge(resp)
+		if err == nil || !strings.Contains(err.Error(), "no NTLM challenge") {
+			t.Fatalf("err = %v, want 'no NTLM challenge'", err)
+		}
+	})
+
+	t.Run("header without Negotiate prefix returns error", func(t *testing.T) {
+		t.Parallel()
+		resp := &http.Response{
+			Header: http.Header{"Www-Authenticate": []string{"Basic realm=WinRM"}},
+		}
+		_, err := extractNTLMChallenge(resp)
+		if err == nil || !strings.Contains(err.Error(), "no NTLM challenge") {
+			t.Fatalf("err = %v, want 'no NTLM challenge'", err)
+		}
+	})
+
+	t.Run("invalid base64 returns error", func(t *testing.T) {
+		t.Parallel()
+		resp := &http.Response{
+			Header: http.Header{"Www-Authenticate": []string{"Negotiate !!!not-base64!!!"}},
+		}
+		_, err := extractNTLMChallenge(resp)
+		if err == nil || !strings.Contains(err.Error(), "decode NTLM challenge") {
+			t.Fatalf("err = %v, want 'decode NTLM challenge'", err)
 		}
 	})
 }
