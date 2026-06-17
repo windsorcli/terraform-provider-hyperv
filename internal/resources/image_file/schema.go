@@ -159,6 +159,12 @@ func resourceSchema() schema.Schema {
 							stringvalidator.OneOf("gz", "gzip", "xz", "zst", "zstd", "bz2", "bzip2"),
 						},
 					},
+					"runner_download": schema.BoolAttribute{
+						Optional:            true,
+						Computed:            true,
+						Default:             booldefault.StaticBool(false),
+						MarkdownDescription: "When true, the Terraform runner downloads the URL and streams the bytes to the host via the active connection backend (WinRM or SSH), then dispatches new.ps1 in local_path mode for verify-and-rename. Use when the host cannot reach the URL directly (e.g. Windows Server 2019 with a TLS 1.3-only endpoint).",
+					},
 				},
 			},
 			"content_base64": schema.StringAttribute{

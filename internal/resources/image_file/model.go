@@ -88,18 +88,20 @@ type Model struct {
 // types.Object handles all three states (known/null/unknown), and the
 // helpers below give resource code typed access when the value is known.
 type URLConfig struct {
-	URL         types.String `tfsdk:"url"`
-	Checksum    types.String `tfsdk:"checksum"`
-	Compression types.String `tfsdk:"compression"`
+	URL            types.String `tfsdk:"url"`
+	Checksum       types.String `tfsdk:"checksum"`
+	Compression    types.String `tfsdk:"compression"`
+	RunnerDownload types.Bool   `tfsdk:"runner_download"`
 }
 
 // URLAttrTypes mirrors the SingleNestedAttribute "url" shape in
 // schema.go. Used by types.Object construction (ObjectValueFrom) and
 // decode (Object.As).
 var URLAttrTypes = map[string]attr.Type{
-	"url":         types.StringType,
-	"checksum":    types.StringType,
-	"compression": types.StringType,
+	"url":             types.StringType,
+	"checksum":        types.StringType,
+	"compression":     types.StringType,
+	"runner_download": types.BoolType,
 }
 
 // URLConfig returns the decoded user-supplied URL config, or nil if

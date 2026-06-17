@@ -153,6 +153,7 @@ When omitted the download is trusted (TLS-only) and the on-disk `sha256` compute
   * `bz2` (alias: `bzip2`) -- legacy; stdlib decoder.
 
 Container archives (`tar`, `tar.gz`, `zip`) are deliberately unsupported -- they require `path_in_archive` semantics that the single-file streaming flow doesn't model. Forces replacement when changed; cannot be flipped in place because the on-disk bytes change wholesale.
+- `runner_download` (Boolean) When true, the Terraform runner downloads the URL and streams the bytes to the host via the active connection backend (WinRM or SSH), then dispatches new.ps1 in local_path mode for verify-and-rename. Use when the host cannot reach the URL directly (e.g. Windows Server 2019 with a TLS 1.3-only endpoint).
 
 ## Import
 

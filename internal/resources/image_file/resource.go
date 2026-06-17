@@ -291,6 +291,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			URL:             urlConfig.URL.ValueString(),
 			ExpectedSha256:  stripSha256Prefix(urlConfig.Checksum.ValueString()),
 			Compression:     urlConfig.Compression.ValueString(),
+			RunnerDownload:  urlConfig.RunnerDownload.ValueBool(),
 		})
 		if err != nil {
 			if errors.Is(err, hyperv.ErrChecksumMismatch) {

@@ -61,6 +61,12 @@ func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, err
 // lingers at the canonical destination). Returns ErrDecompressionFailed
 // from the runner-pipelined path when the gzip stream is corrupt.
 func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
+	if in.RunnerDownload && normalizeCompression(in.Compression) != "" {
+		return nil, fmt.Errorf("runner_download and compression are mutually exclusive: runner_download streams raw bytes without decompression")
+	}
+	if in.RunnerDownload {
+		return c.newImageFileFromRunnerDownload(ctx, in)
+	}
 	if normalizeCompression(in.Compression) != "" {
 		return c.newImageFileFromCompressedURL(ctx, in)
 	}
@@ -193,6 +199,100 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 		return nil, err
 	}
 	return &f, nil
+}
+
+// newImageFileFromRunnerDownload implements the runner-pipelined fetch
+// without decompression: the runner downloads the URL via net/http (TLS
+// handled by the runner's crypto stack), writes bytes to a local tmpfile,
+// streams the file to the host via Connection.StreamFile, then dispatches
+// new.ps1 in local_path mode for verify-and-rename. Use when the host
+// cannot reach the URL directly (e.g. WS2019 TLS 1.2-only with a TLS 1.3
+// endpoint).
+func (c *Client) newImageFileFromRunnerDownload(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
+	tmpFile, err := os.CreateTemp("", "hyperv-image-*.bin")
+	if err != nil {
+		return nil, fmt.Errorf("create runner tmpfile for image: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	downloadedSHA, err := c.pipeHTTPToFile(ctx, in.URL, tmpFile)
+	if err != nil {
+		return nil, err
+	}
+
+	if expected := strings.ToLower(in.ExpectedSha256); expected != "" {
+		if downloadedSHA != expected {
+			return nil, fmt.Errorf("%w: expected sha256=%s of %s, got sha256=%s",
+				ErrChecksumMismatch, expected, in.URL, downloadedSHA)
+		}
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("close runner tmpfile %s: %w", tmpPath, err)
+	}
+
+	stagingPath, err := pickStagingPath(in.DestinationPath)
+	if err != nil {
+		return nil, fmt.Errorf("pick staging path: %w", err)
+	}
+
+	if err := c.runner.StreamFile(ctx, tmpPath, stagingPath); err != nil {
+		return nil, fmt.Errorf("stream %s to host %s: %w", tmpPath, stagingPath, err)
+	}
+
+	body, err := scripts.ImageFileScript("new")
+	if err != nil {
+		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		DestinationPath string `json:"destination_path"`
+		StagingPath     string `json:"staging_path"`
+		ExpectedSha256  string `json:"expected_sha256"`
+		SourceMode      string `json:"source_mode"`
+	}{
+		DestinationPath: in.DestinationPath,
+		StagingPath:     stagingPath,
+		ExpectedSha256:  downloadedSHA,
+		SourceMode:      "local_path",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
+	}
+
+	var f ImageFile
+	if err := c.runScript(ctx, string(body), stdin, &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// pipeHTTPToFile downloads rawURL into dst and returns the lowercase-hex
+// SHA-256 of the downloaded bytes. Rides c.httpClient so the request
+// inherits the ResponseHeaderTimeout configured on the shared client.
+func (c *Client) pipeHTTPToFile(ctx context.Context, rawURL string, dst io.Writer) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build GET %s: %w", rawURL, err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(dst, io.TeeReader(resp.Body, hasher)); err != nil {
+		return "", fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // pipeCompressedHTTPToFile drives the HTTP body through the
