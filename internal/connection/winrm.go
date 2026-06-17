@@ -25,7 +25,6 @@ import (
 	"unicode/utf16"
 
 	"github.com/bodgit/ntlmssp"
-	ntlmhttplib "github.com/bodgit/ntlmssp/http"
 	"github.com/masterzen/winrm"
 	"github.com/masterzen/winrm/soap"
 )
@@ -430,13 +429,17 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 
 	bufferedPr := bufio.NewReaderSize(pr, streamFileBufSize)
 	stdinErr := streamFileStdin(ctx, winrmCmd.Stdin, bufferedPr)
-	_ = pr.Close()
+	_ = pr.Close() // unblock encoder goroutine if we exited early
 	_ = winrmCmd.Stdin.Close()
 
 	// winrmCmd.Wait() polls GetCommandState until the PS script exits.
 	// If the host crashes or the PS script hangs after receiving stdin, Wait
 	// blocks forever. Run it in a goroutine and enforce a ceiling so we
 	// surface a clean error instead of hanging the apply indefinitely.
+	// In the timeout path we return immediately rather than blocking on
+	// winrmCmd.Close() -- Close() itself can hang if the server is
+	// unresponsive, and the goroutine will be reaped when the provider
+	// process exits after Terraform surfaces the error.
 	const streamWaitTimeout = 10 * time.Minute
 	waitDone := make(chan struct{})
 	go func() {
@@ -451,6 +454,7 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 
 	select {
 	case <-waitDone:
+		// normal completion -- fall through to error checks below
 	case <-ctx.Done():
 		return fmt.Errorf("%w: context cancelled waiting for stream-file script: %v", ErrTimeout, ctx.Err())
 	case <-timer.C:
@@ -512,6 +516,7 @@ func streamFileWriteAll(w io.Writer, data []byte) error {
 		if zeroProgress > streamFileMaxSendRetries {
 			return fmt.Errorf("stdin send stalled after %d zero-progress errors: %w", zeroProgress-1, err)
 		}
+		// Exponential backoff: 250 ms, 500 ms, 1 s, 2 s, 4 s, …
 		time.Sleep(time.Duration(1<<(zeroProgress-1)) * 250 * time.Millisecond)
 	}
 	return nil
@@ -623,36 +628,96 @@ func (l *lineWrappedWriter) Close() error {
 // ntlmEncryptionTransporter implements winrm.Transporter for NTLM-
 // authenticated, message-level encrypted WinRM sessions over HTTP.
 //
-// Each Post call creates a fresh private http.Transport so no TCP connection
-// is ever shared with other concurrent or sequential Post calls. NTLM
-// authentication is connection-scoped: sharing http.DefaultTransport across
-// calls lets a previous call's idle (already-authenticated) connection be
-// picked up by a new call whose ntlmssp.Client has no session yet, causing
-// the server to process the new request with stale session keys (resulting in
-// 401 and "checksum does not match" errors).
+// The transporter maintains a persistent NTLM session so that the full
+// 3-way NTLM handshake is paid only once per connection lifetime rather than
+// on every Post() call. Without session reuse, each 256KB sendInput chunk
+// costs 4–5 RTTs of NTLM overhead before any data moves — at typical VPN
+// latency (~300ms TCP RTT) that adds ~1.5s of fixed overhead per chunk,
+// making 335MB ISO transfers take 30+ minutes instead of ~3 min.
 //
-// The two-phase approach mirrors pywinrm and winrm.Encryption.Post:
-//   - Phase 1 (PrepareAuth): send an empty POST so ntlmhttplib.Client can
-//     perform the full 3-way NTLM handshake and populate the security session.
-//   - Phase 2 (PrepareSOAP): send the actual SOAP message. ntlmhttplib.Client
-//     with Encryption(true) seals the request body and unseals the response
-//     using the session keys established in phase 1.
+// Session lifecycle:
+//   - First Post(): raw-TCP 3-way NTLM handshake — dials a raw net.Conn,
+//     writes Type1 directly, reads the Type2 challenge, derives session keys,
+//     then writes Type3 + encrypted SOAP on the same socket. Using raw sockets
+//     is load-bearing: Go's http.Transport may silently retry on a new
+//     connection when the idle connection is closed, which would land the Type3
+//     authenticate token on a connection the server has no NTLM context for.
+//     A raw net.Conn prevents that.
+//   - After the first Post() the authenticated net.Conn is promoted into the
+//     fast-path httpTransport via injectedConn. Subsequent calls skip the
+//     handshake and send encrypted SOAP directly (one RTT).
+//   - On any auth/transport error: invalidates the cached session and retries
+//     the full 3-way handshake + encrypted SOAP once.
 //
-// winrm.Encryption / bodgit/ntlmssp negotiates the full NTLM flag set
-// (SIGN/SEAL/KEY_EXCHANGE). Azure/go-ntlmssp (ClientNTLM) negotiates a
-// reduced set; Windows Server 2019 rejects the resulting AUTHENTICATE token.
+// The mutex guards session state; Post() is safe for concurrent callers.
+//
+// bodgit/ntlmssp negotiates the full NTLM flag set (SIGN/SEAL/KEY_EXCHANGE).
+// Azure/go-ntlmssp (ClientNTLM) negotiates a reduced set; Windows Server 2019
+// rejects the resulting AUTHENTICATE token.
 type ntlmEncryptionTransporter struct {
 	username string
 	password string
 	endpoint *winrm.Endpoint
+
+	mu            sync.Mutex
+	ntlmClient    *ntlmssp.Client          // NTLM state machine; replaced on each invalidation
+	httpClient    *http.Client             // fast-path: sends encrypted SOAP on keep-alive conn
+	httpTransport *http.Transport          // underlying transport; DialContext injects handshake conn
+	injectedConn  *bufReaderConn           // authenticated conn to inject on first fast-path dial
+	sessionReady  bool                     // true once slow path succeeded at least once
+	session       *ntlmssp.SecuritySession // session keys for encrypt/decrypt
+	endpointURL   string
 }
+
+// bufReaderConn wraps a net.Conn with a bufio.Reader so that bytes that were
+// pre-read during the NTLM handshake (into br's internal buffer) are not lost
+// when the connection is handed to http.Transport.
+type bufReaderConn struct {
+	net.Conn
+	br *bufio.Reader
+}
+
+func (c *bufReaderConn) Read(b []byte) (int, error) { return c.br.Read(b) }
 
 func (t *ntlmEncryptionTransporter) Transport(endpoint *winrm.Endpoint) error {
 	t.endpoint = endpoint
+	scheme := "http"
+	if endpoint.HTTPS {
+		scheme = "https"
+	}
+	t.endpointURL = (&url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(endpoint.Host, strconv.Itoa(endpoint.Port)),
+		Path:   "/wsman",
+	}).String()
 	return nil
 }
 
-func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMessage) (string, error) {
+// invalidateSession drops the cached NTLM session. Must be called with t.mu held.
+func (t *ntlmEncryptionTransporter) invalidateSession() {
+	if t.httpTransport != nil {
+		t.httpTransport.CloseIdleConnections()
+	}
+	if t.injectedConn != nil {
+		_ = t.injectedConn.Close()
+		t.injectedConn = nil
+	}
+	t.httpTransport = nil
+	t.ntlmClient = nil
+	t.httpClient = nil
+	t.sessionReady = false
+	t.session = nil
+}
+
+// ensureClients initialises the HTTP/NTLM client objects if they have not been
+// created yet (or were dropped by invalidateSession). No I/O is performed here;
+// the actual NTLM handshake is deferred to postOnce's slow path.
+// Must be called with t.mu held.
+func (t *ntlmEncryptionTransporter) ensureClients() error {
+	if t.ntlmClient != nil {
+		return nil
+	}
+
 	var userName, domain string
 	if idx := strings.Index(t.username, "@"); idx >= 0 {
 		userName, domain = t.username[:idx], t.username[idx+1:]
@@ -668,98 +733,211 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 		ntlmssp.SetVersion(ntlmssp.DefaultVersion()),
 	)
 	if err != nil {
-		return "", fmt.Errorf("winrm: create ntlm client: %w", err)
+		return fmt.Errorf("winrm: create ntlm client: %w", err)
 	}
 
-	// Fresh private transport per Post call. Using http.DefaultTransport
-	// would let idle authenticated connections from previous Post calls bleed
-	// into this one; the server would answer the phase-1 empty POST with 200
-	// (reusing the old session) while our fresh ntlmClient has no session,
-	// making phase-2 encryption fail with a key-not-established error.
 	tlsCfg := &tls.Config{InsecureSkipVerify: t.endpoint.Insecure} // #nosec G402
 	if len(t.endpoint.CACert) > 0 {
 		pool := x509.NewCertPool()
 		pool.AppendCertsFromPEM(t.endpoint.CACert)
 		tlsCfg.RootCAs = pool
 	}
+
+	// DialContext injects the authenticated conn produced by the slow-path
+	// raw-TCP handshake so the first fast-path request reuses it.
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	httpTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			t.mu.Lock()
+			c := t.injectedConn
+			if c != nil {
+				t.injectedConn = nil
+			}
+			t.mu.Unlock()
+			if c != nil {
+				return c, nil
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
 		TLSClientConfig:       tlsCfg,
-		ResponseHeaderTimeout: t.endpoint.Timeout,
-	}
-	defer httpTransport.CloseIdleConnections()
-	httpClient := &http.Client{Transport: httpTransport}
-
-	// ntlmhttplib.Client without Encryption option: used only for transport
-	// (NTLM handshake + connection reuse). Message encryption and decryption
-	// are handled manually below so we can set the correct Content-Length on
-	// the encrypted request before sending. ntlmhttplib.Encryption(true) would
-	// silently replace the body in wrap() without updating req.ContentLength,
-	// causing "ContentLength mismatch" transport errors.
-	ntlmHTTP, err := ntlmhttplib.NewClient(httpClient, ntlmClient)
-	if err != nil {
-		return "", fmt.Errorf("winrm: create ntlmhttp client: %w", err)
+		ResponseHeaderTimeout: maxDuration(t.endpoint.Timeout, 5*time.Minute),
 	}
 
-	scheme := "http"
+	t.ntlmClient = ntlmClient
+	t.httpTransport = httpTransport
+	t.httpClient = &http.Client{Transport: httpTransport}
+	return nil
+}
+
+// dialRaw opens a raw TCP (or TLS) connection to the WinRM endpoint.
+func (t *ntlmEncryptionTransporter) dialRaw() (net.Conn, error) {
+	addr := net.JoinHostPort(t.endpoint.Host, strconv.Itoa(t.endpoint.Port))
 	if t.endpoint.HTTPS {
-		scheme = "https"
+		tlsCfg := &tls.Config{InsecureSkipVerify: t.endpoint.Insecure} // #nosec G402
+		if len(t.endpoint.CACert) > 0 {
+			pool := x509.NewCertPool()
+			pool.AppendCertsFromPEM(t.endpoint.CACert)
+			tlsCfg.RootCAs = pool
+		}
+		return tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second}, "tcp", addr, tlsCfg)
 	}
-	endpointURL := (&url.URL{
-		Scheme: scheme,
-		Host:   net.JoinHostPort(t.endpoint.Host, strconv.Itoa(t.endpoint.Port)),
-		Path:   "/wsman",
-	}).String()
+	return net.DialTimeout("tcp", addr, 30*time.Second)
+}
 
-	// Phase 1: empty POST to establish the NTLM session. ntlmhttplib performs
-	// the full NTLM handshake and populates ntlmClient.SecuritySession(). The
-	// server responds 200 (or a SOAP fault) to the empty body; we discard it.
-	authReq, err := http.NewRequest(http.MethodPost, endpointURL, nil)
+func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMessage) (string, error) {
+	result, err := t.postOnce(message)
 	if err != nil {
-		return "", fmt.Errorf("winrm: build auth request: %w", err)
+		// Auth errors may mean the server dropped or expired the session.
+		// Invalidate and retry once with a fresh handshake.
+		t.mu.Lock()
+		t.invalidateSession()
+		t.mu.Unlock()
+		result, err = t.postOnce(message)
 	}
-	authReq.Header.Set("Content-Type", "application/soap+xml;charset=UTF-8")
-	authReq.Header.Set("Connection", "Keep-Alive")
-	authReq.Header.Set("User-Agent", "WinRM client")
-	authReq.Header.Set("Content-Length", "0")
+	return result, err
+}
 
-	authResp, err := ntlmHTTP.Do(authReq)
-	if err != nil {
-		return "", fmt.Errorf("winrm: ntlm auth: %w", err)
+// postOnce sends a single SOAP message. Two paths:
+//
+//   - Slow path (sessionReady=false): dials a raw net.Conn and performs the
+//     3-way NTLM handshake manually, writing Type1/Type3 and reading the
+//     Type2 challenge all on the same socket. After the handshake the
+//     authenticated conn is injected into httpTransport so the next fast-path
+//     call picks it up without re-dialing.
+//
+//   - Fast path (sessionReady=true): sends encrypted SOAP directly on the
+//     keep-alive connection via httpClient. One RTT. On any error, returns it
+//     so Post() can invalidate and retry via the slow path.
+func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string, error) {
+	t.mu.Lock()
+	if err := t.ensureClients(); err != nil {
+		t.mu.Unlock()
+		return "", err
 	}
-	_, _ = io.Copy(io.Discard, authResp.Body)
-	_ = authResp.Body.Close()
-	if authResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("winrm: ntlm auth HTTP %d", authResp.StatusCode)
-	}
-
-	// Phase 2: manually encrypt the SOAP body with the session keys so we
-	// know the exact encrypted length before building the request. This avoids
-	// the Content-Length mismatch that would occur if we let ntlmhttplib.wrap
-	// replace the body post-request-construction.
-	session := ntlmClient.SecuritySession()
-	if session == nil {
-		return "", fmt.Errorf("winrm: ntlm session not established after auth")
-	}
+	sessionReady := t.sessionReady
+	ntlmClient := t.ntlmClient
+	httpClient := t.httpClient
+	session := t.session
+	t.mu.Unlock()
 
 	soapBytes := []byte(message.String())
+	encCT := `multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"`
+
+	if !sessionReady {
+		// --- Slow path: raw-TCP NTLM handshake ---
+
+		rawConn, err := t.dialRaw()
+		if err != nil {
+			return "", fmt.Errorf("winrm: ntlm dial: %w", err)
+		}
+		closeConn := true
+		defer func() {
+			if closeConn {
+				_ = rawConn.Close()
+			}
+		}()
+		br := bufio.NewReader(rawConn)
+
+		// Step 1: Type1 Negotiate.
+		type1, err := ntlmClient.Authenticate(nil, nil)
+		if err != nil {
+			return "", fmt.Errorf("winrm: ntlm negotiate: %w", err)
+		}
+
+		// Step 2: write Type1 to rawConn, read Type2 challenge back.
+		// Using req.Write / http.ReadResponse on the raw socket guarantees that
+		// the challenge and the Type3+SOAP request share the exact same TCP conn.
+		req1, err := http.NewRequest(http.MethodPost, t.endpointURL, nil)
+		if err != nil {
+			return "", fmt.Errorf("winrm: build challenge request: %w", err)
+		}
+		req1.Header.Set("Content-Type", "application/soap+xml;charset=UTF-8")
+		req1.Header.Set("Connection", "Keep-Alive")
+		req1.Header.Set("User-Agent", "WinRM client")
+		req1.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(type1))
+		if err := req1.Write(rawConn); err != nil {
+			return "", fmt.Errorf("winrm: ntlm type1 write: %w", err)
+		}
+		resp1, err := http.ReadResponse(br, req1)
+		if err != nil {
+			return "", fmt.Errorf("winrm: ntlm type1 read: %w", err)
+		}
+		_, _ = io.Copy(io.Discard, resp1.Body)
+		_ = resp1.Body.Close()
+		if resp1.StatusCode != http.StatusUnauthorized {
+			return "", fmt.Errorf("winrm: expected 401 for NTLM challenge, got %d", resp1.StatusCode)
+		}
+		challenge, err := extractNTLMChallenge(resp1)
+		if err != nil {
+			return "", err
+		}
+
+		// Step 3: Type3 Authenticate + derive session keys.
+		type3, err := ntlmClient.Authenticate(challenge, nil)
+		if err != nil {
+			return "", fmt.Errorf("winrm: ntlm authenticate: %w", err)
+		}
+		session = ntlmClient.SecuritySession()
+		if session == nil {
+			return "", fmt.Errorf("winrm: ntlm session not established after authenticate")
+		}
+
+		// Encrypt SOAP with the fresh session keys.
+		sealed, signature, err := session.Wrap(soapBytes)
+		if err != nil {
+			return "", fmt.Errorf("winrm: encrypt soap: %w", err)
+		}
+		encBody := buildWinRMEncryptedBody(soapBytes, sealed, signature)
+
+		// Step 4: write Type3 + encrypted SOAP on the SAME rawConn.
+		req2, err := http.NewRequest(http.MethodPost, t.endpointURL, bytes.NewReader(encBody))
+		if err != nil {
+			return "", fmt.Errorf("winrm: build soap request: %w", err)
+		}
+		req2.Header.Set("Content-Type", encCT)
+		req2.Header.Set("Connection", "Keep-Alive")
+		req2.Header.Set("User-Agent", "WinRM client")
+		req2.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(type3))
+		if err := req2.Write(rawConn); err != nil {
+			return "", fmt.Errorf("winrm: type3+soap write: %w", err)
+		}
+		resp2, err := http.ReadResponse(br, req2)
+		if err != nil {
+			return "", fmt.Errorf("winrm: type3+soap read: %w", err)
+		}
+		defer func() { _ = resp2.Body.Close() }()
+
+		respBody, err := io.ReadAll(resp2.Body)
+		if err != nil {
+			return "", fmt.Errorf("winrm: read soap response: %w", err)
+		}
+
+		respCT := resp2.Header.Get("Content-Type")
+		result, err := t.processSoapResponse(resp2.StatusCode, respCT, respBody, session)
+		if err != nil {
+			return "", fmt.Errorf("winrm: processSoapResponse: %w", err)
+		}
+
+		// Promote to fast path: inject the authenticated conn into httpTransport
+		// so the next httpClient.Do picks it up via the custom DialContext.
+		wrapped := &bufReaderConn{Conn: rawConn, br: br}
+		closeConn = false // transfer ownership; don't close in defer
+		t.mu.Lock()
+		t.injectedConn = wrapped
+		t.session = session
+		t.sessionReady = true
+		t.mu.Unlock()
+		return result, nil
+	}
+
+	// --- Fast path: reuse session keys + keep-alive connection ---
 	sealed, signature, err := session.Wrap(soapBytes)
 	if err != nil {
 		return "", fmt.Errorf("winrm: encrypt soap: %w", err)
 	}
-
-	// Build the WS-Management multipart/encrypted MIME body manually so that
-	// OriginalContent.Length reflects the plaintext SOAP length (not the
-	// encrypted blob length). ntlmhttplib.Wrap uses len(input) which is the
-	// blob length -- Windows WinRM validates this field and rejects requests
-	// where it doesn't match the decrypted payload, returning HTTP 400.
 	encBody := buildWinRMEncryptedBody(soapBytes, sealed, signature)
-	encCT := `multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"`
 
-	soapReq, err := http.NewRequest(http.MethodPost, endpointURL, bytes.NewReader(encBody))
+	soapReq, err := http.NewRequest(http.MethodPost, t.endpointURL, bytes.NewReader(encBody))
 	if err != nil {
 		return "", fmt.Errorf("winrm: build soap request: %w", err)
 	}
@@ -767,7 +945,7 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 	soapReq.Header.Set("Connection", "Keep-Alive")
 	soapReq.Header.Set("User-Agent", "WinRM client")
 
-	soapResp, err := ntlmHTTP.Do(soapReq)
+	soapResp, err := httpClient.Do(soapReq)
 	if err != nil {
 		return "", fmt.Errorf("winrm: soap post: %w", err)
 	}
@@ -778,25 +956,53 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 		return "", fmt.Errorf("winrm: read soap response: %w", err)
 	}
 
-	// Non-200 without an encrypted body is a hard transport error (e.g. 401).
-	// Non-200 with an encrypted body is a SOAP fault — return the decrypted
-	// SOAP to the caller so the masterzen/winrm stack can surface the fault.
-	respCT := soapResp.Header.Get("Content-Type")
-	if strings.Contains(respCT, "multipart/encrypted") {
-		plaintext, err := decryptWinRMEncryptedResponse(respBody, session)
+	result, err := t.processSoapResponse(soapResp.StatusCode, soapResp.Header.Get("Content-Type"), respBody, session)
+	if err != nil {
+		return "", fmt.Errorf("winrm: processSoapResponse: %w", err)
+	}
+	return result, nil
+}
+
+// processSoapResponse interprets a WinRM HTTP response. Encrypted responses are
+// decrypted; unencrypted 200 soap+xml responses are passed through; anything
+// else is an error that will trigger session invalidation and retry.
+func (t *ntlmEncryptionTransporter) processSoapResponse(statusCode int, contentType string, body []byte, session *ntlmssp.SecuritySession) (string, error) {
+	if strings.Contains(contentType, "multipart/encrypted") {
+		plaintext, err := decryptWinRMEncryptedResponse(body, session)
 		if err != nil {
 			return "", fmt.Errorf("winrm: decrypt response: %w", err)
 		}
 		return string(plaintext), nil
 	}
+	if statusCode == http.StatusUnauthorized {
+		return "", fmt.Errorf("winrm: http 401 unauthorized (session expired)")
+	}
+	if statusCode != http.StatusOK {
+		snippet := body
+		if len(snippet) > 512 {
+			snippet = snippet[:512]
+		}
+		return "", fmt.Errorf("winrm: http %d: %q", statusCode, snippet)
+	}
+	if !strings.Contains(contentType, "application/soap+xml") {
+		return "", fmt.Errorf("winrm: unexpected content type: %s", contentType)
+	}
+	return string(body), nil
+}
 
-	if soapResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("winrm: http response error: %d - invalid content type", soapResp.StatusCode)
+// extractNTLMChallenge extracts the base64-decoded Type2 (Challenge) message
+// from a 401 response's WWW-Authenticate: Negotiate <token> header.
+func extractNTLMChallenge(resp *http.Response) ([]byte, error) {
+	for _, v := range resp.Header["Www-Authenticate"] {
+		if strings.HasPrefix(v, "Negotiate ") {
+			b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(v, "Negotiate "))
+			if err != nil {
+				return nil, fmt.Errorf("winrm: decode NTLM challenge: %w", err)
+			}
+			return b, nil
+		}
 	}
-	if !strings.Contains(respCT, "application/soap+xml") {
-		return "", fmt.Errorf("winrm: unexpected content type: %s", respCT)
-	}
-	return string(respBody), nil
+	return nil, fmt.Errorf("winrm: no NTLM challenge in 401 response (WWW-Authenticate: %v)", resp.Header["Www-Authenticate"])
 }
 
 const winrmMIMEBoundary = "Encrypted Boundary"
@@ -1166,6 +1372,13 @@ func encodePSScript(s string) string {
 // form WSMan expects on the OperationTimeout SOAP header (e.g., "PT5M30S").
 // Falls back to PT0S if d <= 0 (matching DefaultParameters.Timeout when
 // the operator opts out).
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func formatXSDDuration(d time.Duration) string {
 	if d <= 0 {
 		return "PT0S"
