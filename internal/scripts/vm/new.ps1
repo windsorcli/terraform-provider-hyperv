@@ -45,9 +45,14 @@ function New-HypervVM {
         [string]                        $SecureBootTemplate,
         [string]                        $Notes
     )
-    New-VM -Name $Name -Generation $Generation `
+    # Capture the VM object returned by New-VM so subsequent operations
+    # use the specific VM by ID rather than name. Hyper-V does not enforce
+    # name uniqueness, so Get-VM -Name would return multiple objects if an
+    # earlier interrupted run left an orphan with the same name.
+    $newVmObj = New-VM -Name $Name -Generation $Generation `
         -MemoryStartupBytes $MemoryBytes `
-        -NoVHD -ErrorAction Stop | Out-Null
+        -NoVHD -ErrorAction Stop
+    $vmId = $newVmObj.Id
 
     # New-VM auto-creates a default "Network Adapter" NIC with empty
     # SwitchName. Strip it so the VM starts with zero NICs -- the
@@ -60,7 +65,7 @@ function New-HypervVM {
     #
     # Pipe form (rather than `Remove-VMNetworkAdapter -Name '*'`)
     # because the cmdlet doesn't accept wildcards on -Name.
-    Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop |
+    Get-VMNetworkAdapter -VM $newVmObj -ErrorAction Stop |
         Remove-VMNetworkAdapter -ErrorAction Stop
 
     # Same pattern for Gen 1: New-VM auto-creates an empty DVD drive
@@ -71,7 +76,7 @@ function New-HypervVM {
     # "Provider produced inconsistent result after apply" check.
     # Gen 2 doesn't get an auto-DVD, so this is a Gen 1-only no-op
     # check that's cheap to leave unconditional.
-    Get-VMDvdDrive -VMName $Name -ErrorAction Stop |
+    Get-VMDvdDrive -VM $newVmObj -ErrorAction Stop |
         Remove-VMDvdDrive -ErrorAction Stop
 
     # Atomicity guard: New-VM has now committed the VM to the host. Any
@@ -94,7 +99,7 @@ function New-HypervVM {
         # passes through as ErrPSExecution if the resource-layer
         # validators didn't catch it at plan time.
         $memoryArgs = @{
-            VMName               = $Name
+            VM                   = $newVmObj
             StartupBytes         = $MemoryBytes
             DynamicMemoryEnabled = if ($null -ne $DynamicMemory) { [bool] $DynamicMemory } else { $false }
         }
@@ -104,10 +109,10 @@ function New-HypervVM {
         }
         Set-VMMemory @memoryArgs -ErrorAction Stop
 
-        Set-VMProcessor -VMName $Name -Count $Vcpu -ErrorAction Stop
+        Set-VMProcessor -VM $newVmObj -Count $Vcpu -ErrorAction Stop
 
         if ($Generation -eq 2 -and ($null -ne $SecureBoot -or $SecureBootTemplate)) {
-            $fwArgs = @{ VMName = $Name; ErrorAction = 'Stop' }
+            $fwArgs = @{ VM = $newVmObj; ErrorAction = 'Stop' }
             if ($null -ne $SecureBoot) {
                 $fwArgs.EnableSecureBoot = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
             }
@@ -121,7 +126,7 @@ function New-HypervVM {
         }
 
         if ($PSBoundParameters.ContainsKey('Notes')) {
-            Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
+            Set-VM -VM $newVmObj -Notes $Notes -ErrorAction Stop
         }
     }
     catch {
@@ -130,7 +135,7 @@ function New-HypervVM {
         # SilentlyContinue alone wouldn't catch a thrown terminating
         # error from cleanup, hence the explicit try.
         try {
-            Remove-VM -Name $Name -Force -ErrorAction Stop
+            Remove-VM -VM $newVmObj -Force -ErrorAction Stop
         }
         catch {
             # Best-effort cleanup; the original Set-* error is what we want
@@ -150,14 +155,14 @@ function New-HypervVM {
         throw
     }
 
-    $vm = Get-VM -Name $Name -ErrorAction Stop
+    $vm = Get-VM -Id $vmId -ErrorAction Stop
     Read-HypervVMResult -Vm $vm
 }
 
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        $params = Read-HypervStdinParams
 
         $callArgs = @{
             Name        = $params.name
