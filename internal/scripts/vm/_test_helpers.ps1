@@ -13,7 +13,8 @@
 function Get-VM {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)] [string] $Name
+        [Parameter(Position = 0)] [string] $Name,
+        [guid] $Id
     )
 }
 
@@ -31,6 +32,7 @@ function New-VM {
 function Set-VM {
     [CmdletBinding()]
     param(
+        [object] $VM,
         [string] $Name,
         [string] $Notes
     )
@@ -39,6 +41,7 @@ function Set-VM {
 function Set-VMMemory {
     [CmdletBinding()]
     param(
+        [object] $VM,
         [string] $VMName,
         [bool]   $DynamicMemoryEnabled,
         [int64]  $StartupBytes,
@@ -58,6 +61,7 @@ function Get-VMMemory {
 function Set-VMProcessor {
     [CmdletBinding()]
     param(
+        [object] $VM,
         [string] $VMName,
         [int]    $Count
     )
@@ -66,8 +70,10 @@ function Set-VMProcessor {
 function Set-VMFirmware {
     [CmdletBinding()]
     param(
+        [object]   $VM,
         [string]   $VMName,
         [string]   $EnableSecureBoot,
+        [string]   $SecureBootTemplate,
         [object[]] $BootOrder
     )
 }
@@ -101,6 +107,7 @@ function Start-VM {
 function Remove-VM {
     [CmdletBinding()]
     param(
+        [object] $VM,
         [string] $Name,
         [switch] $Force
     )

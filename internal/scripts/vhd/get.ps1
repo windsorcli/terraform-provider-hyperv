@@ -54,7 +54,7 @@ function Get-HypervVHD {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        $params = Read-HypervStdinParams
         Get-HypervVHD -Path $params.path
     }
     catch {

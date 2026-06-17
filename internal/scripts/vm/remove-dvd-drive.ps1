@@ -42,7 +42,7 @@ function Remove-HypervVMDvdDrive {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        $params = Read-HypervStdinParams
         Remove-HypervVMDvdDrive `
             -Name               $params.name `
             -ControllerType     $params.controller_type `

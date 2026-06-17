@@ -105,3 +105,17 @@ function Write-HypervResult {
         $Object | ConvertTo-Json -Depth 10 -Compress
     }
 }
+
+# Read-HypervStdinParams reads and parses the JSON payload delivered on stdin.
+# Returns a PSCustomObject with the script's input fields. Throws with a
+# descriptive error when stdin is empty (WinRM transient delivery failure)
+# rather than letting strict-mode 3.0 surface a misleading
+# "The property 'X' cannot be found on this object" when the caller accesses
+# any field on the null result of `ConvertFrom-Json ""`.
+function Read-HypervStdinParams {
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "hyperv: stdin was empty; WinRM may have failed to deliver the script input"
+    }
+    return $raw | ConvertFrom-Json
+}

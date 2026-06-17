@@ -234,7 +234,7 @@ function New-HypervNatSwitch {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        $params = Read-HypervStdinParams
 
         $callArgs = @{
             Name       = $params.name

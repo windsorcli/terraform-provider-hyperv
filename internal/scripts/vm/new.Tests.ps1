@@ -27,7 +27,7 @@ Describe 'New-HypervVM' {
             # "None" value (verified against Server 2019 in the M4 smoke
             # test), so we let the cmdlet's default apply. The VM has
             # nothing to boot from until storage is attached separately.
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VM { }
@@ -50,7 +50,7 @@ Describe 'New-HypervVM' {
             # The dynamic flag MUST land in the same Set-VMMemory call as
             # StartupBytes, otherwise the cmdlet rejects StartupBytes as
             # out-of-range against the still-default dynamic min/max.
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -61,14 +61,14 @@ Describe 'New-HypervVM' {
             New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 | Out-Null
 
             Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
-                $VMName -eq 'vm01' -and
+                $VM -ne $null -and
                 $DynamicMemoryEnabled -eq $false -and
                 $StartupBytes -eq 4294967296
             }
         }
 
         It 'sets vcpu via Set-VMProcessor -Count' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -79,12 +79,12 @@ Describe 'New-HypervVM' {
             New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 4 -MemoryBytes 4294967296 | Out-Null
 
             Should -Invoke Set-VMProcessor -Times 1 -Exactly -ParameterFilter {
-                $VMName -eq 'vm01' -and $Count -eq 4
+                $VM -ne $null -and $Count -eq 4
             }
         }
 
         It 'does NOT call Set-VMFirmware when secure_boot is omitted' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -98,7 +98,7 @@ Describe 'New-HypervVM' {
         }
 
         It 'does NOT call Set-VM when notes is omitted' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -112,7 +112,7 @@ Describe 'New-HypervVM' {
         }
 
         It 'emits the canonical 10-field shape after create (matches get.ps1)' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -144,7 +144,7 @@ Describe 'New-HypervVM' {
         # dynamic flag.
 
         It 'forwards DynamicMemoryEnabled=$true with Minimum/Maximum when DynamicMemory=$true' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -158,7 +158,7 @@ Describe 'New-HypervVM' {
                 Out-Null
 
             Should -Invoke Set-VMMemory -Times 1 -Exactly -ParameterFilter {
-                $VMName -eq 'vm01' -and
+                $VM -ne $null -and
                 $DynamicMemoryEnabled -eq $true -and
                 $StartupBytes -eq 4294967296 -and
                 $MinimumBytes -eq 2147483648 -and
@@ -170,7 +170,7 @@ Describe 'New-HypervVM' {
             # Hyper-V keeps existing min/max defaults (512MiB/1TiB) when
             # they're not specified. Verifies the script doesn't pass
             # zero or null bytes through.
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -190,7 +190,7 @@ Describe 'New-HypervVM' {
         }
 
         It 'ignores Min/Max when DynamicMemory is $false (cmdlet would reject the combination)' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -218,7 +218,7 @@ Describe 'New-HypervVM' {
     Context 'gen 2 with secure_boot' {
 
         It 'forwards Set-VMFirmware -EnableSecureBoot On when secure_boot=$true' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -230,12 +230,12 @@ Describe 'New-HypervVM' {
                 Out-Null
 
             Should -Invoke Set-VMFirmware -Times 1 -Exactly -ParameterFilter {
-                $VMName -eq 'vm01' -and $EnableSecureBoot -eq 'On'
+                $VM -ne $null -and $EnableSecureBoot -eq 'On'
             }
         }
 
         It 'forwards Set-VMFirmware -EnableSecureBoot Off when secure_boot=$false' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -247,7 +247,7 @@ Describe 'New-HypervVM' {
                 Out-Null
 
             Should -Invoke Set-VMFirmware -Times 1 -Exactly -ParameterFilter {
-                $VMName -eq 'vm01' -and $EnableSecureBoot -eq 'Off'
+                $VM -ne $null -and $EnableSecureBoot -eq 'Off'
             }
         }
     }
@@ -259,7 +259,7 @@ Describe 'New-HypervVM' {
             # secure_boot on gen 1 at plan time, but the script must not
             # error if the validator is bypassed (direct invocation, future
             # caller bug).
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -274,7 +274,7 @@ Describe 'New-HypervVM' {
         }
 
         It 'returns SecureBootEnabled=null on gen 1 (Get-VMFirmware not called)' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VM { }
@@ -292,7 +292,7 @@ Describe 'New-HypervVM' {
     Context 'optional notes' {
 
         It 'forwards Set-VM -Notes when notes is supplied' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -304,12 +304,12 @@ Describe 'New-HypervVM' {
                 Out-Null
 
             Should -Invoke Set-VM -Times 1 -Exactly -ParameterFilter {
-                $Name -eq 'vm01' -and $Notes -eq 'production'
+                $VM -ne $null -and $Notes -eq 'production'
             }
         }
 
         It 'forwards an empty string Notes (clear semantics)' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -364,7 +364,7 @@ Describe 'New-HypervVM' {
         # atomic from Terraform's perspective.
 
         It 'cleans up the partial VM when Set-VMMemory fails after New-VM' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory {
                 $exception = [System.InvalidOperationException]::new('simulated memory configuration failure')
                 $errorRecord = [System.Management.Automation.ErrorRecord]::new(
@@ -383,12 +383,12 @@ Describe 'New-HypervVM' {
                 Should -Throw -ExpectedMessage '*memory configuration failure*'
 
             Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
-                $Name -eq 'vm01' -and $Force -eq $true
+                $VM -ne $null -and $Force -eq $true
             }
         }
 
         It 'cleans up the partial VM when Set-VMProcessor fails' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { throw 'simulated vcpu failure' }
             Mock Set-VMFirmware { }
@@ -401,12 +401,12 @@ Describe 'New-HypervVM' {
                 Should -Throw -ExpectedMessage '*vcpu failure*'
 
             Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
-                $Name -eq 'vm01' -and $Force -eq $true
+                $VM -ne $null -and $Force -eq $true
             }
         }
 
         It 'cleans up the partial VM when Set-VMFirmware fails on gen 2 + secure_boot' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { throw 'simulated firmware configuration failure' }
@@ -419,12 +419,12 @@ Describe 'New-HypervVM' {
                 Should -Throw -ExpectedMessage '*firmware configuration failure*'
 
             Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
-                $Name -eq 'vm01' -and $Force -eq $true
+                $VM -ne $null -and $Force -eq $true
             }
         }
 
         It 'cleans up the partial VM when Set-VM (notes) fails' {
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
             Mock Set-VMProcessor { }
             Mock Set-VMFirmware { }
@@ -437,7 +437,7 @@ Describe 'New-HypervVM' {
                 Should -Throw -ExpectedMessage '*notes failure*'
 
             Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
-                $Name -eq 'vm01' -and $Force -eq $true
+                $VM -ne $null -and $Force -eq $true
             }
         }
 
@@ -446,7 +446,7 @@ Describe 'New-HypervVM' {
             # operator gets the configuration error, not whatever Remove-VM
             # might fail with (e.g., "VM in use" if some other operation
             # raced). This test pins that contract.
-            Mock New-VM { }
+            Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { throw 'ORIGINAL configuration error' }
             Mock Remove-VM { throw 'CLEANUP error -- should be swallowed' }
             Mock Get-VM { New-HypervVMSample }

@@ -38,7 +38,7 @@ function Remove-HypervVMNetworkAdapter {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        $params = Read-HypervStdinParams
         Remove-HypervVMNetworkAdapter `
             -Name   $params.name `
             -VMName $params.vm_name

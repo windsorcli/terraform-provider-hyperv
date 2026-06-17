@@ -104,7 +104,7 @@ function Set-HypervVMState {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        $params = Read-HypervStdinParams
         # shutdown_mode is optional on the wire; absent -> turn_off
         # default. The Go side always emits the field once it's set on
         # the resource, but a stale typed client (older Go binary
