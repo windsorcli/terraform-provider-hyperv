@@ -736,9 +736,9 @@ func (t *ntlmEncryptionTransporter) newNTLMClient() (*ntlmssp.Client, error) {
 // created yet (or were dropped by invalidateSession). No I/O is performed here;
 // the actual NTLM handshake is deferred to postOnce's slow path.
 // Must be called with t.mu held.
-func (t *ntlmEncryptionTransporter) ensureClients() error {
+func (t *ntlmEncryptionTransporter) ensureClients() {
 	if t.httpTransport != nil {
-		return nil
+		return
 	}
 
 	tlsCfg := &tls.Config{InsecureSkipVerify: t.endpoint.Insecure} // #nosec G402
@@ -770,7 +770,6 @@ func (t *ntlmEncryptionTransporter) ensureClients() error {
 
 	t.httpTransport = httpTransport
 	t.httpClient = &http.Client{Transport: httpTransport}
-	return nil
 }
 
 // dialRaw opens a raw TCP (or TLS) connection to the WinRM endpoint.
@@ -814,10 +813,7 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 //     so Post() can invalidate and retry via the slow path.
 func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string, error) {
 	t.mu.Lock()
-	if err := t.ensureClients(); err != nil {
-		t.mu.Unlock()
-		return "", err
-	}
+	t.ensureClients()
 	sessionReady := t.sessionReady
 	httpClient := t.httpClient
 	session := t.session
