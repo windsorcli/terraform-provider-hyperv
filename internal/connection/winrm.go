@@ -930,6 +930,9 @@ func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string,
 		wrapped := &bufReaderConn{Conn: rawConn, br: br}
 		closeConn = false // transfer ownership; don't close in defer
 		t.mu.Lock()
+		if t.injectedConn != nil {
+			_ = t.injectedConn.Close()
+		}
 		t.injectedConn = wrapped
 		t.session = session
 		t.sessionReady = true
