@@ -401,7 +401,10 @@ func TestNewWinRM_DefaultMaxShells(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
 	}
-	b := conn.(*winrmBackend)
+	b, ok := conn.(*winrmBackend)
+	if !ok {
+		t.Fatal("NewWinRM returned unexpected type")
+	}
 	if cap(b.shellSem) != defaultWinRMMaxShells {
 		t.Errorf("shellSem cap = %d, want %d", cap(b.shellSem), defaultWinRMMaxShells)
 	}
@@ -419,7 +422,10 @@ func TestNewWinRM_ExplicitMaxShells(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWinRM: %v", err)
 	}
-	b := conn.(*winrmBackend)
+	b, ok := conn.(*winrmBackend)
+	if !ok {
+		t.Fatal("NewWinRM returned unexpected type")
+	}
 	if cap(b.shellSem) != 7 {
 		t.Errorf("shellSem cap = %d, want 7", cap(b.shellSem))
 	}
