@@ -390,6 +390,101 @@ func TestWinRM_BackendIdentifier(t *testing.T) {
 	}
 }
 
+// TestNewWinRM_DefaultMaxShells verifies the semaphore is initialized with
+// the default capacity (3) when MaxShells is left at zero.
+func TestNewWinRM_DefaultMaxShells(t *testing.T) {
+	conn, err := NewWinRM(WinRMOptions{
+		Host:     "host",
+		Username: "Administrator",
+		Password: []byte("x"),
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	b := conn.(*winrmBackend)
+	if cap(b.shellSem) != defaultWinRMMaxShells {
+		t.Errorf("shellSem cap = %d, want %d", cap(b.shellSem), defaultWinRMMaxShells)
+	}
+}
+
+// TestNewWinRM_ExplicitMaxShells verifies a caller-supplied MaxShells value
+// is honoured as the semaphore capacity.
+func TestNewWinRM_ExplicitMaxShells(t *testing.T) {
+	conn, err := NewWinRM(WinRMOptions{
+		Host:      "host",
+		Username:  "Administrator",
+		Password:  []byte("x"),
+		MaxShells: 7,
+	})
+	if err != nil {
+		t.Fatalf("NewWinRM: %v", err)
+	}
+	b := conn.(*winrmBackend)
+	if cap(b.shellSem) != 7 {
+		t.Errorf("shellSem cap = %d, want 7", cap(b.shellSem))
+	}
+}
+
+// TestAcquireShell_Blocks verifies that acquireShell blocks when all slots are
+// taken and unblocks when a slot is released.
+func TestAcquireShell_Blocks(t *testing.T) {
+	b := &winrmBackend{shellSem: make(chan struct{}, 1)}
+
+	// Fill the only slot.
+	if err := b.acquireShell(context.Background()); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	// A second acquire must block; release the slot from another goroutine.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := b.acquireShell(context.Background()); err != nil {
+			t.Errorf("second acquire: %v", err)
+			return
+		}
+		b.releaseShell()
+	}()
+
+	// Ensure the goroutine is blocked before releasing.
+	select {
+	case <-done:
+		t.Fatal("second acquire returned before slot was released")
+	default:
+	}
+
+	b.releaseShell() // unblock the goroutine
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second acquire did not unblock after release")
+	}
+}
+
+// TestAcquireShell_ContextCancel verifies that acquireShell returns promptly
+// when the context is canceled while waiting for a slot.
+func TestAcquireShell_ContextCancel(t *testing.T) {
+	b := &winrmBackend{shellSem: make(chan struct{}, 1)}
+
+	// Fill the slot so the next acquire has to wait.
+	if err := b.acquireShell(context.Background()); err != nil {
+		t.Fatalf("fill slot: %v", err)
+	}
+	defer b.releaseShell()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := b.acquireShell(ctx)
+	if err == nil {
+		t.Fatal("expected error from canceled context, got nil")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("err = %v, want context canceled", err)
+	}
+}
+
 // TestWinRM_CloseIdempotent guards against double-close panics. The backend
 // has no persistent state to release, so Close is essentially a no-op, but
 // the contract still requires idempotency.

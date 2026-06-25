@@ -264,6 +264,10 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 						Optional:            true,
 						MarkdownDescription: "Path to a CA bundle. Falls back to `HYPERV_WINRM_CACERT`.",
 					},
+					"max_shells": schema.Int64Attribute{
+						Optional:            true,
+						MarkdownDescription: "Maximum concurrent WinRM shells. Windows' default `MaxShellsPerUser` is 5; Terraform's default `-parallelism=10` can exceed it and trigger HTTP 400 errors. Default: `3`. Falls back to `HYPERV_WINRM_MAX_SHELLS`.",
+					},
 					"kerberos": schema.SingleNestedAttribute{
 						Optional: true,
 						MarkdownDescription: "Kerberos auth configuration. Only meaningful when `auth = \"kerberos\"`. " +

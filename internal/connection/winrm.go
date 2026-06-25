@@ -81,6 +81,12 @@ type WinRMOptions struct {
 	// "powershell.exe" -- universally available on Windows. Set to "pwsh"
 	// or "pwsh.exe" to prefer PS 7+ if installed.
 	PwshPath string
+
+	// MaxShells caps the number of concurrent WinRM shells this backend
+	// will open. Windows' default MaxShellsPerUser is 5; with Terraform's
+	// default -parallelism=10 the provider can easily exceed that and
+	// receive HTTP 400. Default: 3.
+	MaxShells int
 }
 
 const (
@@ -89,6 +95,7 @@ const (
 	defaultWinRMCommandTimeout = 5 * time.Minute
 	defaultWinRMPwshPath       = "powershell.exe"
 	defaultWinRMAuth           = "ntlm"
+	defaultWinRMMaxShells      = 3
 )
 
 // winrmBackend implements Connection over the masterzen/winrm client. WinRM
@@ -99,8 +106,9 @@ type winrmBackend struct {
 	opts   WinRMOptions
 	client *winrm.Client
 
-	mu     sync.Mutex
-	opened bool
+	mu       sync.Mutex
+	opened   bool
+	shellSem chan struct{} // bounds concurrent open shells; capacity = MaxShells
 }
 
 // Compile-time assertion.
@@ -176,6 +184,11 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 		pwshPath = defaultWinRMPwshPath
 	}
 
+	maxShells := opts.MaxShells
+	if maxShells == 0 {
+		maxShells = defaultWinRMMaxShells
+	}
+
 	// Kerberos defaults: SPN renders as HTTP/<host> per the standard
 	// WinRM service principal naming convention; krb5.conf path probes
 	// the canonical locations so an operator who didn't set one still
@@ -208,7 +221,9 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 			Timeout:        timeout,
 			CommandTimeout: commandTimeout,
 			PwshPath:       pwshPath,
+			MaxShells:      maxShells,
 		},
+		shellSem: make(chan struct{}, maxShells),
 	}, nil
 }
 
@@ -328,6 +343,49 @@ func (b *winrmBackend) Close() error {
 	return nil
 }
 
+// acquireShell blocks until a shell slot is available in the semaphore or
+// ctx is canceled. Must be paired with releaseShell.
+func (b *winrmBackend) acquireShell(ctx context.Context) error {
+	select {
+	case b.shellSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("winrm: waiting for shell slot: %w", ctx.Err())
+	}
+}
+
+func (b *winrmBackend) releaseShell() { <-b.shellSem }
+
+// runShellCmd executes a single command on an already-open shell, optionally
+// piping stdin, and drains stdout/stderr to the provided writers. Returns the
+// exit code and any transport error. A non-zero exit code is NOT surfaced as
+// an error here — callers check it themselves.
+func runShellCmd(ctx context.Context, shell *winrm.Shell, cmd string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	winrmCmd, err := shell.ExecuteWithContext(ctx, cmd)
+	if err != nil {
+		return 1, err
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(stdout, winrmCmd.Stdout)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(stderr, winrmCmd.Stderr)
+	}()
+	if stdin != nil {
+		_, _ = io.Copy(winrmCmd.Stdin, stdin)
+		_ = winrmCmd.Stdin.Close()
+	}
+	wg.Wait()
+	if err := winrmCmd.Error(); err != nil {
+		return 1, err
+	}
+	return winrmCmd.ExitCode(), nil
+}
+
 // StreamFile copies localPath to remotePath via streaming base64 over the
 // remote PowerShell process's stdin. The file is encoded chunk-by-chunk
 // on the runner side (no in-memory buffering of the whole payload) and
@@ -404,6 +462,11 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	// surfaces as a checksum mismatch after the full staging+verify pass.
 	// Our loop tracks the written count on partial writes, advances past
 	// confirmed bytes, and retries zero-progress failures with backoff.
+	if err := b.acquireShell(ctx); err != nil {
+		return err
+	}
+	defer b.releaseShell()
+
 	shell, err := client.CreateShell()
 	if err != nil {
 		return fmt.Errorf("winrm: create shell: %w", err)
@@ -1233,13 +1296,19 @@ func (b *winrmBackend) RunScript(ctx context.Context, script string, stdinJSON [
 // can call this with its still-being-constructed client without flipping
 // the opened flag.
 //
-// Stages the script body as a remote temp file before invoking it with
-// `powershell -File <path>`. The staging step exists because WSMan's
-// default MaxCommandLine is 8192 chars -- a preamble + verb script
-// base64-encodes to ~5-9KB and gets rejected with "command line too
-// long" when shipped via -EncodedCommand. Same architectural fix SSH
-// uses (see ssh.go's stageScript). Adds one extra WSMan round-trip per
-// call (~50-100ms) -- negligible vs PowerShell startup cost.
+// Opens a single WinRM shell and runs three commands on it sequentially:
+//  1. Stage: write the script body to a remote temp file via stdin. Staging
+//     exists because WSMan's default MaxCommandLine is 8192 chars — a
+//     preamble + verb script base64-encodes to ~5-9KB and gets rejected with
+//     "command line too long" when shipped via -EncodedCommand. Same fix SSH
+//     uses (see ssh.go's stageScript).
+//  2. Execute: run the staged script with optional stdin.
+//  3. Cleanup: remove the temp file. Runs on the same shell with a fresh
+//     background context so a canceled apply still cleans up.
+//
+// All three steps share one shell, keeping the peak open-shell count at 1
+// per RunScript call regardless of Terraform's -parallelism setting. The
+// shellSem semaphore then caps total concurrent shells across the backend.
 func (b *winrmBackend) runScriptOnClient(ctx context.Context, client *winrm.Client, script string, stdinJSON []byte) (Result, error) {
 	if b.opts.CommandTimeout > 0 {
 		var cancel context.CancelFunc
@@ -1247,27 +1316,67 @@ func (b *winrmBackend) runScriptOnClient(ctx context.Context, client *winrm.Clie
 		defer cancel()
 	}
 
-	remotePath, cleanup, err := b.stageWinRMScript(ctx, client, script)
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return Result{}, fmt.Errorf("winrm: generate temp filename: %w", err)
+	}
+	name := "hyperv-" + hex.EncodeToString(suffix[:]) + ".ps1"
+	remotePath := `C:/Windows/Temp/` + name
+
+	// Read stdin as UTF-8 (overrides the system codepage default), write
+	// the bytes to the file with a UTF-8 BOM. Single semicolon-joined
+	// expression so it stays a one-liner that fits under any MaxCommandLine.
+	stagingScript := `[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); ` +
+		`[IO.File]::WriteAllText('` + remotePath + `', [Console]::In.ReadToEnd(), ` +
+		`[Text.UTF8Encoding]::new($true))`
+	stageCmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
+		b.opts.PwshPath, encodePSScript(stagingScript))
+	execCmd := fmt.Sprintf("%s -NoProfile -NonInteractive -ExecutionPolicy Bypass -File %s",
+		b.opts.PwshPath, remotePath)
+	delScript := `Remove-Item -LiteralPath '` + remotePath + `' -Force -ErrorAction SilentlyContinue`
+	cleanupCmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
+		b.opts.PwshPath, encodePSScript(delScript))
+
+	if err := b.acquireShell(ctx); err != nil {
+		return Result{}, err
+	}
+	defer b.releaseShell()
+
+	shell, err := client.CreateShell()
 	if err != nil {
+		return Result{}, fmt.Errorf("winrm: create shell: %w", err)
+	}
+	defer func() { _ = shell.Close() }()
+
+	// Step 1: stage script body to temp file via stdin.
+	var stageStderr bytes.Buffer
+	stageCode, stageErr := runShellCmd(ctx, shell, stageCmd, strings.NewReader(script), io.Discard, &stageStderr)
+	if stageErr != nil {
 		if ctx.Err() != nil {
 			return Result{}, fmt.Errorf("%w: %v", ErrTimeout, ctx.Err())
 		}
-		return Result{}, err
+		return Result{}, fmt.Errorf("winrm: stage script: %w", stageErr)
 	}
-	defer cleanup()
+	if stageCode != 0 {
+		return Result{}, fmt.Errorf("winrm: stage script exit %d: %s", stageCode, stageStderr.String())
+	}
 
-	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -ExecutionPolicy Bypass -File %s",
-		b.opts.PwshPath, remotePath)
-
+	// Step 2: execute the staged script.
 	var stdout, stderr bytes.Buffer
-	var stdin *bytes.Reader
+	var stdinReader io.Reader
 	if len(stdinJSON) > 0 {
-		stdin = bytes.NewReader(stdinJSON)
+		stdinReader = bytes.NewReader(stdinJSON)
 	}
-
 	start := time.Now()
-	exitCode, runErr := runWithOptionalStdin(ctx, client, cmd, stdin, &stdout, &stderr)
+	exitCode, runErr := runShellCmd(ctx, shell, execCmd, stdinReader, &stdout, &stderr)
 	duration := time.Since(start)
+
+	// Step 3: cleanup temp file. Best-effort on a fresh context so a
+	// canceled apply still runs the delete. Windows auto-cleans %TEMP%
+	// periodically, so failures here are not fatal.
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cleanupCancel()
+	_, _ = runShellCmd(cleanupCtx, shell, cleanupCmd, nil, io.Discard, io.Discard)
 
 	if runErr != nil {
 		if ctx.Err() != nil {
@@ -1282,84 +1391,6 @@ func (b *winrmBackend) runScriptOnClient(ctx context.Context, client *winrm.Clie
 		ExitCode: exitCode,
 		Duration: duration,
 	}, nil
-}
-
-// stageWinRMScript writes the script body to a remote temp file via a
-// small staging WinRM call that reads stdin and writes the bytes to disk.
-// Returns the remote path plus a cleanup func that deletes the file via a
-// fresh background-context call so a canceled apply still cleans up.
-//
-// Why staging exists: WSMan's MaxCommandLine setting (default 8192 chars)
-// caps the -EncodedCommand argument. Our preamble + verb scripts run
-// 5-9KB once base64-encoded as UTF-16LE. The staging command is ~150
-// chars of source, well under the limit; the actual script body rides
-// as stdin data, which has no length limit at the protocol layer.
-//
-// The staging script writes the file with a UTF-8 BOM. PowerShell 5.1's
-// `-File` reader uses the BOM to determine encoding; without it, 5.1
-// defaults to the system codepage (Windows-1252 on en-US) and would
-// corrupt any non-ASCII content. All current scripts are pure ASCII,
-// but the BOM future-proofs the contract -- matches the SSH backend's
-// staging behavior at ssh.go's stageScript.
-func (b *winrmBackend) stageWinRMScript(ctx context.Context, client *winrm.Client, script string) (string, func(), error) {
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return "", nil, fmt.Errorf("winrm: generate temp filename: %w", err)
-	}
-	name := "hyperv-" + hex.EncodeToString(suffix[:]) + ".ps1"
-	remotePath := `C:/Windows/Temp/` + name
-
-	// Read stdin as UTF-8 (overrides the system codepage default), write
-	// the bytes to the file with a UTF-8 BOM. Single semicolon-joined
-	// expression so it stays a one-liner that fits under any MaxCommandLine.
-	stagingScript := `[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); ` +
-		`[IO.File]::WriteAllText('` + remotePath + `', [Console]::In.ReadToEnd(), ` +
-		`[Text.UTF8Encoding]::new($true))`
-
-	cmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
-		b.opts.PwshPath, encodePSScript(stagingScript))
-
-	var stdout, stderr bytes.Buffer
-	code, err := client.RunWithContextWithInput(ctx, cmd, &stdout, &stderr, strings.NewReader(script))
-	if err != nil {
-		return "", nil, fmt.Errorf("winrm: stage script: %w", err)
-	}
-	if code != 0 {
-		return "", nil, fmt.Errorf("winrm: stage script exit %d: %s", code, stderr.String())
-	}
-
-	cleanup := func() {
-		// Run the deletion attempt in a goroutine so a wedged remote
-		// doesn't block runScriptOnClient's return -- particularly
-		// important on the timeout path, where the apply ctx is already
-		// canceled and the operator is waiting for the error to surface.
-		// Fresh background context (the apply ctx may already be done)
-		// with a 10s ceiling: temp-file deletion is best-effort; if the
-		// remote can't drain the call in 10s, leak the file -- Windows
-		// auto-cleans %TEMP% periodically. Parallel applies with many
-		// concurrent timeouts therefore can't pile up cleanup goroutines
-		// for more than 10 seconds each.
-		go func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			delScript := `Remove-Item -LiteralPath '` + remotePath + `' -Force -ErrorAction SilentlyContinue`
-			delCmd := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
-				b.opts.PwshPath, encodePSScript(delScript))
-			_, _ = client.RunWithContext(cleanupCtx, delCmd, io.Discard, io.Discard)
-		}()
-	}
-	return remotePath, cleanup, nil
-}
-
-// runWithOptionalStdin dispatches to the right masterzen/winrm entry point.
-// RunWithContext takes no stdin; RunWithContextWithInput pipes a reader.
-// Choosing per-call lets the no-stdin path stay simple and matches what the
-// other backends do for scripts that don't need input JSON.
-func runWithOptionalStdin(ctx context.Context, client *winrm.Client, cmd string, stdin *bytes.Reader, stdout, stderr *bytes.Buffer) (int, error) {
-	if stdin == nil {
-		return client.RunWithContext(ctx, cmd, stdout, stderr)
-	}
-	return client.RunWithContextWithInput(ctx, cmd, stdout, stderr, stdin)
 }
 
 // encodePSScript produces the value for `powershell.exe -EncodedCommand`:
