@@ -6,7 +6,7 @@
 # aquaproj/aqua-renovate-config preset. Run `aqua install` to install all.
 registries:
   - type: standard
-    ref: v4.528.0 # renovate: depName=aquaproj/aqua-registry
+    ref: v4.529.0 # renovate: depName=aquaproj/aqua-registry
 
 packages:
   - name: go-task/task@v3.51.1
