@@ -9,7 +9,7 @@ registries:
     ref: v4.530.0 # renovate: depName=aquaproj/aqua-registry
 
 packages:
-  - name: go-task/task@v3.51.1
+  - name: go-task/task@v3.52.0
   - name: golang/go@go1.26.4
   - name: golangci/golangci-lint@v2.12.2
   - name: goreleaser/goreleaser@v2.16.0
