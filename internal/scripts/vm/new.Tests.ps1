@@ -111,6 +111,47 @@ Describe 'New-HypervVM' {
             Should -Invoke Set-VM -Times 0 -Exactly
         }
 
+        It 'forwards a remote VM path verbatim to New-VM' {
+            Mock New-VM { New-HypervVMSample }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            $remotePath = 'E:\Hyper-V Virtual Machines\ubuntu01'
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 `
+                -Path $remotePath | Out-Null
+
+            Should -Invoke New-VM -Times 1 -Exactly -ParameterFilter { $Path -eq $remotePath }
+        }
+
+        It 'applies paths, automatic actions and checkpoint policy in one Set-VM call' {
+            Mock New-VM { New-HypervVMSample }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VMFirmware { }
+            Mock Set-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 `
+                -SnapshotFileLocation 'E:\VMs\ubuntu01\Snapshots' `
+                -SmartPagingFilePath 'E:\VMs\ubuntu01\Smart Paging' `
+                -AutomaticStartAction StartIfRunning -AutomaticStartDelay 30 `
+                -AutomaticStopAction ShutDown -CheckpointType Production | Out-Null
+
+            Should -Invoke Set-VM -Times 1 -Exactly -ParameterFilter {
+                $SnapshotFileLocation -eq 'E:\VMs\ubuntu01\Snapshots' -and
+                $SmartPagingFilePath -eq 'E:\VMs\ubuntu01\Smart Paging' -and
+                $AutomaticStartAction -eq 'StartIfRunning' -and
+                $AutomaticStartDelay -eq 30 -and
+                $AutomaticStopAction -eq 'ShutDown' -and
+                $CheckpointType -eq 'Production'
+            }
+        }
+
         It 'emits the canonical 10-field shape after create (matches get.ps1)' {
             Mock New-VM { New-HypervVMSample }
             Mock Set-VMMemory { }
@@ -126,11 +167,12 @@ Describe 'New-HypervVM' {
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'AutomaticStartAction', 'AutomaticStartDelay', 'AutomaticStopAction',
+                'BootOrder', 'CheckpointType', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
                 'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
                 'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
                 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'SecureBootTemplate', 'State'
+                'SecureBootTemplate', 'SmartPagingFilePath', 'SnapshotFileLocation', 'State'
             )
         }
     }

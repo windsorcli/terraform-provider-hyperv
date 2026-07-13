@@ -5,7 +5,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
 )
 
 // TestValidate_URLDrivenByVariable nails the regression that motivated
@@ -44,6 +44,18 @@ func TestValidate_URLDrivenByVariable(t *testing.T) {
 				// against the typed variable, which is where the broken
 				// shape used to fire.
 				Config: `
+terraform {
+  required_providers {
+    hyperv = {
+      source = "xeitu/hyperv"
+    }
+  }
+}
+
+provider "hyperv" {
+  skip_auth_probe = true
+}
+
 variable "imgs" {
   type = map(object({
     destination_path = string

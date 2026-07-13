@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // FakeRunner is a deterministic, table-driven implementation of

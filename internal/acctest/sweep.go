@@ -6,8 +6,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
 )
 
 // SweepPrefix is the name prefix every acceptance-test resource carries

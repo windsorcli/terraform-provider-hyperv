@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // vhdVerifyAttempts and vhdVerifyDelay control the verify-on-drop loop
@@ -174,6 +174,27 @@ func (c *Client) NewVHDDifferencing(ctx context.Context, in NewVHDDifferencingIn
 		VhdType:   "Differencing",
 		SizeBytes: 0, // skip; differencing inherits from parent
 	}, runErr)
+}
+
+// CopyVHD creates a managed destination from an existing host-side golden.
+// The script uses literal paths and never mutates the source file.
+func (c *Client) CopyVHD(ctx context.Context, in CopyVHDInput) (*VHD, error) {
+	body, err := scripts.VHDScript("new")
+	if err != nil {
+		return nil, fmt.Errorf("load vhd/new.ps1: %w", err)
+	}
+	stdin, err := json.Marshal(struct {
+		CopyVHDInput
+		VhdType string `json:"vhd_type"`
+	}{CopyVHDInput: in, VhdType: "copy"})
+	if err != nil {
+		return nil, fmt.Errorf("marshal new.ps1 copy input: %w", err)
+	}
+	var v VHD
+	if err := c.runScript(ctx, string(body), stdin, &v); err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 // recoverVHDNewOnDrop polls GetVHD up to N times and returns the read

@@ -11,8 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
@@ -44,6 +44,8 @@ func TestResource_Schema(t *testing.T) {
 		"vhd_type",
 		"size_bytes",
 		"parent_path",
+		"source_path",
+		"keep_on_destroy",
 		"block_size_bytes",
 		"file_size_bytes",
 		"format",
@@ -66,7 +68,7 @@ func TestResource_Schema_RequiresReplaceOnImmutableAttrs(t *testing.T) {
 	resp := &resource.SchemaResponse{}
 	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
 
-	for _, name := range []string{"path", "vhd_type", "parent_path"} {
+	for _, name := range []string{"path", "vhd_type", "parent_path", "source_path"} {
 		raw, ok := resp.Schema.Attributes[name]
 		if !ok {
 			t.Fatalf("missing attribute %q", name)
@@ -177,7 +179,7 @@ func TestResource_Schema_VhdTypeOneOf(t *testing.T) {
 	// against the literal expected list. Lowercase mirrors the schema's
 	// chosen casing (the wire-stdin contract for new.ps1).
 	desc := strAttr.Validators[0].Description(t.Context())
-	for _, want := range []string{"fixed", "dynamic", "differencing"} {
+	for _, want := range []string{"fixed", "dynamic", "differencing", "copy"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("OneOf description should mention %q; got %q", want, desc)
 		}
@@ -239,7 +241,7 @@ func TestResource_Configure_WrongTypeIsClearError(t *testing.T) {
 	}
 }
 
-// TestResource_ConfigValidators_RegistersAll confirms all three
+// TestResource_ConfigValidators_RegistersAll confirms all four
 // cross-attribute checks are wired in. The validate() exercises that
 // follow lock the actual rule behavior for each.
 func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
@@ -250,8 +252,33 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 3 {
-		t.Fatalf("got %d ConfigValidators, want 3 (parent_path, size_bytes, block_size_bytes)", len(got))
+	if len(got) != 4 {
+		t.Fatalf("got %d ConfigValidators, want 4 (parent_path, size_bytes, block_size_bytes, source_path)", len(got))
+	}
+}
+
+func TestSourcePathValidator(t *testing.T) {
+	t.Parallel()
+	validator := sourcePathRequiresCopyValidator{}
+	cases := []struct {
+		name, kind string
+		source     pathtype.Path
+		wantErr    bool
+	}{
+		{"copy with source", "copy", pathtype.NewPathValue(`F:\\TEMPLATES\\golden.vhdx`), false},
+		{"copy without source", "copy", pathtype.NewPathNull(), true},
+		{"dynamic with source", "dynamic", pathtype.NewPathValue(`F:\\TEMPLATES\\golden.vhdx`), true},
+		{"dynamic without source", "dynamic", pathtype.NewPathNull(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{VhdType: types.StringValue(tc.kind), SourcePath: tc.source}
+			got := validator.validate(m)
+			if got.HasError() != tc.wantErr {
+				t.Fatalf("HasError=%v want %v", got.HasError(), tc.wantErr)
+			}
+		})
 	}
 }
 

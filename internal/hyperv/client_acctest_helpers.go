@@ -3,7 +3,7 @@ package hyperv
 import (
 	"context"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // RunScript executes a PowerShell script on the remote host via the

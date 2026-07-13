@@ -1,4 +1,4 @@
-# GoReleaser v2 config for the windsorcli/hyperv Terraform provider.
+# GoReleaser v2 config for the xeitu/hyperv Terraform provider.
 #
 # Cross-compiles the provider binary for every Terraform-Registry-supported
 # (OS, arch) tuple, archives each as a per-target zip, generates a

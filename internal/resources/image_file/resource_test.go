@@ -10,8 +10,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // mustURLObject builds a known types.Object for the URL nested

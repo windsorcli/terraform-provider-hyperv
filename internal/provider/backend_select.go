@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // newConnection translates a HypervProviderModel into a configured
@@ -102,7 +102,25 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 	privateKey := resolveString(sshAttrs.PrivateKey, "HYPERV_SSH_PRIVATE_KEY", "")
 	privateKeyPath := resolveString(sshAttrs.PrivateKeyPath, "HYPERV_SSH_PRIVATE_KEY_PATH", "")
 	passphrase := resolveString(sshAttrs.Passphrase, "HYPERV_SSH_PASSPHRASE", "")
+	privateKeyPassphrase := resolveString(sshAttrs.PrivateKeyPassphrase, "HYPERV_SSH_PRIVATE_KEY_PASSPHRASE", "")
+	if privateKeyPassphrase != "" && passphrase != "" {
+		diags.AddAttributeError(
+			path.Root("ssh").AtName("private_key_passphrase"),
+			"Conflicting SSH passphrase attributes",
+			"Set only one of ssh.private_key_passphrase or the legacy ssh.passphrase attribute.",
+		)
+		return nil
+	}
+	if privateKeyPassphrase != "" {
+		passphrase = privateKeyPassphrase
+	}
 	knownHostsPath := resolveString(sshAttrs.KnownHostsPath, "HYPERV_SSH_KNOWN_HOSTS_PATH", "")
+	hostKey := resolveString(sshAttrs.HostKey, "HYPERV_SSH_HOST_KEY", "")
+	useSSHAgent, err := resolveBool(sshAttrs.UseSSHAgent, "HYPERV_SSH_USE_AGENT", false)
+	if err != nil {
+		diags.AddAttributeError(path.Root("ssh").AtName("use_ssh_agent"), "Invalid SSH agent setting", err.Error())
+		return nil
+	}
 
 	commandTimeout, err := resolveDuration(m.Timeout, "HYPERV_TIMEOUT")
 	if err != nil {
@@ -128,6 +146,8 @@ func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection
 		PrivateKeyPath: privateKeyPath,
 		Passphrase:     []byte(passphrase),
 		KnownHostsPath: knownHostsPath,
+		HostKey:        hostKey,
+		UseSSHAgent:    useSSHAgent,
 		CommandTimeout: commandTimeout,
 	})
 	if err != nil {

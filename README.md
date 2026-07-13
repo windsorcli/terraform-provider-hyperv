@@ -2,13 +2,44 @@
 
 Manage the lifecycle of Microsoft Hyper-V virtual machines, switches, disks, and images from Terraform — with a provider binary that runs on Linux, macOS, or Windows and talks to Hyper-V hosts over local PowerShell, SSH, or WinRM.
 
-[![CI](https://github.com/windsorcli/terraform-provider-hyperv/actions/workflows/ci.yaml/badge.svg)](https://github.com/windsorcli/terraform-provider-hyperv/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/windsorcli/terraform-provider-hyperv)](https://goreportcard.com/report/github.com/windsorcli/terraform-provider-hyperv)
-[![Latest Release](https://img.shields.io/github/v/release/windsorcli/terraform-provider-hyperv?include_prereleases&sort=semver)](https://github.com/windsorcli/terraform-provider-hyperv/releases)
+[![CI](https://github.com/xeitu/terraform-provider-hyperv/actions/workflows/ci.yaml/badge.svg)](https://github.com/xeitu/terraform-provider-hyperv/actions/workflows/ci.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/xeitu/terraform-provider-hyperv)](https://goreportcard.com/report/github.com/xeitu/terraform-provider-hyperv)
+[![Latest Release](https://img.shields.io/github/v/release/xeitu/terraform-provider-hyperv?include_prereleases&sort=semver)](https://github.com/xeitu/terraform-provider-hyperv/releases)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 
 > [!IMPORTANT]
 > This provider is pre-1.0. Schema, attribute names, and behavior may change between minor versions until `v1.0.0` ships. Pin to an exact version in production.
+
+## About this fork
+
+`xeitu/hyperv` is a maintained fork of the wonderful
+[`windsorcli/terraform-provider-hyperv`](https://github.com/windsorcli/terraform-provider-hyperv)
+project. Its authors built an excellent Terraform Plugin Framework and
+PowerShell foundation for managing Hyper-V, and this fork is deeply grateful
+for that work. The original copyright and MPL-2.0 license are preserved.
+
+This fork keeps the existing resource model and focuses on incremental,
+backwards-compatible improvements for running Terraform on macOS or Linux
+against standalone Hyper-V hosts over SSH. Additions implemented in this fork
+include:
+
+- Remote VM placement with `path`, plus in-place management of
+  `snapshot_file_location` and `smart_paging_file_path`.
+- Safe host-side VHDX golden deployment through `hyperv_vhd` copy mode,
+  optional grow-only resize, differencing children, and destination retention.
+  The source golden is never modified or deleted.
+- Host lifecycle policy through `automatic_start_action`,
+  `automatic_start_delay`, `automatic_stop_action`, and `checkpoint_type`.
+- Modern SSH authentication with inline or file-based private keys, encrypted
+  keys, Ed25519, SSH agent support, `known_hosts` verification, and explicit
+  host-key pinning. Password authentication remains compatible.
+- Explicit handling of Windows host paths from non-Windows Terraform runners,
+  including drive-letter paths, spaces, quoting, and UNC paths.
+- Cross-compilation targets for Apple Silicon, Intel macOS, Linux AMD64, and
+  Windows AMD64.
+
+The Registry identity of this fork is `xeitu/hyperv`; it is distinct from the
+upstream provider identity.
 
 ## Highlights
 
@@ -34,7 +65,7 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 | `hyperv_nat_static_mapping` | Networking | TCP/UDP port forward (`Add-NetNatStaticMapping`) into a private/internal subnet, plus an optional inbound firewall allow rule. Functionally equivalent to `azurerm_lb_nat_rule` / `google_compute_forwarding_rule`. |
 | `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Four source modes: `url` (provider downloads + verifies SHA-256, with optional `gz`/`xz`/`zst`/`bz2` decompression), `local_path` (streams a runner-local file via the active backend), `literal_bytes` (base64 payload — pairs with `hyperv_iso_volume`), and `host_path` (attests the file already exists). |
 | `hyperv_vhd` | Storage | Fixed / dynamic / differencing VHD or VHDX. Resize supported for dynamic. |
-| `hyperv_vm` | Compute | Generation 1/2; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources). |
+| `hyperv_vm` | Compute | Generation 1/2; remote VM/checkpoint/Smart Paging paths; automatic start/stop policy and checkpoint type; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources). |
 
 | Data source | Subcategory | Notes |
 |---|---|---|
@@ -52,9 +83,8 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 The following are either deferred to post-1.0 or under active design — track an issue if you need one:
 
 - Image *creation* — use Packer or DISM to build golden images and reference them via `hyperv_image_file`.
-- Checkpoints (`hyperv_vm_checkpoint`).
+- Creating, restoring, or deleting individual checkpoints (`hyperv_vm_checkpoint`). The VM-level `checkpoint_type` policy is supported.
 - Hyper-V integration services map (per-service enable/disable on `hyperv_vm`).
-- VM automatic start/stop actions (`AutomaticStartAction` / `AutomaticStopAction`).
 - Generation 1 BIOS startup order (`Set-VMBios -StartupOrder`).
 - Trunk and isolation VLAN modes on inline NICs (access-mode VLANs are supported via `vlan_id`; static MAC addresses via `mac_address`).
 - Replication, live migration, SR-IOV, GPU partitioning, shielded VMs.
@@ -83,7 +113,7 @@ The following are either deferred to post-1.0 or under active design — track a
 terraform {
   required_providers {
     hyperv = {
-      source  = "windsorcli/hyperv"
+      source  = "xeitu/hyperv"
       version = "~> 0.3"
     }
   }
@@ -112,7 +142,7 @@ resource "hyperv_vhd" "vm01_root" {
 }
 ```
 
-More examples — including the complete `hyperv_vm` resource with inline NICs, disks, DVDs, boot order, and dynamic memory — live under [`examples/`](examples/) and on the [Terraform Registry](https://registry.terraform.io/providers/windsorcli/hyperv/latest).
+More examples — including the complete `hyperv_vm` resource with inline NICs, disks, DVDs, boot order, and dynamic memory — live under [`examples/`](examples/) and on the [Terraform Registry](https://registry.terraform.io/providers/xeitu/hyperv/latest).
 
 ## Configuration
 
@@ -134,10 +164,17 @@ provider "hyperv" {
   host     = "hv01.lab"
   username = "Administrator"
   ssh = {
-    private_key_path = "~/.ssh/id_ed25519"
+    private_key_path = pathexpand("~/.ssh/id_ed25519")
+    known_hosts_path = pathexpand("~/.ssh/known_hosts")
   }
 }
 ```
+
+`private_key_path` and `known_hosts_path` are local to the machine running
+Terraform. Paths configured on Hyper-V resources are always interpreted on the
+Windows host, so a macOS runner may safely configure values such as
+`E:\\VMs\\ubuntu01` or `\\\\fileserver\\share\\ubuntu.vhdx`. SSH host-key
+verification is enabled by default; use `known_hosts_path` or pin `host_key`.
 
 The host needs OpenSSH Server enabled with PowerShell as the default shell.
 
@@ -170,8 +207,11 @@ WinRM HTTPS with NTLM is the recommended configuration for workgroup hosts; Kerb
 | `HYPERV_TIMEOUT` | `timeout` | Per-call PS execution timeout (Go duration) |
 | `HYPERV_SSH_PRIVATE_KEY` | `ssh.private_key` | Sensitive; key contents |
 | `HYPERV_SSH_PRIVATE_KEY_PATH` | `ssh.private_key_path` | Path alternative |
-| `HYPERV_SSH_PASSPHRASE` | `ssh.passphrase` | Sensitive |
+| `HYPERV_SSH_PRIVATE_KEY_PASSPHRASE` | `ssh.private_key_passphrase` | Sensitive; preferred passphrase attribute |
+| `HYPERV_SSH_PASSPHRASE` | `ssh.passphrase` | Sensitive; legacy compatibility alias |
 | `HYPERV_SSH_KNOWN_HOSTS_PATH` | `ssh.known_hosts_path` | Defaults to `~/.ssh/known_hosts` |
+| `HYPERV_SSH_HOST_KEY` | `ssh.host_key` | Pinned OpenSSH public key or SHA256 fingerprint |
+| `HYPERV_SSH_USE_AGENT` | `ssh.use_ssh_agent` | Use `SSH_AUTH_SOCK`; disabled by default |
 | `HYPERV_WINRM_USE_HTTPS` | `winrm.use_https` | Defaults to `true` |
 | `HYPERV_WINRM_INSECURE` | `winrm.insecure` | Skip TLS verify |
 | `HYPERV_WINRM_AUTH` | `winrm.auth` | `basic` \| `ntlm` \| `kerberos` |
@@ -182,14 +222,14 @@ A complete `.env.example` is committed at the repository root.
 
 ## Documentation
 
-- **Registry**: [registry.terraform.io/providers/windsorcli/hyperv/latest/docs](https://registry.terraform.io/providers/windsorcli/hyperv/latest/docs) (canonical, generated)
+- **Registry**: [registry.terraform.io/providers/xeitu/hyperv/latest/docs](https://registry.terraform.io/providers/xeitu/hyperv/latest/docs) (canonical, generated)
 - **Repo**: [`docs/`](docs/) — same content; useful when reading the source on a branch.
 - **Examples**: [`examples/`](examples/) — copy-paste-ready HCL for each resource and data source.
 
 ## Building from source
 
 ```sh
-git clone https://github.com/windsorcli/terraform-provider-hyperv.git
+git clone https://github.com/xeitu/terraform-provider-hyperv.git
 cd terraform-provider-hyperv
 task tools          # install pinned dev tools
 task                # default: lint + unit tests
@@ -202,13 +242,13 @@ To use a locally built provider in a Terraform configuration without publishing,
 ```hcl
 provider_installation {
   dev_overrides {
-    "windsorcli/hyperv" = "/Users/<you>/go/bin"
+    "xeitu/hyperv" = "/Users/<you>/go/bin"
   }
   direct {}
 }
 ```
 
-`task install` writes the binary to `~/.terraform.d/plugins/registry.terraform.io/windsorcli/hyperv/0.0.0-dev/<os>_<arch>/`; with the override above pointing at `$GOPATH/bin`, run `go install` to drop the binary there directly.
+`task install` writes the binary to `~/.terraform.d/plugins/registry.terraform.io/xeitu/hyperv/0.0.0-dev/<os>_<arch>/`; with the override above pointing at `$GOPATH/bin`, run `go install` to drop the binary there directly.
 
 ## Testing
 
@@ -256,3 +296,7 @@ PRs require:
 ## License
 
 This provider is distributed under the [Mozilla Public License 2.0](LICENSE).
+It is derived from the excellent
+[`windsorcli/terraform-provider-hyperv`](https://github.com/windsorcli/terraform-provider-hyperv)
+project; upstream notices and attribution are retained in accordance with that
+license.

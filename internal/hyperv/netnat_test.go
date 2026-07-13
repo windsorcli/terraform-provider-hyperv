@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // TestClient_SweepNetNats_DecodesRemovedList pins the wire contract:

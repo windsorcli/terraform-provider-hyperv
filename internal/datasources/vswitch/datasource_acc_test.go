@@ -22,8 +22,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
 )
 
 // TestAcc_DataVirtualSwitch_NATAugmentedRead pairs a NAT switch resource

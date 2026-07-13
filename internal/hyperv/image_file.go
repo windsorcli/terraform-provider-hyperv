@@ -19,7 +19,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // GetImageFile reads metadata + SHA-256 for a file on the host. Returns

@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
 )
 
 // IPAddresses unions the per-NIC IPAddresses arrays from

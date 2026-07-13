@@ -16,7 +16,7 @@ Release-drafter watches `main` and keeps a tagless draft release with notes auto
 | `chore`, `dependencies`, `documentation` | Patch bump |
 | (no label) | Patch (default) |
 
-Labels also drive section grouping in the drafted release notes (Features / Bug Fixes / Maintenance / Dependencies). Label every PR before merging so the resolved version and the drafted notes both reflect intent. You can preview the running draft any time on the [Releases](https://github.com/windsorcli/terraform-provider-hyperv/releases) page — look for the topmost entry tagged "Draft".
+Labels also drive section grouping in the drafted release notes (Features / Bug Fixes / Maintenance / Dependencies). Label every PR before merging so the resolved version and the drafted notes both reflect intent. You can preview the running draft any time on the [Releases](https://github.com/xeitu/terraform-provider-hyperv/releases) page — look for the topmost entry tagged "Draft".
 
 ## Cutting the release
 
@@ -43,9 +43,9 @@ The two-step "create draft, then publish" is what makes the release pipeline com
 
 Spot-check three things in this order:
 
-1. **The workflow run** — green? Any non-fatal warnings worth a follow-up issue? See [Actions](https://github.com/windsorcli/terraform-provider-hyperv/actions).
-2. **The release page** — does it list every expected asset? You should see 13 `_<os>_<arch>.zip` files, one `_SHA256SUMS`, one `_SHA256SUMS.sig`, and one `_manifest.json`. URL pattern: `https://github.com/windsorcli/terraform-provider-hyperv/releases/tag/vX.Y.Z`.
-3. **The Terraform Registry** — does the new version show up at `https://registry.terraform.io/providers/windsorcli/hyperv/vX.Y.Z`? Initial publication of a brand-new provider can take several minutes; subsequent versions are usually visible within a minute.
+1. **The workflow run** — green? Any non-fatal warnings worth a follow-up issue? See [Actions](https://github.com/xeitu/terraform-provider-hyperv/actions).
+2. **The release page** — does it list every expected asset? You should see 13 `_<os>_<arch>.zip` files, one `_SHA256SUMS`, one `_SHA256SUMS.sig`, and one `_manifest.json`. URL pattern: `https://github.com/xeitu/terraform-provider-hyperv/releases/tag/vX.Y.Z`.
+3. **The Terraform Registry** — does the new version show up at `https://registry.terraform.io/providers/xeitu/hyperv/vX.Y.Z`? Initial publication of a brand-new provider can take several minutes; subsequent versions are usually visible within a minute.
 
 If any of those is missing, treat it as a release failure and recover before users see it.
 

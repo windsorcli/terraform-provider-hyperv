@@ -7,8 +7,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // Schema must expose the lookup key and the cmdlet's read shape; any drift

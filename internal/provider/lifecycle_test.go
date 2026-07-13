@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // fakeConn is a Connection implementation that counts Close() calls.

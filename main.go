@@ -17,7 +17,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/provider"
+	"github.com/xeitu/terraform-provider-hyperv/internal/provider"
 )
 
 // version is replaced at release time via -ldflags "-X main.version=...".
@@ -35,7 +35,7 @@ func main() {
 	flag.Parse()
 
 	opts := providerserver.ServeOpts{
-		Address: "registry.terraform.io/windsorcli/hyperv",
+		Address: "registry.terraform.io/xeitu/hyperv",
 		Debug:   debug,
 	}
 

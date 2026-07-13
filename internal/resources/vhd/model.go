@@ -5,7 +5,7 @@ package vhd
 import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // Model is the tfsdk-bound struct backing the resource state. Field tags
@@ -27,6 +27,8 @@ type Model struct {
 	VhdType        types.String  `tfsdk:"vhd_type"`
 	SizeBytes      types.Int64   `tfsdk:"size_bytes"`
 	ParentPath     pathtype.Path `tfsdk:"parent_path"`
+	SourcePath     pathtype.Path `tfsdk:"source_path"`
+	KeepOnDestroy  types.Bool    `tfsdk:"keep_on_destroy"`
 	BlockSizeBytes types.Int64   `tfsdk:"block_size_bytes"`
 	FileSizeBytes  types.Int64   `tfsdk:"file_size_bytes"`
 	Format         types.String  `tfsdk:"format"`

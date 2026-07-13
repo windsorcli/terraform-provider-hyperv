@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
 )
 
 // Sanity check that the provider type satisfies the framework interface and

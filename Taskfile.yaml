@@ -45,8 +45,8 @@ tasks:
     vars:
       DEV_VERSION: 0.0.0-dev
     cmds:
-      - mkdir -p ~/.terraform.d/plugins/registry.terraform.io/windsorcli/{{.PROVIDER_NAME}}/{{.DEV_VERSION}}/$(go env GOOS)_$(go env GOARCH)
-      - go build {{.GO_BUILD_FLAGS}} -ldflags "-X main.version={{.DEV_VERSION}}" -o ~/.terraform.d/plugins/registry.terraform.io/windsorcli/{{.PROVIDER_NAME}}/{{.DEV_VERSION}}/$(go env GOOS)_$(go env GOARCH)/terraform-provider-{{.PROVIDER_NAME}}_v{{.DEV_VERSION}} .
+      - mkdir -p ~/.terraform.d/plugins/registry.terraform.io/xeitu/{{.PROVIDER_NAME}}/{{.DEV_VERSION}}/$(go env GOOS)_$(go env GOARCH)
+      - go build {{.GO_BUILD_FLAGS}} -ldflags "-X main.version={{.DEV_VERSION}}" -o ~/.terraform.d/plugins/registry.terraform.io/xeitu/{{.PROVIDER_NAME}}/{{.DEV_VERSION}}/$(go env GOOS)_$(go env GOARCH)/terraform-provider-{{.PROVIDER_NAME}}_v{{.DEV_VERSION}} .
 
   # ---------- Lint ----------
 
@@ -297,7 +297,7 @@ tasks:
       Syntax checking on examples/provider/ is covered by `task fmt:check`.
 
       Builds the provider into a temp dir and uses dev_overrides so
-      `terraform validate` can resolve windsorcli/hyperv against the local
+      `terraform validate` can resolve xeitu/hyperv against the local
       binary (the provider isn't on the public registry yet).
     cmds:
       - |
@@ -310,7 +310,7 @@ tasks:
         cat > "$CLI_CFG" <<EOF
         provider_installation {
           dev_overrides {
-            "windsorcli/{{.PROVIDER_NAME}}" = "$BIN_DIR"
+            "xeitu/{{.PROVIDER_NAME}}" = "$BIN_DIR"
           }
           direct {}
         }

@@ -166,6 +166,47 @@ Describe 'New-HypervVHDDifferencing' {
 
 Describe 'Invoke-HypervVHDNew' {
 
+    Context 'copy mode' {
+        It 'copies a golden with literal host paths and expands only when requested' {
+            Mock Test-Path { $true }
+            Mock Split-Path { 'E:\\Hyper-V Virtual Machines\\ubuntu01' }
+            Mock Copy-Item { }
+            Mock Resize-VHD { }
+            Mock Get-VHD { New-HypervVHDSample -VhdType 'Dynamic' -Size 53687091200 }
+
+            Copy-HypervVHDFromGolden `
+                -SourcePath '\\server\share\Templates\ubuntu.vhdx' `
+                -Path 'E:\Hyper-V Virtual Machines\ubuntu01\ubuntu-os.vhdx' `
+                -SizeBytes 107374182400 | Out-Null
+
+            Should -Invoke Copy-Item -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -eq '\\server\share\Templates\ubuntu.vhdx' -and
+                $Destination -eq 'E:\Hyper-V Virtual Machines\ubuntu01\ubuntu-os.vhdx'
+            }
+            Should -Invoke Resize-VHD -Times 1 -Exactly -ParameterFilter { $SizeBytes -eq 107374182400 }
+        }
+
+        It 'refuses path equal to source_path so the golden cannot be overwritten' {
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            { Copy-HypervVHDFromGolden -SourcePath 'F:\TEMPLATES\golden.vhdx' -Path 'f:\templates\GOLDEN.vhdx' } |
+                Should -Throw -ExpectedMessage '*refusing to overwrite the golden*'
+            Should -Invoke Copy-Item -Times 0 -Exactly
+        }
+
+        It 'deletes only the incomplete destination when a shrink was requested' {
+            Mock Test-Path { $true }
+            Mock Split-Path { 'E:\VMs\ubuntu01' }
+            Mock Copy-Item { }
+            Mock Remove-Item { }
+            Mock Get-VHD { New-HypervVHDSample -VhdType 'Dynamic' -Size 107374182400 }
+            { Copy-HypervVHDFromGolden -SourcePath 'F:\TEMPLATES\golden.vhdx' -Path 'E:\VMs\ubuntu01\os.vhdx' -SizeBytes 53687091200 } |
+                Should -Throw -ExpectedMessage '*shrinking copied disks is not supported*'
+            Should -Invoke Remove-Item -Times 1 -Exactly -ParameterFilter { $LiteralPath -eq 'E:\VMs\ubuntu01\os.vhdx' }
+            Should -Invoke Remove-Item -Times 0 -Exactly -ParameterFilter { $LiteralPath -eq 'F:\TEMPLATES\golden.vhdx' }
+        }
+    }
+
     Context 'size_bytes presence guard (defense in depth for the Go-side validator)' {
 
         It 'throws a clear required-field error when size_bytes is absent for fixed mode' {
@@ -242,7 +283,7 @@ Describe 'Invoke-HypervVHDNew' {
             }
 
             { Invoke-HypervVHDNew -Params $params } |
-                Should -Throw -ExpectedMessage "*Unknown vhd_type 'banana'*expected 'fixed', 'dynamic', or 'differencing'*"
+                Should -Throw -ExpectedMessage "*Unknown vhd_type 'banana'*expected 'fixed', 'dynamic', 'differencing', or 'copy'*"
         }
     }
 }

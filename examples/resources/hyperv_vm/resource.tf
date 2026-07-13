@@ -5,7 +5,19 @@
 resource "hyperv_vm" "node01" {
   name       = "node01"
   generation = 2
-  cpu        = { count = 2 }
+
+  # These are paths on the Windows Hyper-V host, even when Terraform runs
+  # from macOS or Linux. Changing path replaces the VM; the two auxiliary
+  # paths update in place.
+  path                   = "E:\\VMs\\node01"
+  snapshot_file_location = "E:\\VMs\\node01\\Snapshots"
+  smart_paging_file_path = "E:\\VMs\\node01\\SmartPaging"
+
+  automatic_start_action = "StartIfRunning"
+  automatic_start_delay  = 30
+  automatic_stop_action  = "ShutDown"
+  checkpoint_type        = "Production"
+  cpu                    = { count = 2 }
   # Static memory: locks 4 GiB. Add `dynamic = true` plus `min_bytes` /
   # `max_bytes` to opt into Hyper-V dynamic memory; only safe on guests
   # that ship and run Hyper-V integration services.

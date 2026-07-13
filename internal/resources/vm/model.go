@@ -7,9 +7,9 @@
 //   - dynamic memory (min_bytes / max_bytes / buffer / priority on the
 //     existing memory block)
 //   - integration services map
-//   - automatic start/stop actions
-//   - checkpoint type/policy
-//   - VM path overrides (defaults from Get-VMHost)
+//   - advanced processor settings beyond count
+//   - managed creation/deletion of OS and data disks
+//   - integrated cloud-init media lifecycle
 //
 // CPU and memory live in nested blocks per ADR-0001: `cpu = { count = N }`
 // and `memory = { startup_bytes = N }`. The blocks exist as nested
@@ -26,8 +26,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	mactype "github.com/xeitu/terraform-provider-hyperv/internal/types/mac"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // Model is the tfsdk-bound struct backing the resource state. Field tags
@@ -74,14 +74,20 @@ type Model struct {
 	// hyperv_image_file. Helpers below give resource code typed access
 	// to the underlying []DvdDriveModel / []BootOrderEntryModel slice
 	// when the value is known.
-	DvdDrives          types.List   `tfsdk:"dvd_drive"`
-	BootOrder          types.List   `tfsdk:"boot_order"`
-	SecureBoot         types.Bool   `tfsdk:"secure_boot"`
-	SecureBootTemplate types.String `tfsdk:"secure_boot_template"`
-	Notes              types.String `tfsdk:"notes"`
-	State              *StateModel  `tfsdk:"state"`
-	IPAddresses        types.List   `tfsdk:"ip_addresses"`
-	Path               types.String `tfsdk:"path"`
+	DvdDrives            types.List    `tfsdk:"dvd_drive"`
+	BootOrder            types.List    `tfsdk:"boot_order"`
+	SecureBoot           types.Bool    `tfsdk:"secure_boot"`
+	SecureBootTemplate   types.String  `tfsdk:"secure_boot_template"`
+	Notes                types.String  `tfsdk:"notes"`
+	State                *StateModel   `tfsdk:"state"`
+	IPAddresses          types.List    `tfsdk:"ip_addresses"`
+	Path                 pathtype.Path `tfsdk:"path"`
+	SnapshotFileLocation pathtype.Path `tfsdk:"snapshot_file_location"`
+	SmartPagingFilePath  pathtype.Path `tfsdk:"smart_paging_file_path"`
+	AutomaticStartAction types.String  `tfsdk:"automatic_start_action"`
+	AutomaticStartDelay  types.Int64   `tfsdk:"automatic_start_delay"`
+	AutomaticStopAction  types.String  `tfsdk:"automatic_stop_action"`
+	CheckpointType       types.String  `tfsdk:"checkpoint_type"`
 }
 
 // CPUModel is the nested `cpu` block. Static count only in this slice;

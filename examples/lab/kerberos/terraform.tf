@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     hyperv = {
-      source  = "windsorcli/hyperv"
+      source  = "xeitu/hyperv"
       version = "~> 0.3"
     }
   }

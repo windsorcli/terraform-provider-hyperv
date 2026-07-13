@@ -25,7 +25,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
 )
 
 // Why these sizes: 64 MiB is small enough to create in <1s on a slow

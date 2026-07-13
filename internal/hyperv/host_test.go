@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 func TestGetVMHostScript_HasContractWrapper(t *testing.T) {

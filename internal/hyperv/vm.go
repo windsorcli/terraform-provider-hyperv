@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // GetVM fetches a VM by name. Returns ErrNotFound when the VM doesn't

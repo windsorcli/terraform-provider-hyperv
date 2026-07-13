@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // GetNatStaticMapping happy path: typed result decoded from the canned JSON

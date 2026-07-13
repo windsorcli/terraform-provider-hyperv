@@ -1,4 +1,4 @@
-module github.com/windsorcli/terraform-provider-hyperv
+module github.com/xeitu/terraform-provider-hyperv
 
 go 1.25.8
 

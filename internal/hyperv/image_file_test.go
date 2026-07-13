@@ -19,7 +19,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // GetImageFile happy path: typed result decoded from the canned JSON shape

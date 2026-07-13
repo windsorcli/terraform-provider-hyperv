@@ -17,8 +17,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	mactype "github.com/xeitu/terraform-provider-hyperv/internal/types/mac"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // macAddressRegex accepts the three forms Hyper-V's
@@ -129,9 +129,10 @@ func resourceSchema() schema.Schema {
 			"`name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), " +
 			"`secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle " +
 			"(`desired`, `current`, `shutdown_mode`), and inline `network_adapter[]`, " +
-			"`hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only) lists.\n\n" +
-			"Integration services, automatic start/stop actions, and checkpoints are not " +
-			"currently exposed. Generation 1 BIOS boot ordering (`Set-VMBios -StartupOrder`) " +
+			"`hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only) lists. VM storage " +
+			"paths, automatic start/stop actions, and checkpoint policy are also managed.\n\n" +
+			"Integration services are not currently exposed. Generation 1 BIOS boot ordering " +
+			"(`Set-VMBios -StartupOrder`) " +
 			"is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.\n\n" +
 			"**Power transitions** are driven by the inline `state` block (`desired = \"Running\"`, " +
 			"`\"Off\"`, `\"Saved\"`, `\"Paused\"`). Mutations to `cpu.count`, `memory.startup_bytes`, " +
@@ -757,12 +758,66 @@ func resourceSchema() schema.Schema {
 				},
 			},
 			"path": schema.StringAttribute{
-				Computed: true,
-				MarkdownDescription: "Filesystem path on the host where the VM's configuration files live. " +
-					"Useful for backup tooling that targets the underlying directory.",
+				CustomType: pathtype.Type,
+				Optional:   true,
+				Computed:   true,
+				MarkdownDescription: "Filesystem path on the Hyper-V host where the VM's configuration files live. " +
+					"When configured it is passed to `New-VM -Path`. Omission preserves Hyper-V's default. " +
+					"This is a remote Windows path, including UNC paths, not a path on the Terraform runner. " +
+					"**Forces replacement** when changed; this provider does not move VM storage automatically.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"snapshot_file_location": schema.StringAttribute{
+				CustomType: pathtype.Type,
+				Optional:   true,
+				Computed:   true,
+				MarkdownDescription: "Remote Windows directory used for VM checkpoint files. " +
+					"Updated in place with `Set-VM -SnapshotFileLocation`.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"smart_paging_file_path": schema.StringAttribute{
+				CustomType: pathtype.Type,
+				Optional:   true,
+				Computed:   true,
+				MarkdownDescription: "Remote Windows directory used for Smart Paging files. " +
+					"Updated in place with `Set-VM -SmartPagingFilePath`.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"automatic_start_action": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Action taken when the Hyper-V host starts: `Nothing`, " +
+					"`StartIfRunning`, or `Start`.",
+				Validators:    []validator.String{stringvalidator.OneOf("Nothing", "StartIfRunning", "Start")},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"automatic_start_delay": schema.Int64Attribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Non-negative delay in seconds before the automatic start action.",
+				Validators:          []validator.Int64{int64validator.Between(0, 2147483647)},
+				PlanModifiers:       []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+			},
+			"automatic_stop_action": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Action taken when the Hyper-V host shuts down: `TurnOff`, " +
+					"`Save`, or `ShutDown`.",
+				Validators:    []validator.String{stringvalidator.OneOf("TurnOff", "Save", "ShutDown")},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"checkpoint_type": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Checkpoint policy: `Disabled`, `Standard`, `Production`, " +
+					"or `ProductionOnly`.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("Disabled", "Standard", "Production", "ProductionOnly"),
+				},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
 	}

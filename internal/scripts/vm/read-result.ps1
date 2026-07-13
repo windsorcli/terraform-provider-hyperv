@@ -176,6 +176,12 @@ function Read-HypervVMResult {
         State                = $Vm.State.ToString()
         Notes                = $Vm.Notes
         Path                 = $Vm.Path
+        SnapshotFileLocation = $Vm.SnapshotFileLocation
+        SmartPagingFilePath  = $Vm.SmartPagingFilePath
+        AutomaticStartAction = $Vm.AutomaticStartAction.ToString()
+        AutomaticStartDelay  = [int64] $Vm.AutomaticStartDelay
+        AutomaticStopAction  = $Vm.AutomaticStopAction.ToString()
+        CheckpointType       = $Vm.CheckpointType.ToString()
         SecureBootEnabled    = $secureBoot
         SecureBootTemplate   = $secureBootTemplate
         HardDiskDrives       = $hdds

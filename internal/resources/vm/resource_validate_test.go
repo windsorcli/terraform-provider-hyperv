@@ -5,7 +5,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
 )
 
 // TestValidate_DvdDriveAndBootOrderDrivenByVariable nails the
@@ -47,6 +47,18 @@ func TestValidate_DvdDriveAndBootOrderDrivenByVariable(t *testing.T) {
 				// "compute/hyperv driving Talos VMs from a map of
 				// instance specs" pattern that surfaced the bug.
 				Config: `
+terraform {
+  required_providers {
+    hyperv = {
+      source = "xeitu/hyperv"
+    }
+  }
+}
+
+provider "hyperv" {
+  skip_auth_probe = true
+}
+
 variable "vms" {
   type = map(object({
     dvd_iso_path = optional(string)

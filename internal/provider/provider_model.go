@@ -33,10 +33,13 @@ type LocalConfig struct {
 // SSHConfig configures the SSH backend. Attribute names locked per S13;
 // resolved into connection.SSHOptions by newSSHConnection.
 type SSHConfig struct {
-	PrivateKey     types.String `tfsdk:"private_key"`
-	PrivateKeyPath types.String `tfsdk:"private_key_path"`
-	Passphrase     types.String `tfsdk:"passphrase"`
-	KnownHostsPath types.String `tfsdk:"known_hosts_path"`
+	PrivateKey           types.String `tfsdk:"private_key"`
+	PrivateKeyPath       types.String `tfsdk:"private_key_path"`
+	Passphrase           types.String `tfsdk:"passphrase"`
+	PrivateKeyPassphrase types.String `tfsdk:"private_key_passphrase"`
+	KnownHostsPath       types.String `tfsdk:"known_hosts_path"`
+	HostKey              types.String `tfsdk:"host_key"`
+	UseSSHAgent          types.Bool   `tfsdk:"use_ssh_agent"`
 }
 
 // WinRMConfig configures the WinRM backend. Schema is defined now to lock

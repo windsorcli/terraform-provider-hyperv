@@ -282,6 +282,14 @@ type NewVHDDifferencingInput struct {
 	ParentPath string `json:"parent_path"`
 }
 
+// CopyVHDInput copies a host-side golden VHD/VHDX to a new managed path.
+// SizeBytes is an optional minimum virtual size; copies are only expanded.
+type CopyVHDInput struct {
+	Path       string `json:"path"`
+	SourcePath string `json:"source_path"`
+	SizeBytes  *int64 `json:"size_bytes,omitempty"`
+}
+
 // VM is the canonical read shape emitted by vm/{get,new,set}.ps1.
 // SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
 // no Secure Boot concept); gen 2 always returns a real bool.
@@ -303,6 +311,12 @@ type VM struct {
 	State                string           `json:"State"`
 	Notes                string           `json:"Notes"`
 	Path                 string           `json:"Path"`
+	SnapshotFileLocation string           `json:"SnapshotFileLocation"`
+	SmartPagingFilePath  string           `json:"SmartPagingFilePath"`
+	AutomaticStartAction string           `json:"AutomaticStartAction"`
+	AutomaticStartDelay  int64            `json:"AutomaticStartDelay"`
+	AutomaticStopAction  string           `json:"AutomaticStopAction"`
+	CheckpointType       string           `json:"CheckpointType"`
 	SecureBootEnabled    *bool            `json:"SecureBootEnabled"`
 	SecureBootTemplate   string           `json:"SecureBootTemplate"`
 	HardDiskDrives       []HardDiskDrive  `json:"HardDiskDrives"`
@@ -503,16 +517,23 @@ type DetachHardDiskInput struct {
 // to static memory (DynamicMemoryEnabled=$false), preserving the v2-and-
 // prior behavior for callers that don't manage dynamic memory.
 type NewVMInput struct {
-	Name               string  `json:"name"`
-	Generation         int     `json:"generation"`
-	Vcpu               int     `json:"vcpu"`
-	MemoryBytes        int64   `json:"memory_bytes"`
-	DynamicMemory      *bool   `json:"dynamic_memory,omitempty"`
-	MinMemoryBytes     *int64  `json:"min_memory_bytes,omitempty"`
-	MaxMemoryBytes     *int64  `json:"max_memory_bytes,omitempty"`
-	SecureBoot         *bool   `json:"secure_boot,omitempty"`
-	SecureBootTemplate *string `json:"secure_boot_template,omitempty"`
-	Notes              *string `json:"notes,omitempty"`
+	Name                 string  `json:"name"`
+	Generation           int     `json:"generation"`
+	Vcpu                 int     `json:"vcpu"`
+	MemoryBytes          int64   `json:"memory_bytes"`
+	DynamicMemory        *bool   `json:"dynamic_memory,omitempty"`
+	MinMemoryBytes       *int64  `json:"min_memory_bytes,omitempty"`
+	MaxMemoryBytes       *int64  `json:"max_memory_bytes,omitempty"`
+	SecureBoot           *bool   `json:"secure_boot,omitempty"`
+	SecureBootTemplate   *string `json:"secure_boot_template,omitempty"`
+	Notes                *string `json:"notes,omitempty"`
+	Path                 *string `json:"path,omitempty"`
+	SnapshotFileLocation *string `json:"snapshot_file_location,omitempty"`
+	SmartPagingFilePath  *string `json:"smart_paging_file_path,omitempty"`
+	AutomaticStartAction *string `json:"automatic_start_action,omitempty"`
+	AutomaticStartDelay  *int64  `json:"automatic_start_delay,omitempty"`
+	AutomaticStopAction  *string `json:"automatic_stop_action,omitempty"`
+	CheckpointType       *string `json:"checkpoint_type,omitempty"`
 }
 
 // SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.
@@ -549,13 +570,19 @@ type SetVMStateInput struct {
 //     Update path; it's a validation hint for set.ps1's gen-2-only
 //     SecureBoot guard, not a mutation.
 type SetVMInput struct {
-	Name           string  `json:"name"`
-	Generation     int     `json:"generation"`
-	Vcpu           *int    `json:"vcpu,omitempty"`
-	MemoryBytes    *int64  `json:"memory_bytes,omitempty"`
-	DynamicMemory  *bool   `json:"dynamic_memory,omitempty"`
-	MinMemoryBytes *int64  `json:"min_memory_bytes,omitempty"`
-	MaxMemoryBytes *int64  `json:"max_memory_bytes,omitempty"`
-	SecureBoot     *bool   `json:"secure_boot,omitempty"`
-	Notes          *string `json:"notes,omitempty"`
+	Name                 string  `json:"name"`
+	Generation           int     `json:"generation"`
+	Vcpu                 *int    `json:"vcpu,omitempty"`
+	MemoryBytes          *int64  `json:"memory_bytes,omitempty"`
+	DynamicMemory        *bool   `json:"dynamic_memory,omitempty"`
+	MinMemoryBytes       *int64  `json:"min_memory_bytes,omitempty"`
+	MaxMemoryBytes       *int64  `json:"max_memory_bytes,omitempty"`
+	SecureBoot           *bool   `json:"secure_boot,omitempty"`
+	Notes                *string `json:"notes,omitempty"`
+	SnapshotFileLocation *string `json:"snapshot_file_location,omitempty"`
+	SmartPagingFilePath  *string `json:"smart_paging_file_path,omitempty"`
+	AutomaticStartAction *string `json:"automatic_start_action,omitempty"`
+	AutomaticStartDelay  *int64  `json:"automatic_start_delay,omitempty"`
+	AutomaticStopAction  *string `json:"automatic_stop_action,omitempty"`
+	CheckpointType       *string `json:"checkpoint_type,omitempty"`
 }

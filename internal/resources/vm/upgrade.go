@@ -9,8 +9,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	mactype "github.com/xeitu/terraform-provider-hyperv/internal/types/mac"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // priorModelV0 is the tfsdk-bound shape of hyperv_vm state files written under
@@ -634,7 +634,7 @@ func upgradeV4ToV5(ctx context.Context, prior priorModelV4) Model {
 		Notes:           prior.Notes,
 		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathFromPrior(prior.Path),
 	}
 }
 
@@ -681,7 +681,7 @@ func upgradeV3ToV5(ctx context.Context, prior priorModelV3) Model {
 		Notes:           prior.Notes,
 		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathFromPrior(prior.Path),
 	}
 }
 
@@ -717,7 +717,7 @@ func upgradeV1ToV2(ctx context.Context, prior priorModelV1) Model {
 		Notes:           prior.Notes,
 		State:           state,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathFromPrior(prior.Path),
 	}
 }
 
@@ -794,7 +794,7 @@ func upgradeV2ToV3(ctx context.Context, prior priorModelV2) Model {
 		Notes:           prior.Notes,
 		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathFromPrior(prior.Path),
 	}
 }
 
@@ -811,7 +811,7 @@ func upgradeV0ToV1(_ context.Context, prior priorModelV0) Model {
 		Memory:     &MemoryModel{StartupBytes: prior.MemoryBytes},
 		SecureBoot: prior.SecureBoot,
 		Notes:      prior.Notes,
-		Path:       prior.Path,
+		Path:       pathFromPrior(prior.Path),
 
 		// New inline list attributes did not exist at v0. The next
 		// refresh fills them from the host; until then, empty (known)
@@ -836,6 +836,18 @@ func upgradeV0ToV1(_ context.Context, prior priorModelV0) Model {
 // PriorSchema field expects a pointer; this saves callers from declaring
 // a temporary just to take its address.
 func ptrSchema(s schema.Schema) *schema.Schema { return &s }
+
+// pathFromPrior preserves old plain-string VM paths while adopting the
+// semantic Windows-path comparison used by newly-written state.
+func pathFromPrior(v types.String) pathtype.Path {
+	if v.IsNull() {
+		return pathtype.NewPathNull()
+	}
+	if v.IsUnknown() {
+		return pathtype.NewPathUnknown()
+	}
+	return pathtype.NewPathValue(v.ValueString())
+}
 
 // Compile-time guard: the Resource implements ResourceWithUpgradeState.
 // Listed alongside the other resource.* interface assertions in resource.go.

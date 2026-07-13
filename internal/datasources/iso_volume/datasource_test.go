@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/iso"
+	"github.com/xeitu/terraform-provider-hyperv/internal/iso"
 )
 
 // Schema test: every locked-in attribute is present. Drift here is a

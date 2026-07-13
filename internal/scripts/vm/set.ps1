@@ -12,7 +12,13 @@
 #                   "min_memory_bytes": <int64>,     # optional, only when dynamic_memory=true
 #                   "max_memory_bytes": <int64>,     # optional, only when dynamic_memory=true
 #                   "secure_boot":      <bool>,      # optional, gen 2 only
-#                   "notes":            "<string>"   # optional
+#                   "notes":            "<string>", # optional
+#                   "snapshot_file_location": "<string>",
+#                   "smart_paging_file_path":  "<string>",
+#                   "automatic_start_action":  "Nothing|StartIfRunning|Start",
+#                   "automatic_start_delay":   <int>,
+#                   "automatic_stop_action":   "TurnOff|Save|ShutDown",
+#                   "checkpoint_type":         "Disabled|Standard|Production|ProductionOnly"
 #                 }
 #   stdout JSON : same shape as get.ps1.
 #
@@ -43,7 +49,13 @@ function Set-HypervVM {
         [Nullable[int64]]               $MinMemoryBytes,
         [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
-        [string]                        $Notes
+        [string]                        $Notes,
+        [string]                        $SnapshotFileLocation,
+        [string]                        $SmartPagingFilePath,
+        [string]                        $AutomaticStartAction,
+        [Nullable[int64]]               $AutomaticStartDelay,
+        [string]                        $AutomaticStopAction,
+        [string]                        $CheckpointType
     )
     try {
         $vm = Get-VM -Name $Name -ErrorAction Stop
@@ -104,8 +116,28 @@ function Set-HypervVM {
         $sb = if ([bool] $SecureBoot) { 'On' } else { 'Off' }
         Set-VMFirmware -VMName $Name -EnableSecureBoot $sb -ErrorAction Stop
     }
-    if ($PSBoundParameters.ContainsKey('Notes')) {
-        Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
+    $vmArgs = @{ VM = $vm; ErrorAction = 'Stop' }
+    if ($PSBoundParameters.ContainsKey('Notes')) { $vmArgs.Notes = $Notes }
+    if ($PSBoundParameters.ContainsKey('SnapshotFileLocation')) {
+        $vmArgs.SnapshotFileLocation = $SnapshotFileLocation
+    }
+    if ($PSBoundParameters.ContainsKey('SmartPagingFilePath')) {
+        $vmArgs.SmartPagingFilePath = $SmartPagingFilePath
+    }
+    if ($PSBoundParameters.ContainsKey('AutomaticStartAction')) {
+        $vmArgs.AutomaticStartAction = $AutomaticStartAction
+    }
+    if ($null -ne $AutomaticStartDelay) {
+        $vmArgs.AutomaticStartDelay = [int] $AutomaticStartDelay
+    }
+    if ($PSBoundParameters.ContainsKey('AutomaticStopAction')) {
+        $vmArgs.AutomaticStopAction = $AutomaticStopAction
+    }
+    if ($PSBoundParameters.ContainsKey('CheckpointType')) {
+        $vmArgs.CheckpointType = $CheckpointType
+    }
+    if ($vmArgs.Count -gt 2) {
+        Set-VM @vmArgs
     }
 
     $vm = Get-VM -Name $Name -ErrorAction Stop
@@ -148,6 +180,24 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($params.PSObject.Properties.Name -contains 'notes' -and
             $null -ne $params.notes) {
             $callArgs.Notes = [string] $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'snapshot_file_location' -and $null -ne $params.snapshot_file_location) {
+            $callArgs.SnapshotFileLocation = [string] $params.snapshot_file_location
+        }
+        if ($params.PSObject.Properties.Name -contains 'smart_paging_file_path' -and $null -ne $params.smart_paging_file_path) {
+            $callArgs.SmartPagingFilePath = [string] $params.smart_paging_file_path
+        }
+        if ($params.PSObject.Properties.Name -contains 'automatic_start_action' -and $null -ne $params.automatic_start_action) {
+            $callArgs.AutomaticStartAction = [string] $params.automatic_start_action
+        }
+        if ($params.PSObject.Properties.Name -contains 'automatic_start_delay' -and $null -ne $params.automatic_start_delay) {
+            $callArgs.AutomaticStartDelay = [int64] $params.automatic_start_delay
+        }
+        if ($params.PSObject.Properties.Name -contains 'automatic_stop_action' -and $null -ne $params.automatic_stop_action) {
+            $callArgs.AutomaticStopAction = [string] $params.automatic_stop_action
+        }
+        if ($params.PSObject.Properties.Name -contains 'checkpoint_type' -and $null -ne $params.checkpoint_type) {
+            $callArgs.CheckpointType = [string] $params.checkpoint_type
         }
 
         Set-HypervVM @callArgs

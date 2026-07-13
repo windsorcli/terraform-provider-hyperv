@@ -103,6 +103,50 @@ function New-HypervVHDDifferencing {
     Read-HypervVHDResult -Path $Path
 }
 
+# Copy-HypervVHDFromGolden makes a host-local copy without ever opening the
+# golden for write. LiteralPath preserves spaces, quotes, wildcard characters,
+# UNC paths, and other operator-supplied Windows path characters.
+function Copy-HypervVHDFromGolden {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $SourcePath,
+        [Nullable[int64]]               $SizeBytes
+    )
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+        $exception = [System.Management.Automation.ItemNotFoundException]::new(
+            "Golden VHD not found at source_path '$SourcePath'.")
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+            $exception, 'GoldenVHDNotFound',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, $SourcePath)
+        throw $errorRecord
+    }
+    if ([string]::Equals($Path, $SourcePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'path and source_path must be different; refusing to overwrite the golden VHD.'
+    }
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
+    }
+    Copy-Item -LiteralPath $SourcePath -Destination $Path -Force -ErrorAction Stop
+    try {
+        $copied = Get-VHD -Path $Path -ErrorAction Stop
+        if ($null -ne $SizeBytes) {
+            if ([int64] $SizeBytes -lt [int64] $copied.Size) {
+                throw "Requested size_bytes $SizeBytes is smaller than golden virtual size $($copied.Size); shrinking copied disks is not supported."
+            }
+            if ([int64] $SizeBytes -gt [int64] $copied.Size) {
+                Resize-VHD -Path $Path -SizeBytes ([int64] $SizeBytes) -ErrorAction Stop
+            }
+        }
+        Read-HypervVHDResult -Path $Path
+    }
+    catch {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
 # Invoke-HypervVHDNew dispatches a parsed-JSON $Params object to
 # the correct New-HypervVHD* function. Extracted from the entry block so
 # the JSON-to-args translation (in particular the size_bytes presence
@@ -159,8 +203,19 @@ function Invoke-HypervVHDNew {
                 -Path       $Params.path `
                 -ParentPath $Params.parent_path
         }
+        'copy' {
+            if ($Params.PSObject.Properties.Name -notcontains 'source_path' -or
+                [string]::IsNullOrWhiteSpace([string] $Params.source_path)) {
+                throw 'source_path is required for copy VHDs'
+            }
+            $callArgs = @{ Path = $Params.path; SourcePath = $Params.source_path }
+            if ($Params.PSObject.Properties.Name -contains 'size_bytes' -and $null -ne $Params.size_bytes) {
+                $callArgs.SizeBytes = [int64] $Params.size_bytes
+            }
+            Copy-HypervVHDFromGolden @callArgs
+        }
         default {
-            throw "Unknown vhd_type '$($Params.vhd_type)'; expected 'fixed', 'dynamic', or 'differencing'."
+            throw "Unknown vhd_type '$($Params.vhd_type)'; expected 'fixed', 'dynamic', 'differencing', or 'copy'."
         }
     }
 }

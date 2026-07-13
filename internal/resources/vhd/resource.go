@@ -12,8 +12,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 var (
@@ -51,7 +51,39 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 		parentPathRequiresDifferencingValidator{},
 		sizeBytesRequiresFixedOrDynamicValidator{},
 		blockSizeBytesRejectedForDifferencingValidator{},
+		sourcePathRequiresCopyValidator{},
 	}
+}
+
+type sourcePathRequiresCopyValidator struct{}
+
+func (v sourcePathRequiresCopyValidator) Description(_ context.Context) string {
+	return "source_path is required for vhd_type=copy and rejected otherwise"
+}
+func (v sourcePathRequiresCopyValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+func (v sourcePathRequiresCopyValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() || data.VhdType.IsUnknown() || data.SourcePath.IsUnknown() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(data)...)
+}
+func (v sourcePathRequiresCopyValidator) validate(data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.VhdType.IsUnknown() || data.SourcePath.IsUnknown() {
+		return diags
+	}
+	isCopy := data.VhdType.ValueString() == "copy"
+	set := !data.SourcePath.IsNull() && data.SourcePath.ValueString() != ""
+	if isCopy && !set {
+		diags.AddAttributeError(path.Root("source_path"), "source_path is required for copy VHDs", "Set source_path to the existing golden VHD/VHDX on the Hyper-V host.")
+	} else if !isCopy && set {
+		diags.AddAttributeError(path.Root("source_path"), "source_path is only valid for copy VHDs", "Remove source_path or set vhd_type to copy.")
+	}
+	return diags
 }
 
 // parentPathRequiresDifferencingValidator enforces parent_path IFF
@@ -158,7 +190,7 @@ func (v sizeBytesRequiresFixedOrDynamicValidator) validate(data Model) diag.Diag
 	sizeSet := !data.SizeBytes.IsNull()
 
 	switch {
-	case !isDifferencing && !sizeSet:
+	case !isDifferencing && data.VhdType.ValueString() != "copy" && !sizeSet:
 		diags.AddAttributeError(
 			path.Root("size_bytes"),
 			"size_bytes is required for fixed and dynamic VHDs",
@@ -220,7 +252,7 @@ func (v blockSizeBytesRejectedForDifferencingValidator) validate(data Model) dia
 	if data.VhdType.IsUnknown() || data.BlockSizeBytes.IsUnknown() {
 		return diags
 	}
-	if data.VhdType.ValueString() != "differencing" {
+	if data.VhdType.ValueString() != "differencing" && data.VhdType.ValueString() != "copy" {
 		return diags
 	}
 	if data.BlockSizeBytes.IsNull() {
@@ -295,6 +327,10 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			Path:       plan.Path.ValueString(),
 			ParentPath: plan.ParentPath.ValueString(),
 		})
+	case "copy":
+		v, err = r.client.CopyVHD(ctx, hyperv.CopyVHDInput{
+			Path: plan.Path.ValueString(), SourcePath: plan.SourcePath.ValueString(), SizeBytes: optionalInt64(plan.SizeBytes),
+		})
 	default:
 		// Unreachable -- the OneOf validator on vhd_type rejects everything else
 		// at plan time. Defensive in case the validator gets weakened.
@@ -307,6 +343,10 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	}
 
 	if err != nil {
+		if plan.VhdType.ValueString() == "copy" && errors.Is(err, hyperv.ErrNotFound) {
+			resp.Diagnostics.AddAttributeError(path.Root("source_path"), "Golden VHD not found", err.Error())
+			return
+		}
 		if errors.Is(err, hyperv.ErrInvalidParentPath) {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("parent_path"),
@@ -319,7 +359,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	state := modelFromVHD(v)
+	state := preserveVHDConfig(modelFromVHD(v), plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -354,7 +394,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	newState := modelFromVHD(v)
+	newState := preserveVHDConfig(modelFromVHD(v), state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -383,6 +423,10 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
+	if state.VhdType.ValueString() == "copy" && plan.SizeBytes.ValueInt64() < state.SizeBytes.ValueInt64() {
+		resp.Diagnostics.AddAttributeError(path.Root("size_bytes"), "Copied VHDs cannot be shrunk", "size_bytes may only stay unchanged or increase for a VHD copied from a golden image.")
+		return
+	}
 
 	tflog.Debug(ctx, "resizing hyperv_vhd", map[string]any{
 		"path":           state.Path.ValueString(),
@@ -395,7 +439,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	newState := modelFromVHD(v)
+	newState := preserveVHDConfig(modelFromVHD(v), plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -413,6 +457,10 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 	var state Model
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if state.KeepOnDestroy.ValueBool() {
+		tflog.Info(ctx, "keep_on_destroy=true; leaving VHD on host", map[string]any{"path": state.Path.ValueString()})
 		return
 	}
 
@@ -450,11 +498,22 @@ func modelFromVHD(v *hyperv.VHD) Model {
 		VhdType:        types.StringValue(strings.ToLower(v.VhdType)),
 		SizeBytes:      types.Int64Value(v.SizeBytes),
 		ParentPath:     parentPathOrNull(v.ParentPath),
+		SourcePath:     pathtype.NewPathNull(),
+		KeepOnDestroy:  types.BoolValue(false),
 		BlockSizeBytes: types.Int64Value(v.BlockSizeBytes),
 		FileSizeBytes:  types.Int64Value(v.FileSizeBytes),
 		Format:         types.StringValue(v.Format),
 		Attached:       types.BoolValue(v.Attached),
 	}
+}
+
+func preserveVHDConfig(host Model, configured Model) Model {
+	host.SourcePath = configured.SourcePath
+	host.KeepOnDestroy = configured.KeepOnDestroy
+	if configured.VhdType.ValueString() == "copy" {
+		host.VhdType = configured.VhdType
+	}
+	return host
 }
 
 // parentPathOrNull collapses an empty cmdlet-returned parent_path to

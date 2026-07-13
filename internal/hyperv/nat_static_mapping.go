@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // GetNatStaticMapping fetches a NAT static netnat-static-mapping mapping by its

@@ -21,7 +21,7 @@ package provider
 import (
 	"sync"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // activeConnsMu pins read/write ordering between Configure (which

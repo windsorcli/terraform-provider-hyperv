@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
@@ -51,6 +52,14 @@ type SSHOptions struct {
 	// file is a hard error -- silently disabling host-key checking would be
 	// a security regression.
 	KnownHostsPath string
+
+	// HostKey optionally pins a public key (authorized_keys format) or
+	// SHA256 fingerprint. When empty, KnownHostsPath remains mandatory.
+	HostKey string
+
+	// UseSSHAgent adds identities exposed through SSH_AUTH_SOCK before
+	// password fallback. It is opt-in and never weakens host verification.
+	UseSSHAgent bool
 
 	// Timeout is the dial timeout. Default 30s.
 	Timeout time.Duration
@@ -118,6 +127,11 @@ type sshBackend struct {
 	// SCP staging session and the main exec session within one slot.
 	// nil means uncapped (MaxConcurrentSessions < 0).
 	sem chan struct{}
+
+	// agentConn must remain open while agent-backed signers are in use.
+	// It is separate from the SSH transport so reconnecting the transport
+	// does not invalidate the authentication method.
+	agentConn io.ReadWriteCloser
 }
 
 // Compile-time assertion.
@@ -150,7 +164,7 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 		keepalive = defaultSSHKeepaliveInterval
 	}
 
-	auths, err := buildSSHAuthMethods(opts)
+	auths, agentConn, err := buildSSHAuthMethods(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -159,8 +173,11 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 			"set private_key, private_key_path, or password")
 	}
 
-	hostKeyCallback, err := loadKnownHostsCallback(opts.KnownHostsPath)
+	hostKeyCallback, err := loadHostKeyCallback(opts.HostKey, opts.KnownHostsPath)
 	if err != nil {
+		if agentConn != nil {
+			_ = agentConn.Close()
+		}
 		return nil, err
 	}
 
@@ -196,9 +213,10 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 			KeepaliveInterval:     keepalive,
 			MaxConcurrentSessions: maxSessions,
 		},
-		config: cfg,
-		addr:   net.JoinHostPort(opts.Host, strconv.Itoa(port)),
-		sem:    sem,
+		config:    cfg,
+		addr:      net.JoinHostPort(opts.Host, strconv.Itoa(port)),
+		sem:       sem,
+		agentConn: agentConn,
 	}, nil
 }
 
@@ -281,17 +299,23 @@ func (b *sshBackend) Open(ctx context.Context) error {
 func (b *sshBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.client == nil {
-		return nil
-	}
+	var firstErr error
 	if b.keepaliveDone != nil {
 		close(b.keepaliveDone)
 		b.keepaliveDone = nil
 	}
-	err := b.client.Close()
-	b.client = nil
+	if b.client != nil {
+		firstErr = b.client.Close()
+		b.client = nil
+	}
+	if b.agentConn != nil {
+		if err := b.agentConn.Close(); firstErr == nil {
+			firstErr = err
+		}
+		b.agentConn = nil
+	}
 	b.alive.Store(false)
-	return err
+	return firstErr
 }
 
 // keepaliveLoop sends a keepalive on a ticker; first failure marks
@@ -318,7 +342,17 @@ func (b *sshBackend) keepaliveLoop(client *ssh.Client, done chan struct{}, inter
 // RunScript calls -- never mid-call, because New-VM / Add-VM* side
 // effects aren't idempotent and a partial cmdlet must not be retried.
 func (b *sshBackend) reconnect(ctx context.Context) error {
-	_ = b.Close()
+	b.mu.Lock()
+	if b.client != nil {
+		_ = b.client.Close()
+		b.client = nil
+	}
+	if b.keepaliveDone != nil {
+		close(b.keepaliveDone)
+		b.keepaliveDone = nil
+	}
+	b.alive.Store(false)
+	b.mu.Unlock()
 	return b.Open(ctx)
 }
 
@@ -772,7 +806,7 @@ func runSessionWithCtx(ctx context.Context, session *ssh.Session, cmd string) er
 // auth-method closures by then; the library's copies stay live for the
 // connection's lifetime but our own input slices (which the caller still
 // holds via the shared underlying array) are scrubbed.
-func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
+func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, io.ReadWriteCloser, error) {
 	defer zeroBytes(opts.PrivateKey)
 	defer zeroBytes(opts.Passphrase)
 	defer zeroBytes(opts.Password)
@@ -782,7 +816,7 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 	if len(opts.PrivateKey) > 0 {
 		signer, err := parsePrivateKey(opts.PrivateKey, opts.Passphrase)
 		if err != nil {
-			return nil, fmt.Errorf("ssh: parse private_key: %w", err)
+			return nil, nil, fmt.Errorf("ssh: parse private_key: %w", err)
 		}
 		auths = append(auths, ssh.PublicKeys(signer))
 	} else if opts.PrivateKeyPath != "" {
@@ -792,14 +826,38 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 		// read this file as their auth credential.
 		keyBytes, err := os.ReadFile(opts.PrivateKeyPath)
 		if err != nil {
-			return nil, fmt.Errorf("ssh: read private_key_path %s: %w", opts.PrivateKeyPath, err)
+			return nil, nil, fmt.Errorf("ssh: read private_key_path %s: %w", opts.PrivateKeyPath, err)
 		}
 		defer zeroBytes(keyBytes)
 		signer, err := parsePrivateKey(keyBytes, opts.Passphrase)
 		if err != nil {
-			return nil, fmt.Errorf("ssh: parse %s: %w", opts.PrivateKeyPath, err)
+			return nil, nil, fmt.Errorf("ssh: parse %s: %w", opts.PrivateKeyPath, err)
 		}
 		auths = append(auths, ssh.PublicKeys(signer))
+	}
+
+	var agentConn io.ReadWriteCloser
+	if opts.UseSSHAgent {
+		socket := os.Getenv("SSH_AUTH_SOCK")
+		if socket == "" {
+			return nil, nil, errors.New("ssh: use_ssh_agent is true but SSH_AUTH_SOCK is not set")
+		}
+		var err error
+		agentConn, err = dialSSHAgent(socket)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ssh: connect to SSH agent: %w", err)
+		}
+		agentClient := agent.NewClient(agentConn)
+		signers, err := agentClient.Signers()
+		if err != nil {
+			_ = agentConn.Close()
+			return nil, nil, fmt.Errorf("ssh: list SSH agent identities: %w", err)
+		}
+		if len(signers) == 0 {
+			_ = agentConn.Close()
+			return nil, nil, errors.New("ssh: SSH agent contains no identities")
+		}
+		auths = append(auths, ssh.PublicKeys(signers...))
 	}
 
 	if len(opts.Password) > 0 {
@@ -809,7 +867,34 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 		auths = append(auths, ssh.Password(string(opts.Password)))
 	}
 
-	return auths, nil
+	return auths, agentConn, nil
+}
+
+// loadHostKeyCallback uses an explicit pin when supplied, otherwise the
+// standard known_hosts verifier. Host verification is therefore always on.
+func loadHostKeyCallback(hostKey, knownHostsPath string) (ssh.HostKeyCallback, error) {
+	pin := strings.TrimSpace(hostKey)
+	if pin == "" {
+		return loadKnownHostsCallback(knownHostsPath)
+	}
+	if strings.HasPrefix(pin, "SHA256:") {
+		return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			if ssh.FingerprintSHA256(key) != pin {
+				return fmt.Errorf("ssh: host key fingerprint mismatch: got %s", ssh.FingerprintSHA256(key))
+			}
+			return nil
+		}, nil
+	}
+	want, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pin))
+	if err != nil {
+		return nil, fmt.Errorf("ssh: parse host_key (expected OpenSSH public key or SHA256 fingerprint): %w", err)
+	}
+	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		if !bytes.Equal(want.Marshal(), key.Marshal()) {
+			return errors.New("ssh: pinned host key mismatch")
+		}
+		return nil
+	}, nil
 }
 
 // parsePrivateKey decodes an OpenSSH/PEM-encoded private key, optionally

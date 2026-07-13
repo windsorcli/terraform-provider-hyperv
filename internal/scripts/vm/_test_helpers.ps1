@@ -25,6 +25,7 @@ function New-VM {
         [int]    $Generation,
         [int64]  $MemoryStartupBytes,
         [string] $BootDevice,
+        [string] $Path,
         [switch] $NoVHD
     )
 }
@@ -34,7 +35,13 @@ function Set-VM {
     param(
         [object] $VM,
         [string] $Name,
-        [string] $Notes
+        [string] $Notes,
+        [string] $SnapshotFileLocation,
+        [string] $SmartPagingFilePath,
+        [string] $AutomaticStartAction,
+        [int]    $AutomaticStartDelay,
+        [string] $AutomaticStopAction,
+        [string] $CheckpointType
     )
 }
 
@@ -238,7 +245,13 @@ function New-HypervVMSample {
         [int64]  $MemoryAssigned = 4294967296,
         [string] $State          = 'Off',
         [string] $Notes          = '',
-        [string] $Path           = 'C:\ProgramData\Microsoft\Windows\Hyper-V\Virtual Machines'
+        [string] $Path                 = 'C:\ProgramData\Microsoft\Windows\Hyper-V\Virtual Machines',
+        [string] $SnapshotFileLocation = 'C:\ProgramData\Microsoft\Windows\Hyper-V\Snapshots',
+        [string] $SmartPagingFilePath  = 'C:\ProgramData\Microsoft\Windows\Hyper-V\SmartPaging',
+        [string] $AutomaticStartAction = 'Nothing',
+        [int]    $AutomaticStartDelay  = 0,
+        [string] $AutomaticStopAction  = 'Save',
+        [string] $CheckpointType       = 'Production'
     )
     [pscustomobject]@{
         Name           = $Name
@@ -249,7 +262,13 @@ function New-HypervVMSample {
         MemoryAssigned = $MemoryAssigned
         State          = $State
         Notes          = $Notes
-        Path           = $Path
+        Path                 = $Path
+        SnapshotFileLocation = $SnapshotFileLocation
+        SmartPagingFilePath  = $SmartPagingFilePath
+        AutomaticStartAction = $AutomaticStartAction
+        AutomaticStartDelay  = $AutomaticStartDelay
+        AutomaticStopAction  = $AutomaticStopAction
+        CheckpointType       = $CheckpointType
     }
 }
 

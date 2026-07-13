@@ -16,16 +16,16 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/datasources/host"
-	dsisovolume "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/iso_volume"
-	dsvmstate "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vm_state"
-	dsvswitch "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vswitch"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/nat_static_mapping"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vhd"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vm"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
+	"github.com/xeitu/terraform-provider-hyperv/internal/datasources/host"
+	dsisovolume "github.com/xeitu/terraform-provider-hyperv/internal/datasources/iso_volume"
+	dsvmstate "github.com/xeitu/terraform-provider-hyperv/internal/datasources/vm_state"
+	dsvswitch "github.com/xeitu/terraform-provider-hyperv/internal/datasources/vswitch"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/resources/image_file"
+	"github.com/xeitu/terraform-provider-hyperv/internal/resources/nat_static_mapping"
+	"github.com/xeitu/terraform-provider-hyperv/internal/resources/vhd"
+	"github.com/xeitu/terraform-provider-hyperv/internal/resources/vm"
+	"github.com/xeitu/terraform-provider-hyperv/internal/resources/vswitch"
 )
 
 var (
@@ -235,9 +235,26 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 						Sensitive:           true,
 						MarkdownDescription: "Passphrase for the private key. **Sensitive.** Falls back to `HYPERV_SSH_PASSPHRASE`.",
 					},
+					"private_key_passphrase": schema.StringAttribute{
+						Optional:  true,
+						Sensitive: true,
+						MarkdownDescription: "Passphrase for the private key. **Sensitive.** " +
+							"Preferred alias for the legacy `passphrase` attribute; the two cannot be set together. " +
+							"Falls back to `HYPERV_SSH_PRIVATE_KEY_PASSPHRASE`, then `HYPERV_SSH_PASSPHRASE`.",
+					},
 					"known_hosts_path": schema.StringAttribute{
 						Optional:            true,
 						MarkdownDescription: "Path to known_hosts. Default: `~/.ssh/known_hosts`. Falls back to `HYPERV_SSH_KNOWN_HOSTS_PATH`.",
+					},
+					"host_key": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Pinned SSH host public key or SHA256 fingerprint. When set, " +
+							"it is verified directly instead of loading `known_hosts_path`. Falls back to `HYPERV_SSH_HOST_KEY`.",
+					},
+					"use_ssh_agent": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Use the SSH agent exposed through `SSH_AUTH_SOCK`. Disabled by default. " +
+							"May be combined with password as a fallback. Falls back to `HYPERV_SSH_USE_AGENT`.",
 					},
 				},
 			},
@@ -312,7 +329,7 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 
 	// Mask sensitive log fields. Registered once at Configure; tflog.Trace/
 	// Debug/etc. throughout the provider inherit this through the context.
-	ctx = tflog.MaskFieldValuesWithFieldKeys(ctx, "password", "private_key", "passphrase")
+	ctx = tflog.MaskFieldValuesWithFieldKeys(ctx, "password", "private_key", "passphrase", "private_key_passphrase")
 	ctx = tflog.OmitLogWithFieldKeys(ctx, "stdin_json", "stdout", "stderr")
 
 	// Skip Configure if `backend` is unknown — a deferred dependency hasn't

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // vmSwitchVerifyAttempts and vmSwitchVerifyDelay control the

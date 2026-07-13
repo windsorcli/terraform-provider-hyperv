@@ -9,23 +9,24 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
-// resourceSchema returns the locked-in schema for hyperv_vhd. Three
-// creation modes (fixed, dynamic, differencing) share the same schema,
+// resourceSchema returns the locked-in schema for hyperv_vhd. Four
+// creation modes (fixed, dynamic, differencing, copy) share the same schema,
 // distinguished by `vhd_type` plus cross-attribute ConfigValidators on
 // the resource (see resource.go).
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
 			"the target host (or equivalent rights granted through a JEA endpoint).\n\n" +
-			"Manages a VHD/VHDX file on the Hyper-V host. Three creation modes:\n\n" +
+			"Manages a VHD/VHDX file on the Hyper-V host. Four creation modes:\n" +
 			"  * **`fixed`** -- pre-allocates the full `size_bytes` on disk. Slow create, no runtime expansion.\n" +
 			"  * **`dynamic`** -- sparse VHDX. Initial on-disk size is minimal; the file grows as the guest writes blocks, up to `size_bytes`.\n" +
-			"  * **`differencing`** -- read-only parent + writable child. `size_bytes` and `block_size_bytes` are inherited from the parent and rejected if supplied.\n\n" +
+			"  * **`differencing`** -- read-only parent + writable child. `size_bytes` and `block_size_bytes` are inherited from the parent and rejected if supplied.\n" +
+			"  * **`copy`** -- copies an existing host-side golden from `source_path` to `path`. The golden is never modified or deleted; optional `size_bytes` may only expand the copy.\n" +
 			"Format (VHD vs VHDX) is inferred from the `path` extension. VHDX is recommended for anything modern (4 KiB sector support, larger maximum size, better corruption resistance).\n\n" +
-			"**Resize is the only in-place mutation:** changing `size_bytes` on a fixed or dynamic disk runs `Resize-VHD` (no replace). Every other attribute -- `path`, `vhd_type`, `parent_path`, `block_size_bytes` -- forces replacement when changed.\n\n" +
+			"**Resize is the only in-place mutation:** changing `size_bytes` runs `Resize-VHD`; copied disks may only grow. Every other creation attribute forces replacement.\n\n" +
 			"**Shrink limitations:** `Resize-VHD` only shrinks when trailing blocks are empty. Run `Optimize-VHD` first to reclaim space if a shrink errors. The provider does not run Optimize-VHD automatically -- it's a long, host-state-mutating operation that operators should trigger explicitly.\n\n" +
 			"**Attached flag:** `attached` reports whether any VM currently has this disk attached. The provider does not block destroy when the disk is attached -- the underlying `Remove-Item` errors loudly with a clear message in that case.",
 		Attributes: map[string]schema.Attribute{
@@ -49,10 +50,10 @@ func resourceSchema() schema.Schema {
 			},
 			"vhd_type": schema.StringAttribute{
 				Required: true,
-				MarkdownDescription: "Disk layout. One of `fixed` (pre-allocated), `dynamic` (sparse), or `differencing` " +
-					"(child of a parent). **Forces replacement** when changed -- there is no in-place conversion path.",
+				MarkdownDescription: "Disk creation mode. One of `fixed`, `dynamic`, `differencing`, or `copy`. " +
+					"Copy clones the host-side `source_path` without modifying the golden. Forces replacement when changed.",
 				Validators: []validator.String{
-					stringvalidator.OneOf("fixed", "dynamic", "differencing"),
+					stringvalidator.OneOf("fixed", "dynamic", "differencing", "copy"),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -61,9 +62,8 @@ func resourceSchema() schema.Schema {
 			"size_bytes": schema.Int64Attribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Declared logical size in bytes. **Required** for `fixed` and `dynamic`; **rejected** for " +
-					"`differencing` (Hyper-V inherits the size from the parent). In-place updatable for `fixed` and `dynamic` " +
-					"via `Resize-VHD`; shrinks require trailing blocks to be empty (run `Optimize-VHD` first if needed).",
+				MarkdownDescription: "Declared logical size in bytes. Required for `fixed` and `dynamic`, rejected for `differencing`, " +
+					"and optional for `copy`. A copied disk is expanded when this exceeds the golden virtual size and is never shrunk.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -79,6 +79,17 @@ func resourceSchema() schema.Schema {
 					stringplanmodifier.UseStateForUnknown(),
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"source_path": schema.StringAttribute{
+				CustomType: pathtype.Type,
+				Optional:   true,
+				MarkdownDescription: "Existing golden VHD/VHDX path on the Hyper-V host. Required only when `vhd_type = \"copy\"`. " +
+					"The provider copies this file to `path` and never modifies or deletes the source. Forces replacement.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"keep_on_destroy": schema.BoolAttribute{
+				Optional:            true,
+				MarkdownDescription: "Leave the managed destination VHD/VHDX on the host when the Terraform resource is destroyed. The source_path golden is never deleted.",
 			},
 			"block_size_bytes": schema.Int64Attribute{
 				Optional: true,

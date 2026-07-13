@@ -4,8 +4,8 @@ page_title: "hyperv_vm Resource - hyperv"
 subcategory: ""
 description: |-
   Requirements: Membership in the Hyper-V Administrators group on the target host (or equivalent rights granted through a JEA endpoint).
-  Manages a Hyper-V virtual machine. Configures name, generation, nested cpu and memory blocks (static or dynamic), secure_boot (gen 2), notes, the inline state block for power lifecycle (desired, current, shutdown_mode), and inline network_adapter[], hard_disk_drive[], dvd_drive[], and boot_order (gen 2 only) lists.
-  Integration services, automatic start/stop actions, and checkpoints are not currently exposed. Generation 1 BIOS boot ordering (Set-VMBios -StartupOrder) is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.
+  Manages a Hyper-V virtual machine. Configures name, generation, nested cpu and memory blocks (static or dynamic), secure_boot (gen 2), notes, the inline state block for power lifecycle (desired, current, shutdown_mode), and inline network_adapter[], hard_disk_drive[], dvd_drive[], and boot_order (gen 2 only) lists. VM storage paths, automatic start/stop actions, and checkpoint policy are also managed.
+  Integration services are not currently exposed. Generation 1 BIOS boot ordering (Set-VMBios -StartupOrder) is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.
   Power transitions are driven by the inline state block (desired = "Running", "Off", "Saved", "Paused"). Mutations to cpu.count, memory.startup_bytes, and secure_boot generally require the VM to be Off; the script surfaces the cmdlet's clear error rather than auto-stopping.
   terraform destroy performs a hard power-off of any running VM (Stop-VM -Force -TurnOff, equivalent to pulling the plug) before calling Remove-VM -Force. This avoids the indefinite-hang failure mode of graceful shutdown when a guest's Hyper-V integration services are absent or unresponsive, and matches the destroy semantics other IaC providers (AWS, Azure, libvirt) use. If a clean shutdown matters -- e.g., decoupled VHDXs the user is keeping after destroy -- drive the graceful shutdown via state.shutdown_mode = "graceful" plus desired = "Off" (or out-of-band) before running terraform destroy.
 ---
@@ -14,9 +14,9 @@ description: |-
 
 **Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or equivalent rights granted through a JEA endpoint).
 
-Manages a Hyper-V virtual machine. Configures `name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), `secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle (`desired`, `current`, `shutdown_mode`), and inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only) lists.
+Manages a Hyper-V virtual machine. Configures `name`, `generation`, nested `cpu` and `memory` blocks (static or dynamic), `secure_boot` (gen 2), `notes`, the inline `state` block for power lifecycle (`desired`, `current`, `shutdown_mode`), and inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `boot_order` (gen 2 only) lists. VM storage paths, automatic start/stop actions, and checkpoint policy are also managed.
 
-Integration services, automatic start/stop actions, and checkpoints are not currently exposed. Generation 1 BIOS boot ordering (`Set-VMBios -StartupOrder`) is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.
+Integration services are not currently exposed. Generation 1 BIOS boot ordering (`Set-VMBios -StartupOrder`) is also not currently supported -- gen 1 VMs boot from whatever Hyper-V's default is.
 
 **Power transitions** are driven by the inline `state` block (`desired = "Running"`, `"Off"`, `"Saved"`, `"Paused"`). Mutations to `cpu.count`, `memory.startup_bytes`, and `secure_boot` generally require the VM to be `Off`; the script surfaces the cmdlet's clear error rather than auto-stopping.
 
@@ -32,7 +32,19 @@ Integration services, automatic start/stop actions, and checkpoints are not curr
 resource "hyperv_vm" "node01" {
   name       = "node01"
   generation = 2
-  cpu        = { count = 2 }
+
+  # These are paths on the Windows Hyper-V host, even when Terraform runs
+  # from macOS or Linux. Changing path replaces the VM; the two auxiliary
+  # paths update in place.
+  path                   = "E:\\VMs\\node01"
+  snapshot_file_location = "E:\\VMs\\node01\\Snapshots"
+  smart_paging_file_path = "E:\\VMs\\node01\\SmartPaging"
+
+  automatic_start_action = "StartIfRunning"
+  automatic_start_delay  = 30
+  automatic_stop_action  = "ShutDown"
+  checkpoint_type        = "Production"
+  cpu                    = { count = 2 }
   # Static memory: locks 4 GiB. Add `dynamic = true` plus `min_bytes` /
   # `max_bytes` to opt into Hyper-V dynamic memory; only safe on guests
   # that ship and run Hyper-V integration services.
@@ -247,6 +259,9 @@ resource "hyperv_vm" "talos_controlplane" {
 
 ### Optional
 
+- `automatic_start_action` (String) Action taken when the Hyper-V host starts: `Nothing`, `StartIfRunning`, or `Start`.
+- `automatic_start_delay` (Number) Non-negative delay in seconds before the automatic start action.
+- `automatic_stop_action` (String) Action taken when the Hyper-V host shuts down: `TurnOff`, `Save`, or `ShutDown`.
 - `boot_order` (Attributes List) Ordered list of boot devices on a generation 2 VM (UEFI firmware). Each entry has a `type` discriminator and the fields appropriate for that type:
 
 - `type = "hard_disk_drive"` or `"dvd_drive"`: identify the device by `controller_type` + `controller_number` + `controller_location` (the same slot tuple used in `hard_disk_drive[]` and `dvd_drive[]`).
@@ -259,6 +274,7 @@ resource "hyperv_vm" "talos_controlplane" {
 **Appliance-OS install flow:** apply once with `dvd_drive` first in `boot_order`, install the OS, then re-apply with `hard_disk_drive` first (and the DVD removed from `dvd_drive[]` to eject the install media).
 
 **Drift handling:** if someone re-orders the boot list out of band on the host, the next refresh detects the drift and the next plan corrects it. (see [below for nested schema](#nestedatt--boot_order))
+- `checkpoint_type` (String) Checkpoint policy: `Disabled`, `Standard`, `Production`, or `ProductionOnly`.
 - `dvd_drive` (Attributes List) List of DVD drives attached to the VM. Each drive occupies a controller slot identified by `controller_type` + `controller_number` + `controller_location`; `iso_path` optionally loads an ISO into the drive (omit for an empty drive).
 
 **Slot tuple keys reconciliation:** Update diffs the planned list against state by slot. Slots in plan but not state get `Add-VMDvdDrive`; slots in state but not plan get `Remove-VMDvdDrive`; slots in both with a different `iso_path` get detached and re-attached (the brief gap between the two calls is acceptable since the VM is generally Off during scalar updates anyway).
@@ -287,12 +303,15 @@ VLAN tagging and static MAC addresses are not currently exposed. (see [below for
   * Writing `notes = ""` explicitly also loops: the host stores empty, but the provider collapses that back to null in state to keep the omit-attribute case stable.
 
 To change `notes`, write a different non-empty value. To remove notes from a VM, destroy and recreate.
+- `path` (String) Filesystem path on the Hyper-V host where the VM's configuration files live. When configured it is passed to `New-VM -Path`. Omission preserves Hyper-V's default. This is a remote Windows path, including UNC paths, not a path on the Terraform runner. **Forces replacement** when changed; this provider does not move VM storage automatically.
 - `secure_boot` (Boolean) Whether UEFI Secure Boot is enabled. **Valid only when `generation = 2`** -- a config validator rejects this on gen 1 at plan time. Defaults to Hyper-V's default (typically `true` for new gen 2 VMs). In-place updatable via `Set-VMFirmware`.
 
 **Cannot be cleared in-place.** Once `secure_boot` has been set in config and applied, writing `secure_boot = null` (or removing the attribute and re-adding it later) will NOT revert to the host default -- the change isn't forwarded by the partial-update path, the host keeps the previous value, and every subsequent plan shows the same diff. To revert, either explicitly set the desired bool (e.g. `secure_boot = true`) or destroy and recreate the VM.
 - `secure_boot_template` (String) UEFI Secure Boot template controlling which signing CAs the VM firmware trusts. **Valid only when `generation = 2`.** Common values: `MicrosoftWindows` (default for new gen 2 VMs), `MicrosoftUEFICertificateAuthority` (broader Microsoft UEFI CA -- required for current Server 2022 install media after Microsoft's CVE-2023-24932 cert rotation), `OpenSourceShieldedVM`. Hyper-V validates the value and surfaces unknown templates as a clear cmdlet error.
 
 **Forces replacement** when changed -- the template is set at create time via `Set-VMFirmware`; in-place updates require the VM to be off and platform-key reset, which the resource layer does not yet wire through.
+- `smart_paging_file_path` (String) Remote Windows directory used for Smart Paging files. Updated in place with `Set-VM -SmartPagingFilePath`.
+- `snapshot_file_location` (String) Remote Windows directory used for VM checkpoint files. Updated in place with `Set-VM -SnapshotFileLocation`.
 - `state` (Attributes) Power-state block. Optional: omit to leave the VM at whatever power state Hyper-V's default applies (Off for newly created VMs). When set, `state.desired` drives transitions and `state.current` surfaces the host's actual state.
 
 **Transitions:** `Off` -> `Running` calls `Start-VM`; `Running` -> `Off` dispatches based on `state.shutdown_mode` (`turn_off` or omitted calls `Stop-VM -TurnOff -Force` for hard power-off; `graceful` calls `Stop-VM -Force` without `-TurnOff` to send an ACPI shutdown via Hyper-V integration services).
@@ -307,7 +326,6 @@ To change `notes`, write a different non-empty value. To remove notes from a VM,
 - `ip_addresses` (List of String) Flat list of IPv4 / IPv6 addresses the guest's Hyper-V integration services have reported across all attached `network_adapter[]` entries. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services (rare for modern Windows and Linux).
 
 **Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, so downstream resources that reference `hyperv_vm.web.ip_addresses[0]` may see the value flip when the host happens to surface a different IP first, planning a spurious update. **Index into this list only when the VM is single-NIC, single-IP and the user trusts that contract operationally.** Multi-homed VMs should use the per-NIC `network_adapter[*].ip_addresses` view instead -- it pins the NIC selector by deterministic display `name`, eliminating the cross-NIC ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing is the dominant single-IP use case, and the type may flip to `Set` in a future major release if multi-homed users surface real pain.
-- `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
 
 <a id="nestedatt--cpu"></a>
 ### Nested Schema for `cpu`

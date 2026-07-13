@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // runScript prepends the embedded preamble to every body. Verify the

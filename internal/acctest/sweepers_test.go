@@ -34,8 +34,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
 )
 
 // TestMain dispatches the `-sweep=...` flag to terraform-plugin-testing's

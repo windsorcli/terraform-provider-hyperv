@@ -31,7 +31,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
 )
 
 // VM-side memory cannot be smaller than 32 MiB on Hyper-V Server

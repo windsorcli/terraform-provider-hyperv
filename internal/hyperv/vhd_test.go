@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // GetVHD happy path: typed result decoded from the dynamic-VHDX fixture.
@@ -230,6 +230,23 @@ func TestClient_NewVHDDifferencing_StdinMatchesWireContract(t *testing.T) {
 	for _, omit := range []string{"size_bytes", "block_size_bytes"} {
 		if strings.Contains(stdin, omit) {
 			t.Errorf("stdin must omit %q for differencing (Hyper-V inherits from parent); got: %s", omit, stdin)
+		}
+	}
+}
+
+func TestClient_CopyVHD_StdinMatchesWireContract(t *testing.T) {
+	t.Parallel()
+	fr := testutil.NewFakeRunner().On("function Copy-HypervVHDFromGolden").Return(testutil.VHDDynamicFixtureJSON, "", 0)
+	c := NewClient(fr)
+	size := int64(107374182400)
+	_, err := c.CopyVHD(t.Context(), CopyVHDInput{Path: `E:\\VMs\\ubuntu01\\ubuntu01-os.vhdx`, SourcePath: `F:\\TEMPLATES\\UBUNTU26GOLDEN.vhdx`, SizeBytes: &size})
+	if err != nil {
+		t.Fatalf("CopyVHD: %v", err)
+	}
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{`"vhd_type":"copy"`, `"source_path":"F:\\\\TEMPLATES\\\\UBUNTU26GOLDEN.vhdx"`, `"size_bytes":107374182400`} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q: %s", want, stdin)
 		}
 	}
 }

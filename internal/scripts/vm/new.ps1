@@ -11,7 +11,14 @@
 #                   "min_memory_bytes": <int64>,      # optional, only when dynamic_memory=true
 #                   "max_memory_bytes": <int64>,      # optional, only when dynamic_memory=true
 #                   "secure_boot":      <bool>,       # optional, gen 2 only
-#                   "notes":            "<string>"    # optional
+#                   "notes":            "<string>",   # optional
+#                   "path":             "<string>",   # optional, remote Windows path
+#                   "snapshot_file_location": "<string>",
+#                   "smart_paging_file_path":  "<string>",
+#                   "automatic_start_action":  "Nothing|StartIfRunning|Start",
+#                   "automatic_start_delay":   <int>,
+#                   "automatic_stop_action":   "TurnOff|Save|ShutDown",
+#                   "checkpoint_type":         "Disabled|Standard|Production|ProductionOnly"
 #                 }
 #   stdout JSON : same shape as get.ps1.
 #
@@ -22,7 +29,7 @@
 # expected for the minimal slice), Set-VMMemory (DynamicMemoryEnabled
 # defaults to false to lock static; the optional dynamic_memory wire
 # field opts in to dynamic with min/max), Set-VMProcessor, Set-VMFirmware
-# (gen 2 + secure_boot only), Set-VM Notes. Each Set-* is its own cmdlet
+# (gen 2 + secure_boot only), Set-VM mutable VM properties. Each Set-* is its own cmdlet
 # call -- New-VM doesn't accept all of these in one shot.
 
 
@@ -43,15 +50,30 @@ function New-HypervVM {
         [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
         [string]                        $SecureBootTemplate,
-        [string]                        $Notes
+        [string]                        $Notes,
+        [string]                        $Path,
+        [string]                        $SnapshotFileLocation,
+        [string]                        $SmartPagingFilePath,
+        [string]                        $AutomaticStartAction,
+        [Nullable[int64]]               $AutomaticStartDelay,
+        [string]                        $AutomaticStopAction,
+        [string]                        $CheckpointType
     )
     # Capture the VM object returned by New-VM so subsequent operations
     # use the specific VM by ID rather than name. Hyper-V does not enforce
     # name uniqueness, so Get-VM -Name would return multiple objects if an
     # earlier interrupted run left an orphan with the same name.
-    $newVmObj = New-VM -Name $Name -Generation $Generation `
-        -MemoryStartupBytes $MemoryBytes `
-        -NoVHD -ErrorAction Stop
+    $newVMArgs = @{
+        Name               = $Name
+        Generation         = $Generation
+        MemoryStartupBytes = $MemoryBytes
+        NoVHD              = $true
+        ErrorAction        = 'Stop'
+    }
+    if ($PSBoundParameters.ContainsKey('Path')) {
+        $newVMArgs.Path = $Path
+    }
+    $newVmObj = New-VM @newVMArgs
     $vmId = $newVmObj.Id
 
     # New-VM auto-creates a default "Network Adapter" NIC with empty
@@ -125,8 +147,28 @@ function New-HypervVM {
             Set-VMFirmware @fwArgs
         }
 
-        if ($PSBoundParameters.ContainsKey('Notes')) {
-            Set-VM -VM $newVmObj -Notes $Notes -ErrorAction Stop
+        $vmArgs = @{ VM = $newVmObj; ErrorAction = 'Stop' }
+        if ($PSBoundParameters.ContainsKey('Notes')) { $vmArgs.Notes = $Notes }
+        if ($PSBoundParameters.ContainsKey('SnapshotFileLocation')) {
+            $vmArgs.SnapshotFileLocation = $SnapshotFileLocation
+        }
+        if ($PSBoundParameters.ContainsKey('SmartPagingFilePath')) {
+            $vmArgs.SmartPagingFilePath = $SmartPagingFilePath
+        }
+        if ($PSBoundParameters.ContainsKey('AutomaticStartAction')) {
+            $vmArgs.AutomaticStartAction = $AutomaticStartAction
+        }
+        if ($null -ne $AutomaticStartDelay) {
+            $vmArgs.AutomaticStartDelay = [int] $AutomaticStartDelay
+        }
+        if ($PSBoundParameters.ContainsKey('AutomaticStopAction')) {
+            $vmArgs.AutomaticStopAction = $AutomaticStopAction
+        }
+        if ($PSBoundParameters.ContainsKey('CheckpointType')) {
+            $vmArgs.CheckpointType = $CheckpointType
+        }
+        if ($vmArgs.Count -gt 2) {
+            Set-VM @vmArgs
         }
     }
     catch {
@@ -193,6 +235,27 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($params.PSObject.Properties.Name -contains 'notes' -and
             $null -ne $params.notes) {
             $callArgs.Notes = [string] $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'path' -and $null -ne $params.path) {
+            $callArgs.Path = [string] $params.path
+        }
+        if ($params.PSObject.Properties.Name -contains 'snapshot_file_location' -and $null -ne $params.snapshot_file_location) {
+            $callArgs.SnapshotFileLocation = [string] $params.snapshot_file_location
+        }
+        if ($params.PSObject.Properties.Name -contains 'smart_paging_file_path' -and $null -ne $params.smart_paging_file_path) {
+            $callArgs.SmartPagingFilePath = [string] $params.smart_paging_file_path
+        }
+        if ($params.PSObject.Properties.Name -contains 'automatic_start_action' -and $null -ne $params.automatic_start_action) {
+            $callArgs.AutomaticStartAction = [string] $params.automatic_start_action
+        }
+        if ($params.PSObject.Properties.Name -contains 'automatic_start_delay' -and $null -ne $params.automatic_start_delay) {
+            $callArgs.AutomaticStartDelay = [int64] $params.automatic_start_delay
+        }
+        if ($params.PSObject.Properties.Name -contains 'automatic_stop_action' -and $null -ne $params.automatic_stop_action) {
+            $callArgs.AutomaticStopAction = [string] $params.automatic_stop_action
+        }
+        if ($params.PSObject.Properties.Name -contains 'checkpoint_type' -and $null -ne $params.checkpoint_type) {
+            $callArgs.CheckpointType = [string] $params.checkpoint_type
         }
 
         New-HypervVM @callArgs

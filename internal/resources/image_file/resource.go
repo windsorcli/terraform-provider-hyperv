@@ -16,8 +16,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 var (

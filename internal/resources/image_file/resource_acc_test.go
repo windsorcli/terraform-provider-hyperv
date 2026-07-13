@@ -43,7 +43,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/xeitu/terraform-provider-hyperv/internal/acctest"
 )
 
 // sha256Pattern matches the lowercase-hex form the resource's computed

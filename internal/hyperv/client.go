@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // Client is the typed wrapper resources use to invoke Hyper-V cmdlets.

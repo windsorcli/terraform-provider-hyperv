@@ -33,3 +33,13 @@ resource "hyperv_vhd" "vm01_root" {
   vhd_type    = "differencing"
   parent_path = hyperv_image_file.ubuntu_parent.destination_path
 }
+
+# Copy a golden VHDX already present on the Hyper-V host. source_path and
+# path are both remote Windows paths; no VHDX is transferred from the runner.
+resource "hyperv_vhd" "ubuntu_copy" {
+  path            = "E:\\VMs\\ubuntu01\\Disks\\ubuntu01-os.vhdx"
+  vhd_type        = "copy"
+  source_path     = "F:\\TEMPLATES\\UBUNTU26GOLDEN.vhdx"
+  size_bytes      = 107374182400 # 100 GiB; only expands the copied disk
+  keep_on_destroy = false        # deletes only the destination copy
+}

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the windsorcli/hyperv Terraform provider are
+All notable changes to the xeitu/hyperv Terraform provider are
 documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -41,5 +41,21 @@ new versioned sections; they don't rewrite prior ones.
 
 ### Added
 
-- Initial release plumbing: GoReleaser config, tag-triggered release
-  workflow, GPG-signed checksums.
+- Provider identity and release plumbing for the maintained `xeitu/hyperv`
+  fork, including GoReleaser, tag-triggered releases, and signed checksums.
+- VM placement paths, snapshot and Smart Paging locations, automatic
+  start/stop policy, start delay, and checkpoint policy.
+- Modern SSH authentication using Ed25519 or other private keys, encrypted
+  keys, SSH agent support, known-hosts verification, and explicit host-key
+  pinning while retaining password authentication compatibility.
+- Host-side golden VHD/VHDX copy mode with optional grow-only resize and
+  safe retention on destroy. Source golden images are never modified or
+  deleted.
+- Explicit build targets for Apple Silicon and Intel macOS, Linux AMD64,
+  and Windows AMD64.
+
+### Changed
+
+- Documentation now distinguishes runner-local files from Windows paths on
+  the remote Hyper-V host and documents Windows Server 2019/PowerShell 5.1
+  compatibility.

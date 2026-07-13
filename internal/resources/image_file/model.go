@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // Model is the tfsdk-bound struct backing the resource state. Field tags

@@ -34,9 +34,9 @@ import (
 
 	tfacctest "github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/provider"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/provider"
 )
 
 // AccTestPrefix is the resource-name prefix for everything created by an
@@ -44,6 +44,16 @@ import (
 // will target this prefix; until then it gives a clear pattern for manual
 // cleanup of orphans on the bench.
 const AccTestPrefix = "tfacc"
+
+// Terraform's testing framework otherwise assumes the HashiCorp namespace
+// when it builds the temporary required_providers block and dependency lock.
+// Keep unit and acceptance fixtures aligned with the provider's public source
+// address while still allowing callers to override the namespace explicitly.
+func init() {
+	if _, configured := os.LookupEnv("TF_ACC_PROVIDER_NAMESPACE"); !configured {
+		_ = os.Setenv("TF_ACC_PROVIDER_NAMESPACE", "xeitu")
+	}
+}
 
 // ProtoV6ProviderFactories registers the in-process provider under the
 // short name `hyperv`. terraform-plugin-testing wires this factory into

@@ -31,7 +31,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/iso"
+	"github.com/xeitu/terraform-provider-hyperv/internal/iso"
 )
 
 var _ datasource.DataSource = (*DataSource)(nil)

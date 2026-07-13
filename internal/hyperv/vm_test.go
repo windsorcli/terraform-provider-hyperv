@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
+	"github.com/xeitu/terraform-provider-hyperv/internal/testutil"
 )
 
 // TestClient_GetVM_HappyPath_Gen2 decodes the gen 2 fixture into the
@@ -140,13 +140,25 @@ func TestClient_NewVM_StdinMatchesWireContract(t *testing.T) {
 
 	secureBoot := true
 	notes := "production"
+	path := `E:\Hyper-V Virtual Machines\vm01`
+	snapshotPath := `\\server\share\Snapshots`
+	startAction := "StartIfRunning"
+	startDelay := int64(30)
+	stopAction := "ShutDown"
+	checkpointType := "Production"
 	in := NewVMInput{
-		Name:        "vm01",
-		Generation:  2,
-		Vcpu:        2,
-		MemoryBytes: 4294967296,
-		SecureBoot:  &secureBoot,
-		Notes:       &notes,
+		Name:                 "vm01",
+		Generation:           2,
+		Vcpu:                 2,
+		MemoryBytes:          4294967296,
+		SecureBoot:           &secureBoot,
+		Notes:                &notes,
+		Path:                 &path,
+		SnapshotFileLocation: &snapshotPath,
+		AutomaticStartAction: &startAction,
+		AutomaticStartDelay:  &startDelay,
+		AutomaticStopAction:  &stopAction,
+		CheckpointType:       &checkpointType,
 	}
 	if _, err := c.NewVM(t.Context(), in); err != nil {
 		t.Fatalf("NewVM: %v", err)
@@ -160,6 +172,12 @@ func TestClient_NewVM_StdinMatchesWireContract(t *testing.T) {
 		`"memory_bytes":4294967296`,
 		`"secure_boot":true`,
 		`"notes":"production"`,
+		`"path":"E:\\Hyper-V Virtual Machines\\vm01"`,
+		`"snapshot_file_location":"\\\\server\\share\\Snapshots"`,
+		`"automatic_start_action":"StartIfRunning"`,
+		`"automatic_start_delay":30`,
+		`"automatic_stop_action":"ShutDown"`,
+		`"checkpoint_type":"Production"`,
 	} {
 		if !strings.Contains(stdin, want) {
 			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
@@ -188,7 +206,11 @@ func TestClient_NewVM_OmitsAbsentOptionals(t *testing.T) {
 	}
 
 	stdin := string(fr.Calls()[0].StdinJSON)
-	for _, omit := range []string{"secure_boot", "notes"} {
+	for _, omit := range []string{
+		"secure_boot", "notes", "path", "snapshot_file_location",
+		"smart_paging_file_path", "automatic_start_action",
+		"automatic_start_delay", "automatic_stop_action", "checkpoint_type",
+	} {
 		if strings.Contains(stdin, omit) {
 			t.Errorf("stdin should omit %q when not specified; got: %s", omit, stdin)
 		}

@@ -57,6 +57,38 @@ func writeKnownHostsFile(t *testing.T) string {
 	return path
 }
 
+func TestLoadHostKeyCallback_PinnedEd25519AndFingerprint(t *testing.T) {
+	t.Parallel()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pin := range []string{
+		strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))),
+		ssh.FingerprintSHA256(key),
+	} {
+		cb, err := loadHostKeyCallback(pin, "/missing/is/ignored")
+		if err != nil {
+			t.Fatalf("loadHostKeyCallback(%q): %v", pin, err)
+		}
+		if err := cb("host:22", nil, key); err != nil {
+			t.Errorf("matching pin rejected: %v", err)
+		}
+	}
+}
+
+func TestBuildSSHAuthMethods_AgentRequiresSocket(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	_, _, err := buildSSHAuthMethods(SSHOptions{UseSSHAgent: true})
+	if err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+		t.Fatalf("err = %v, want SSH_AUTH_SOCK diagnostic", err)
+	}
+}
+
 // NewSSH must reject calls that don't carry the minimum required config
 // (host + username). Surfacing this as a config error at provider Configure
 // time beats failing later with a confusing dial message.
@@ -123,7 +155,7 @@ func TestBuildSSHAuthMethods_RawKeyWinsOverPath(t *testing.T) {
 	// PrivateKey set + PrivateKeyPath pointing at a non-existent file:
 	// since raw bytes win, the path is never read so the missing file
 	// must NOT cause an error.
-	auths, err := buildSSHAuthMethods(SSHOptions{
+	auths, _, err := buildSSHAuthMethods(SSHOptions{
 		PrivateKey:     keyBytes,
 		PrivateKeyPath: "/this/path/does/not/exist",
 	})
@@ -146,7 +178,7 @@ func TestBuildSSHAuthMethods_FallsBackToKeyPath(t *testing.T) {
 		t.Fatalf("write key: %v", err)
 	}
 
-	auths, err := buildSSHAuthMethods(SSHOptions{PrivateKeyPath: keyPath})
+	auths, _, err := buildSSHAuthMethods(SSHOptions{PrivateKeyPath: keyPath})
 	if err != nil {
 		t.Fatalf("buildSSHAuthMethods: %v", err)
 	}
@@ -161,7 +193,7 @@ func TestBuildSSHAuthMethods_FallsBackToKeyPath(t *testing.T) {
 func TestBuildSSHAuthMethods_PasswordOnly(t *testing.T) {
 	t.Parallel()
 
-	auths, err := buildSSHAuthMethods(SSHOptions{Password: []byte("secret")})
+	auths, _, err := buildSSHAuthMethods(SSHOptions{Password: []byte("secret")})
 	if err != nil {
 		t.Fatalf("buildSSHAuthMethods: %v", err)
 	}
@@ -175,7 +207,7 @@ func TestBuildSSHAuthMethods_PasswordOnly(t *testing.T) {
 func TestBuildSSHAuthMethods_KeyAndPasswordBothOffered(t *testing.T) {
 	t.Parallel()
 
-	auths, err := buildSSHAuthMethods(SSHOptions{
+	auths, _, err := buildSSHAuthMethods(SSHOptions{
 		PrivateKey: generateTestKey(t),
 		Password:   []byte("secret"),
 	})

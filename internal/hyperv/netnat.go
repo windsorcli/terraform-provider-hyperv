@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // netNatSweepResult is the shape netnat/sweep.ps1 emits: the names of

@@ -11,7 +11,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/scripts"
+	"github.com/xeitu/terraform-provider-hyperv/internal/scripts"
 )
 
 // defaultReadTimeout caps Get-* calls so a wedged remote cmdlet or stale

@@ -13,10 +13,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/typeflatten"
-	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	"github.com/xeitu/terraform-provider-hyperv/internal/typeflatten"
+	mactype "github.com/xeitu/terraform-provider-hyperv/internal/types/mac"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 var (
@@ -800,7 +800,10 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 func setInputHasChanges(in hyperv.SetVMInput) bool {
 	return in.Vcpu != nil || in.MemoryBytes != nil ||
 		in.DynamicMemory != nil || in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil ||
-		in.SecureBoot != nil || in.Notes != nil
+		in.SecureBoot != nil || in.Notes != nil ||
+		in.SnapshotFileLocation != nil || in.SmartPagingFilePath != nil ||
+		in.AutomaticStartAction != nil || in.AutomaticStartDelay != nil ||
+		in.AutomaticStopAction != nil || in.CheckpointType != nil
 }
 
 // Delete runs remove.ps1. ErrNotFound is treated as success (the VM is
@@ -876,6 +879,34 @@ func buildNewInput(plan Model) hyperv.NewVMInput {
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
+	if !plan.Path.IsNull() && !plan.Path.IsUnknown() {
+		v := plan.Path.ValueString()
+		in.Path = &v
+	}
+	if !plan.SnapshotFileLocation.IsNull() && !plan.SnapshotFileLocation.IsUnknown() {
+		v := plan.SnapshotFileLocation.ValueString()
+		in.SnapshotFileLocation = &v
+	}
+	if !plan.SmartPagingFilePath.IsNull() && !plan.SmartPagingFilePath.IsUnknown() {
+		v := plan.SmartPagingFilePath.ValueString()
+		in.SmartPagingFilePath = &v
+	}
+	if !plan.AutomaticStartAction.IsNull() && !plan.AutomaticStartAction.IsUnknown() {
+		v := plan.AutomaticStartAction.ValueString()
+		in.AutomaticStartAction = &v
+	}
+	if !plan.AutomaticStartDelay.IsNull() && !plan.AutomaticStartDelay.IsUnknown() {
+		v := plan.AutomaticStartDelay.ValueInt64()
+		in.AutomaticStartDelay = &v
+	}
+	if !plan.AutomaticStopAction.IsNull() && !plan.AutomaticStopAction.IsUnknown() {
+		v := plan.AutomaticStopAction.ValueString()
+		in.AutomaticStopAction = &v
+	}
+	if !plan.CheckpointType.IsNull() && !plan.CheckpointType.IsUnknown() {
+		v := plan.CheckpointType.ValueString()
+		in.CheckpointType = &v
+	}
 	return in
 }
 
@@ -945,7 +976,48 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
+	if !vmPathsEqual(plan.SnapshotFileLocation, state.SnapshotFileLocation) &&
+		!plan.SnapshotFileLocation.IsNull() && !plan.SnapshotFileLocation.IsUnknown() {
+		v := plan.SnapshotFileLocation.ValueString()
+		in.SnapshotFileLocation = &v
+	}
+	if !vmPathsEqual(plan.SmartPagingFilePath, state.SmartPagingFilePath) &&
+		!plan.SmartPagingFilePath.IsNull() && !plan.SmartPagingFilePath.IsUnknown() {
+		v := plan.SmartPagingFilePath.ValueString()
+		in.SmartPagingFilePath = &v
+	}
+	if !plan.AutomaticStartAction.Equal(state.AutomaticStartAction) &&
+		!plan.AutomaticStartAction.IsNull() && !plan.AutomaticStartAction.IsUnknown() {
+		v := plan.AutomaticStartAction.ValueString()
+		in.AutomaticStartAction = &v
+	}
+	if !plan.AutomaticStartDelay.Equal(state.AutomaticStartDelay) &&
+		!plan.AutomaticStartDelay.IsNull() && !plan.AutomaticStartDelay.IsUnknown() {
+		v := plan.AutomaticStartDelay.ValueInt64()
+		in.AutomaticStartDelay = &v
+	}
+	if !plan.AutomaticStopAction.Equal(state.AutomaticStopAction) &&
+		!plan.AutomaticStopAction.IsNull() && !plan.AutomaticStopAction.IsUnknown() {
+		v := plan.AutomaticStopAction.ValueString()
+		in.AutomaticStopAction = &v
+	}
+	if !plan.CheckpointType.Equal(state.CheckpointType) &&
+		!plan.CheckpointType.IsNull() && !plan.CheckpointType.IsUnknown() {
+		v := plan.CheckpointType.ValueString()
+		in.CheckpointType = &v
+	}
 	return in
+}
+
+func vmPathsEqual(a, b pathtype.Path) bool {
+	if a.Equal(b) {
+		return true
+	}
+	if a.IsNull() || a.IsUnknown() || b.IsNull() || b.IsUnknown() {
+		return false
+	}
+	equal, diags := a.StringSemanticEquals(context.Background(), b)
+	return !diags.HasError() && equal
 }
 
 // memoryModelFromVM builds the nested MemoryModel from the VM read
@@ -1143,21 +1215,27 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 	}
 
 	return Model{
-		ID:                 types.StringValue(v.Name),
-		Name:               types.StringValue(v.Name),
-		Generation:         types.Int64Value(int64(v.Generation)),
-		CPU:                &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
-		Memory:             memoryModelFromVM(v),
-		HardDiskDrives:     hdds,
-		NetworkAdapters:    nics,
-		DvdDrives:          dvdList,
-		BootOrder:          bootList,
-		SecureBoot:         secureBoot,
-		SecureBootTemplate: secureBootTemplate,
-		Notes:              notes,
-		State:              &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
-		IPAddresses:        typeflatten.IPAddresses(v.NetworkAdapters),
-		Path:               types.StringValue(v.Path),
+		ID:                   types.StringValue(v.Name),
+		Name:                 types.StringValue(v.Name),
+		Generation:           types.Int64Value(int64(v.Generation)),
+		CPU:                  &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
+		Memory:               memoryModelFromVM(v),
+		HardDiskDrives:       hdds,
+		NetworkAdapters:      nics,
+		DvdDrives:            dvdList,
+		BootOrder:            bootList,
+		SecureBoot:           secureBoot,
+		SecureBootTemplate:   secureBootTemplate,
+		Notes:                notes,
+		State:                &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
+		IPAddresses:          typeflatten.IPAddresses(v.NetworkAdapters),
+		Path:                 pathtype.NewPathValue(v.Path),
+		SnapshotFileLocation: pathtype.NewPathValue(v.SnapshotFileLocation),
+		SmartPagingFilePath:  pathtype.NewPathValue(v.SmartPagingFilePath),
+		AutomaticStartAction: types.StringValue(v.AutomaticStartAction),
+		AutomaticStartDelay:  types.Int64Value(v.AutomaticStartDelay),
+		AutomaticStopAction:  types.StringValue(v.AutomaticStopAction),
+		CheckpointType:       types.StringValue(v.CheckpointType),
 	}
 }
 

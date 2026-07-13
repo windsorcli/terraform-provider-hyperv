@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
+	"github.com/xeitu/terraform-provider-hyperv/internal/connection"
 )
 
 // makeTestPrivateKey returns a freshly-minted ed25519 private key in OpenSSH
@@ -124,6 +124,24 @@ func TestNewConnection_SSHHappyPath(t *testing.T) {
 	}
 	if conn.Backend() != "ssh" {
 		t.Errorf("Backend() = %q, want ssh", conn.Backend())
+	}
+}
+
+func TestNewConnection_SSHRejectsBothPassphraseNames(t *testing.T) {
+	t.Setenv("HYPERV_BACKEND", "")
+	m := HypervProviderModel{
+		Backend: types.StringValue("ssh"), Host: types.StringValue("host"),
+		Username: types.StringValue("user"),
+		SSH: &SSHConfig{
+			PrivateKey:           types.StringValue(string(makeTestPrivateKey(t))),
+			Passphrase:           types.StringValue("old"),
+			PrivateKeyPassphrase: types.StringValue("new"),
+			KnownHostsPath:       types.StringValue(makeKnownHostsForTest(t)),
+		},
+	}
+	_, diags := newConnection(t.Context(), m)
+	if !diags.HasError() || !strings.Contains(diags[0].Summary(), "passphrase") {
+		t.Fatalf("diags = %v, want passphrase conflict", diags)
 	}
 }
 

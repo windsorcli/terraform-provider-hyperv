@@ -96,6 +96,27 @@ Describe 'Set-HypervVM' {
             }
         }
 
+        It 'forwards mutable VM paths and policies in one Set-VM call' {
+            Mock Get-VM { New-HypervVMSample }
+            Mock Set-VM { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 `
+                -SnapshotFileLocation '\\server\share\VM Snapshots' `
+                -SmartPagingFilePath 'E:\VMs\vm01\SmartPaging' `
+                -AutomaticStartAction Start -AutomaticStartDelay 45 `
+                -AutomaticStopAction ShutDown -CheckpointType ProductionOnly | Out-Null
+
+            Should -Invoke Set-VM -Times 1 -Exactly -ParameterFilter {
+                $SnapshotFileLocation -eq '\\server\share\VM Snapshots' -and
+                $SmartPagingFilePath -eq 'E:\VMs\vm01\SmartPaging' -and
+                $AutomaticStartAction -eq 'Start' -and
+                $AutomaticStartDelay -eq 45 -and
+                $AutomaticStopAction -eq 'ShutDown' -and
+                $CheckpointType -eq 'ProductionOnly'
+            }
+        }
+
         It 'forwards all four when all four are supplied' {
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Set-VMMemory { }
@@ -137,11 +158,12 @@ Describe 'Set-HypervVM' {
                 ConvertFrom-Json
 
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'AutomaticStartAction', 'AutomaticStartDelay', 'AutomaticStopAction',
+                'BootOrder', 'CheckpointType', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
                 'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
                 'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
                 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'SecureBootTemplate', 'State'
+                'SecureBootTemplate', 'SmartPagingFilePath', 'SnapshotFileLocation', 'State'
             )
         }
     }

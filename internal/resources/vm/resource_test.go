@@ -11,8 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
+	"github.com/xeitu/terraform-provider-hyperv/internal/hyperv"
+	pathtype "github.com/xeitu/terraform-provider-hyperv/internal/types/path"
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
@@ -43,6 +43,9 @@ func TestResource_Schema(t *testing.T) {
 		"id", "name", "generation", "cpu", "memory",
 		"hard_disk_drive", "network_adapter", "dvd_drive",
 		"secure_boot", "notes", "state", "path",
+		"snapshot_file_location", "smart_paging_file_path",
+		"automatic_start_action", "automatic_start_delay",
+		"automatic_stop_action", "checkpoint_type",
 	}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -75,6 +78,17 @@ func TestResource_Schema_RequiresReplaceOnImmutableAttrs(t *testing.T) {
 	}
 	if !hasPlanModifier(genAttr.PlanModifiers, "RequiresReplace") {
 		t.Error(`"generation" must carry RequiresReplace`)
+	}
+
+	pathAttr, ok := resp.Schema.Attributes["path"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("path is not a StringAttribute (got %T)", resp.Schema.Attributes["path"])
+	}
+	if !pathAttr.Optional || !pathAttr.Computed {
+		t.Error(`"path" must be Optional+Computed`)
+	}
+	if !hasPlanModifier(pathAttr.PlanModifiers, "RequiresReplace") {
+		t.Error(`"path" must carry RequiresReplace`)
 	}
 }
 
@@ -141,6 +155,11 @@ func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	checkString("id")
 	checkString("notes")
 	checkString("path")
+	checkString("snapshot_file_location")
+	checkString("smart_paging_file_path")
+	checkString("automatic_start_action")
+	checkString("automatic_stop_action")
+	checkString("checkpoint_type")
 	// `state` is intentionally NOT in this list -- the nested
 	// `state.current` Computed attribute deliberately omits
 	// UseStateForUnknown so plan vs apply doesn't lock in a stale
@@ -475,12 +494,19 @@ func TestBuildNewInput_AllFieldsForwarded(t *testing.T) {
 	t.Parallel()
 
 	plan := Model{
-		Name:       types.StringValue("vm01"),
-		Generation: types.Int64Value(2),
-		CPU:        &CPUModel{Count: types.Int64Value(4)},
-		Memory:     &MemoryModel{StartupBytes: types.Int64Value(8589934592)},
-		SecureBoot: types.BoolValue(true),
-		Notes:      types.StringValue("production"),
+		Name:                 types.StringValue("vm01"),
+		Generation:           types.Int64Value(2),
+		CPU:                  &CPUModel{Count: types.Int64Value(4)},
+		Memory:               &MemoryModel{StartupBytes: types.Int64Value(8589934592)},
+		SecureBoot:           types.BoolValue(true),
+		Notes:                types.StringValue("production"),
+		Path:                 pathtype.NewPathValue(`E:\Hyper-V Virtual Machines\vm01`),
+		SnapshotFileLocation: pathtype.NewPathValue(`E:\VMs\vm01\Snapshots`),
+		SmartPagingFilePath:  pathtype.NewPathValue(`E:\VMs\vm01\Smart Paging`),
+		AutomaticStartAction: types.StringValue("StartIfRunning"),
+		AutomaticStartDelay:  types.Int64Value(30),
+		AutomaticStopAction:  types.StringValue("ShutDown"),
+		CheckpointType:       types.StringValue("Production"),
 	}
 	in := buildNewInput(plan)
 
@@ -492,6 +518,13 @@ func TestBuildNewInput_AllFieldsForwarded(t *testing.T) {
 	}
 	if in.Notes == nil || *in.Notes != "production" {
 		t.Errorf("Notes = %v, want pointer to \"production\"", in.Notes)
+	}
+	if in.Path == nil || *in.Path != `E:\Hyper-V Virtual Machines\vm01` {
+		t.Errorf("Path = %v, want remote path preserved", in.Path)
+	}
+	if in.AutomaticStartDelay == nil || *in.AutomaticStartDelay != 30 ||
+		in.CheckpointType == nil || *in.CheckpointType != "Production" {
+		t.Errorf("VM policy fields not forwarded: %+v", in)
 	}
 }
 
@@ -515,6 +548,77 @@ func TestBuildNewInput_OmitsNullOptionals(t *testing.T) {
 	}
 	if in.Notes != nil {
 		t.Errorf("Notes should be nil for null plan value; got %v", in.Notes)
+	}
+	if in.Path != nil || in.SnapshotFileLocation != nil || in.SmartPagingFilePath != nil ||
+		in.AutomaticStartAction != nil || in.AutomaticStartDelay != nil ||
+		in.AutomaticStopAction != nil || in.CheckpointType != nil {
+		t.Errorf("new VM optional path/policy fields should all be nil: %+v", in)
+	}
+}
+
+func TestBuildSetInput_VMPolicyOnlyChanged(t *testing.T) {
+	t.Parallel()
+
+	state := Model{
+		Name: types.StringValue("vm01"), Generation: types.Int64Value(2),
+		CPU:                  &CPUModel{Count: types.Int64Value(2)},
+		Memory:               &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SnapshotFileLocation: pathtype.NewPathValue(`E:\VMs\vm01\Old Snapshots`),
+		SmartPagingFilePath:  pathtype.NewPathValue(`E:\VMs\vm01\SmartPaging`),
+		AutomaticStartAction: types.StringValue("Nothing"),
+		AutomaticStartDelay:  types.Int64Value(0),
+		AutomaticStopAction:  types.StringValue("Save"),
+		CheckpointType:       types.StringValue("Standard"),
+	}
+	plan := state
+	plan.SnapshotFileLocation = pathtype.NewPathValue(`\\server\share\VM Snapshots`)
+	plan.AutomaticStartAction = types.StringValue("StartIfRunning")
+	plan.AutomaticStartDelay = types.Int64Value(30)
+
+	in := buildSetInput(plan, state)
+	if in.SnapshotFileLocation == nil || *in.SnapshotFileLocation != `\\server\share\VM Snapshots` ||
+		in.AutomaticStartAction == nil || *in.AutomaticStartAction != "StartIfRunning" ||
+		in.AutomaticStartDelay == nil || *in.AutomaticStartDelay != 30 {
+		t.Errorf("changed VM policy fields not forwarded: %+v", in)
+	}
+	if in.SmartPagingFilePath != nil || in.AutomaticStopAction != nil || in.CheckpointType != nil {
+		t.Errorf("unchanged VM policy fields must be omitted: %+v", in)
+	}
+}
+
+func TestBuildSetInput_EquivalentWindowsPathsAreNoOp(t *testing.T) {
+	t.Parallel()
+	state := Model{
+		Name: types.StringValue("vm01"), Generation: types.Int64Value(2),
+		CPU:                  &CPUModel{Count: types.Int64Value(2)},
+		Memory:               &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SnapshotFileLocation: pathtype.NewPathValue(`E:\VMs\VM01\Snapshots`),
+		SmartPagingFilePath:  pathtype.NewPathValue(`\\SERVER\Share\SmartPaging`),
+	}
+	plan := state
+	plan.SnapshotFileLocation = pathtype.NewPathValue(`e:/vms/vm01/snapshots`)
+	plan.SmartPagingFilePath = pathtype.NewPathValue(`//server/share/smartpaging`)
+
+	in := buildSetInput(plan, state)
+	if in.SnapshotFileLocation != nil || in.SmartPagingFilePath != nil {
+		t.Errorf("equivalent Windows paths must not trigger Set-VM: %+v", in)
+	}
+}
+
+func TestModelFromVM_PopulatesPathsAndPolicies(t *testing.T) {
+	t.Parallel()
+	got := modelFromVM(t.Context(), &hyperv.VM{
+		Name: "vm01", Path: `E:\VMs\vm01`,
+		SnapshotFileLocation: `\\server\share\Snapshots`,
+		SmartPagingFilePath:  `E:\VMs\vm01\Smart Paging`,
+		AutomaticStartAction: "StartIfRunning", AutomaticStartDelay: 30,
+		AutomaticStopAction: "ShutDown", CheckpointType: "Production",
+	})
+	if got.Path.ValueString() != `E:\VMs\vm01` ||
+		got.SnapshotFileLocation.ValueString() != `\\server\share\Snapshots` ||
+		got.AutomaticStartDelay.ValueInt64() != 30 ||
+		got.CheckpointType.ValueString() != "Production" {
+		t.Errorf("path/policy read state mismatch: %+v", got)
 	}
 }
 

@@ -168,11 +168,12 @@ Describe 'Set-HypervVMState' {
 
             $parsed = $output | ConvertFrom-Json
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
-                'BootOrder', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
+                'AutomaticStartAction', 'AutomaticStartDelay', 'AutomaticStopAction',
+                'BootOrder', 'CheckpointType', 'DvdDrives', 'Generation', 'HardDiskDrives', 'Id',
                 'MemoryAssignedBytes', 'MemoryDynamicEnabled', 'MemoryMaximumBytes',
                 'MemoryMinimumBytes', 'MemoryStartupBytes', 'Name', 'NetworkAdapters',
                 'Notes', 'Path', 'ProcessorCount', 'SecureBootEnabled',
-                'SecureBootTemplate', 'State'
+                'SecureBootTemplate', 'SmartPagingFilePath', 'SnapshotFileLocation', 'State'
             )
         }
     }

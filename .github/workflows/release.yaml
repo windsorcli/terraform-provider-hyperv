@@ -1,7 +1,7 @@
 # Tag-triggered release workflow. Cuts a GitHub Release with cross-
 # compiled provider binaries, GPG-signed checksums, and the registry
 # manifest. The Terraform Registry picks up the resulting release via
-# the windsorcli/hyperv webhook configured at registry publication
+# the xeitu/hyperv webhook configured at registry publication
 # time.
 #
 # Layout matches PLAN.md S16.3. One secret the maintainer must set
