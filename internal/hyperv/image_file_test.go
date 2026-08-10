@@ -210,27 +210,27 @@ func TestClient_NewImageFileFromHostPath_NotFoundMapsToErrNotFound(t *testing.T)
 	}
 }
 
-// NewImageFileFromSourcePath is the one placement mode with no runner
+// CopyHostFile is the one placement mode with no runner
 // leg: both paths are host-local, so the script call carries everything
 // and StreamFile is never touched. The zero-StreamCalls assertion is the
 // load-bearing half -- a regression that routed this mode through the
 // runner would still produce the right bytes on the host while dragging
 // a multi-GiB image across WinRM, which is exactly what the mode exists
 // to avoid.
-func TestClient_NewImageFileFromSourcePath_StdinMatchesWireContract(t *testing.T) {
+func TestClient_CopyHostFile_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().
 		On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+	_, err := c.CopyHostFile(t.Context(), CopyHostFileInput{
 		DestinationPath: "C:\\vms\\cp1\\boot.vhdx",
 		SourcePath:      "D:\\images\\fcos.vhdx",
 		ExpectedSha256:  "abc123",
 	})
 	if err != nil {
-		t.Fatalf("NewImageFileFromSourcePath: %v", err)
+		t.Fatalf("CopyHostFile: %v", err)
 	}
 
 	if got := len(fr.StreamCalls()); got != 0 {
@@ -253,10 +253,10 @@ func TestClient_NewImageFileFromSourcePath_StdinMatchesWireContract(t *testing.T
 	}
 }
 
-// NewImageFileFromSourcePath forwards replace_while_mounted so a copy
+// CopyHostFile forwards replace_while_mounted so a copy
 // landing on a destination some VM holds open as a DVD routes through
 // the host-side swap-via-pivot dance instead of a plain Move-Item.
-func TestClient_NewImageFileFromSourcePath_StdinForwardsReplaceWhileMounted(t *testing.T) {
+func TestClient_CopyHostFile_StdinForwardsReplaceWhileMounted(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -275,14 +275,14 @@ func TestClient_NewImageFileFromSourcePath_StdinForwardsReplaceWhileMounted(t *t
 				On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0)
 			c := NewClient(fr)
 
-			_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+			_, err := c.CopyHostFile(t.Context(), CopyHostFileInput{
 				DestinationPath:     "C:\\vms\\cp1\\seed.iso",
 				SourcePath:          "D:\\images\\seed.iso",
 				ExpectedSha256:      "abc123",
 				ReplaceWhileMounted: tc.in,
 			})
 			if err != nil {
-				t.Fatalf("NewImageFileFromSourcePath: %v", err)
+				t.Fatalf("CopyHostFile: %v", err)
 			}
 
 			stdin := string(fr.Calls()[0].StdinJSON)
@@ -296,7 +296,7 @@ func TestClient_NewImageFileFromSourcePath_StdinForwardsReplaceWhileMounted(t *t
 // A source that vanished between plan and apply surfaces as ObjectNotFound
 // from the host script; the resource layer keys on ErrNotFound to anchor
 // the diagnostic on source_path.
-func TestClient_NewImageFileFromSourcePath_NotFoundMapsToErrNotFound(t *testing.T) {
+func TestClient_CopyHostFile_NotFoundMapsToErrNotFound(t *testing.T) {
 	t.Parallel()
 
 	envelope := `{"category":"ObjectNotFound","message":"image file source not found at path","cmdlet":""}`
@@ -304,7 +304,7 @@ func TestClient_NewImageFileFromSourcePath_NotFoundMapsToErrNotFound(t *testing.
 		On("function New-HypervImageFileFromSourcePath").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+	_, err := c.CopyHostFile(t.Context(), CopyHostFileInput{
 		DestinationPath: "C:\\vms\\cp1\\boot.vhdx",
 		SourcePath:      "D:\\images\\gone.vhdx",
 		ExpectedSha256:  "abc123",
@@ -318,7 +318,7 @@ func TestClient_NewImageFileFromSourcePath_NotFoundMapsToErrNotFound(t *testing.
 // value the plan committed to, and the host script rejects the copy.
 // ErrChecksumMismatch is what lets the resource layer say so plainly
 // instead of surfacing a raw InvalidData envelope.
-func TestClient_NewImageFileFromSourcePath_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
+func TestClient_CopyHostFile_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
 	t.Parallel()
 
 	envelope := `{"category":"InvalidData","message":"Checksum mismatch for staged file",` +
@@ -327,7 +327,7 @@ func TestClient_NewImageFileFromSourcePath_ChecksumMismatchMapsToErrChecksumMism
 		On("function New-HypervImageFileFromSourcePath").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+	_, err := c.CopyHostFile(t.Context(), CopyHostFileInput{
 		DestinationPath: "C:\\vms\\cp1\\boot.vhdx",
 		SourcePath:      "D:\\images\\fcos.vhdx",
 		ExpectedSha256:  "abc123",

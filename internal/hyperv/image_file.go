@@ -724,16 +724,19 @@ func pickStagingPath(destinationPath string) (string, error) {
 	return destinationPath + ".part-" + hex.EncodeToString(suffix[:]), nil
 }
 
-// NewImageFileFromSourcePath asks new.ps1 to copy a file the host already
-// holds at in.SourcePath into in.DestinationPath. Alone among the
-// placement modes it never touches Connection.StreamFile -- both endpoints
-// are host-local, so multi-GiB clones run at host disk speed rather than
-// WinRM speed.
+// CopyHostFile copies a file the host already holds at in.SourcePath into
+// in.DestinationPath, staging through a sibling .part and atomic-renaming.
+// Nothing crosses Connection.StreamFile -- both endpoints are host-local,
+// so multi-GiB clones run at host disk speed rather than WinRM speed.
+//
+// Shared by hyperv_image_file's source_path mode and hyperv_vhd's, which
+// is why the name is file-generic: the host script neither knows nor cares
+// whether the bytes are a VHDX or an ISO.
 //
 // Returns ErrChecksumMismatch when the copy doesn't hash to
 // in.ExpectedSha256 (the source changed between plan and apply), or
 // ErrNotFound when the source is absent at apply time.
-func (c *Client) NewImageFileFromSourcePath(ctx context.Context, in NewImageFileFromSourcePathInput) (*ImageFile, error) {
+func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*ImageFile, error) {
 	body, err := scripts.ImageFileScript("new")
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
@@ -742,9 +745,9 @@ func (c *Client) NewImageFileFromSourcePath(ctx context.Context, in NewImageFile
 	// constructors: source_mode is set here, where the method choice and
 	// the discriminator are guaranteed to agree.
 	stdin, err := json.Marshal(struct {
-		NewImageFileFromSourcePathInput
+		CopyHostFileInput
 		SourceMode string `json:"source_mode"`
-	}{NewImageFileFromSourcePathInput: in, SourceMode: "source_path"})
+	}{CopyHostFileInput: in, SourceMode: "source_path"})
 	if err != nil {
 		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
 	}

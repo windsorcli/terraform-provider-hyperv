@@ -479,7 +479,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			"source_path":           plan.SourcePath.ValueString(),
 			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
 		})
-		f, err = r.client.NewImageFileFromSourcePath(ctx, hyperv.NewImageFileFromSourcePathInput{
+		f, err = r.client.CopyHostFile(ctx, hyperv.CopyHostFileInput{
 			DestinationPath:     dest,
 			SourcePath:          plan.SourcePath.ValueString(),
 			ExpectedSha256:      plan.Sha256.ValueString(),
@@ -651,7 +651,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			"source_path":           plan.SourcePath.ValueString(),
 			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
 		})
-		f, err := r.client.NewImageFileFromSourcePath(ctx, hyperv.NewImageFileFromSourcePathInput{
+		f, err := r.client.CopyHostFile(ctx, hyperv.CopyHostFileInput{
 			DestinationPath:     plan.DestinationPath.ValueString(),
 			SourcePath:          plan.SourcePath.ValueString(),
 			ExpectedSha256:      plan.Sha256.ValueString(),
@@ -776,7 +776,7 @@ func modelFromImageFile(f *hyperv.ImageFile, intent Model) Model {
 	}
 }
 
-// sourcePathCopyDiagnostics maps a NewImageFileFromSourcePath failure to
+// sourcePathCopyDiagnostics maps a CopyHostFile failure to
 // diagnostics anchored on `source_path`. Shared by Create and Update --
 // both fail the same two ways: the source vanished, or it changed
 // between plan and apply.

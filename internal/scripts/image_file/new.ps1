@@ -367,7 +367,7 @@ function New-HypervImageFileFromSourcePath {
     param(
         [Parameter(Mandatory)] [string] $DestinationPath,
         [Parameter(Mandatory)] [string] $SourcePath,
-        [Parameter(Mandatory)] [string] $ExpectedSha256,
+        [Parameter()]          [string] $ExpectedSha256 = '',
         [switch]                        $ReplaceWhileMounted
     )
     if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
@@ -377,6 +377,14 @@ function New-HypervImageFileFromSourcePath {
             $exception, 'ImageFileSourceNotFound',
             [System.Management.Automation.ErrorCategory]::ObjectNotFound, $SourcePath)
         throw $errorRecord
+    }
+    # An absent expectation means the caller could not hash the source at
+    # plan time -- it did not exist yet, because the same apply is creating
+    # it. Hash it here instead so the copy is still verified rather than
+    # trusted; the delegate's comparison is the only integrity check the
+    # bytes get.
+    if (-not $ExpectedSha256) {
+        $ExpectedSha256 = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $dir = Split-Path -LiteralPath $DestinationPath
     if ($dir) {

@@ -250,8 +250,11 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 3 {
-		t.Fatalf("got %d ConfigValidators, want 3 (parent_path, size_bytes, block_size_bytes)", len(got))
+	if len(got) != 4 {
+		t.Fatalf("got %d ConfigValidators, want 4 (parent_path, size_bytes, block_size_bytes, source_path)", len(got))
+	}
+	if _, ok := got[3].(sourcePathModeValidator); !ok {
+		t.Errorf("ConfigValidators[3] = %T, want sourcePathModeValidator", got[3])
 	}
 }
 
@@ -534,7 +537,7 @@ func TestModelFromVHD_LowercasesVhdType(t *testing.T) {
 		got := modelFromVHD(&hyperv.VHD{
 			Path:    "C:\\vhds\\foo.vhdx",
 			VhdType: tc.in,
-		})
+		}, Model{})
 		if got.VhdType.ValueString() != tc.want {
 			t.Errorf("modelFromVHD VhdType=%q -> %q, want %q",
 				tc.in, got.VhdType.ValueString(), tc.want)
@@ -553,7 +556,7 @@ func TestModelFromVHD_EmptyParentPathBecomesNull(t *testing.T) {
 		Path:       "C:\\vhds\\dyn.vhdx",
 		VhdType:    "Dynamic",
 		ParentPath: "",
-	})
+	}, Model{})
 	if !got.ParentPath.IsNull() {
 		t.Errorf("ParentPath = %v, want null when source is empty", got.ParentPath)
 	}
@@ -568,7 +571,7 @@ func TestModelFromVHD_DifferencingPreservesParentPath(t *testing.T) {
 		Path:       "C:\\vhds\\child.vhdx",
 		VhdType:    "Differencing",
 		ParentPath: "C:\\vhds\\parent.vhdx",
-	})
+	}, Model{})
 	if got.ParentPath.ValueString() != "C:\\vhds\\parent.vhdx" {
 		t.Errorf("ParentPath = %q, want preserved", got.ParentPath.ValueString())
 	}
@@ -585,7 +588,7 @@ func TestModelFromVHD_PreservesInt64Sizes(t *testing.T) {
 		SizeBytes:      53687091200, // 50 GiB
 		FileSizeBytes:  21474836480, // 20 GiB sparse
 		BlockSizeBytes: 33554432,
-	})
+	}, Model{})
 	if got.SizeBytes.ValueInt64() != 53687091200 {
 		t.Errorf("SizeBytes = %d, want 53687091200", got.SizeBytes.ValueInt64())
 	}
@@ -623,5 +626,294 @@ func TestOptionalInt64(t *testing.T) {
 	got := optionalInt64(types.Int64Value(33554432))
 	if got == nil || *got != 33554432 {
 		t.Errorf("Int64Value(33554432) = %v, want pointer to 33554432", got)
+	}
+}
+
+// Schema test: source_path and source_sha256 are present with the plan
+// modifiers the mode depends on. source_path must force replacement (a
+// different source is a different disk), and source_sha256 must be
+// Computed-only -- users never set the hash themselves.
+func TestResource_Schema_SourcePathAttrs(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	sp, ok := resp.Schema.Attributes["source_path"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("source_path is not a StringAttribute (got %T)", resp.Schema.Attributes["source_path"])
+	}
+	if !sp.Optional {
+		t.Error(`"source_path" must be Optional`)
+	}
+	if sp.CustomType != pathtype.Type {
+		t.Errorf("source_path CustomType = %v, want pathtype.Type", sp.CustomType)
+	}
+	if !hasPlanModifier(sp.PlanModifiers, "RequiresReplace") {
+		t.Error(`"source_path" must carry RequiresReplace`)
+	}
+
+	sha, ok := resp.Schema.Attributes["source_sha256"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("source_sha256 is not a StringAttribute (got %T)", resp.Schema.Attributes["source_sha256"])
+	}
+	if !sha.Computed || sha.Optional || sha.Required {
+		t.Error(`"source_sha256" must be Computed-only`)
+	}
+}
+
+// vhd_type had to relax from Required to Optional+Computed so source_path
+// mode can omit it. The framework no longer enforces presence, so
+// sourcePathModeValidator does -- this pins the schema half of that pair.
+func TestResource_Schema_VhdTypeOptionalForSourcePathMode(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	vt, ok := resp.Schema.Attributes["vhd_type"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("vhd_type is not a StringAttribute (got %T)", resp.Schema.Attributes["vhd_type"])
+	}
+	if vt.Required {
+		t.Error(`"vhd_type" must not be Required -- source_path mode inherits the layout from the source`)
+	}
+	if !vt.Optional || !vt.Computed {
+		t.Error(`"vhd_type" must be Optional+Computed`)
+	}
+	if !hasPlanModifier(vt.PlanModifiers, "RequiresReplace") {
+		t.Error(`"vhd_type" must still carry RequiresReplace`)
+	}
+}
+
+// TestSourcePathModeValidator covers the rules the mode owns: the three
+// layout attributes are inherited and rejected, vhd_type is required
+// without source_path, and source must differ from destination.
+func TestSourcePathModeValidator(t *testing.T) {
+	t.Parallel()
+
+	const src = "D:/images/fcos.vhdx"
+	const dst = "C:/vms/cp1/boot.vhdx"
+
+	cases := []struct {
+		name      string
+		model     Model
+		wantError bool
+		wantMatch string
+	}{
+		{
+			name: "source_path alone allows",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathValue(src),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+		},
+		{
+			name: "source_path with size_bytes allows (grow after copy)",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathValue(src),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(), SizeBytes: types.Int64Value(21474836480),
+			},
+		},
+		{
+			name: "source_path with vhd_type rejects",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathValue(src),
+				VhdType: types.StringValue("dynamic"), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+			wantError: true, wantMatch: "vhd_type is not valid with source_path",
+		},
+		{
+			name: "source_path with parent_path rejects",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathValue(src),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathValue("C:/base.vhdx"),
+				BlockSizeBytes: types.Int64Null(),
+			},
+			wantError: true, wantMatch: "parent_path is not valid with source_path",
+		},
+		{
+			name: "source_path with block_size_bytes rejects",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathValue(src),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Value(33554432),
+			},
+			wantError: true, wantMatch: "block_size_bytes is not valid with source_path",
+		},
+		{
+			name: "no source_path and no vhd_type rejects",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathNull(),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+			wantError: true, wantMatch: "vhd_type is required",
+		},
+		{
+			name: "no source_path with vhd_type allows",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathNull(),
+				VhdType: types.StringValue("dynamic"), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+		},
+		{
+			name: "source_path equal to path rejects",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathValue(dst),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+			wantError: true, wantMatch: "must differ",
+		},
+		{
+			name: "source_path equal to path modulo slashes and case rejects",
+			model: Model{
+				Path:       pathtype.NewPathValue(`C:\VMs\CP1\BOOT.VHDX`),
+				SourcePath: pathtype.NewPathValue(dst),
+				VhdType:    types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+			wantError: true, wantMatch: "must differ",
+		},
+		{
+			name: "unknown source_path skips (deferred dependency)",
+			model: Model{
+				Path: pathtype.NewPathValue(dst), SourcePath: pathtype.NewPathUnknown(),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+		},
+		{
+			name: "unknown path skips the same-file check",
+			model: Model{
+				Path: pathtype.NewPathUnknown(), SourcePath: pathtype.NewPathValue(src),
+				VhdType: types.StringNull(), ParentPath: pathtype.NewPathNull(),
+				BlockSizeBytes: types.Int64Null(),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sourcePathModeValidator{}.validate(t.Context(), tc.model)
+			if got.HasError() != tc.wantError {
+				t.Fatalf("validate(...).HasError() = %v, want %v\nfull diags: %v", got.HasError(), tc.wantError, got)
+			}
+			if tc.wantError && !strings.Contains(got[0].Summary(), tc.wantMatch) {
+				t.Errorf("diag summary = %q, want substring %q", got[0].Summary(), tc.wantMatch)
+			}
+		})
+	}
+}
+
+// The pre-existing size_bytes and parent_path validators both key on
+// vhd_type, which is absent in source_path mode. Without an explicit
+// bail-out the size_bytes rule would demand a size for every copied disk
+// and the parent_path rule would misreport its own message, so this pins
+// that they stand down.
+func TestExistingValidators_StandDownInSourcePathMode(t *testing.T) {
+	t.Parallel()
+
+	model := Model{
+		Path:       pathtype.NewPathValue("C:/vms/cp1/boot.vhdx"),
+		SourcePath: pathtype.NewPathValue("D:/images/fcos.vhdx"),
+		VhdType:    types.StringNull(),
+		ParentPath: pathtype.NewPathNull(),
+		SizeBytes:  types.Int64Null(),
+	}
+
+	if got := (sizeBytesRequiresFixedOrDynamicValidator{}).validate(model); got.HasError() {
+		t.Errorf("sizeBytesRequiresFixedOrDynamicValidator fired in source_path mode: %v", got)
+	}
+	if got := (parentPathRequiresDifferencingValidator{}).validate(model); got.HasError() {
+		t.Errorf("parentPathRequiresDifferencingValidator fired in source_path mode: %v", got)
+	}
+
+	// ConfigValidators run against Config, not Plan, so a source_path wired
+	// to another resource's attribute is *unknown* there rather than known.
+	// Treating unknown as "not set" makes the size_bytes rule demand a size
+	// for a copied disk and breaks the chained-source config outright.
+	unknownSource := model
+	unknownSource.SourcePath = pathtype.NewPathUnknown()
+
+	if got := (sizeBytesRequiresFixedOrDynamicValidator{}).validate(unknownSource); got.HasError() {
+		t.Errorf("sizeBytesRequiresFixedOrDynamicValidator fired for unknown source_path: %v", got)
+	}
+	if got := (parentPathRequiresDifferencingValidator{}).validate(unknownSource); got.HasError() {
+		t.Errorf("parentPathRequiresDifferencingValidator fired for unknown source_path: %v", got)
+	}
+}
+
+// modelFromVHD must carry source_path and source_sha256 across from
+// intent: Get-VHD has no notion of either, and Update keys on
+// source_sha256 to decide whether the upstream image changed. Dropping it
+// would make every apply either re-copy or never re-copy.
+func TestModelFromVHD_PreservesSourceIntent(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVHD(&hyperv.VHD{
+		Path:      "C:\\vms\\cp1\\boot.vhdx",
+		VhdType:   "Dynamic",
+		SizeBytes: 21474836480,
+	}, Model{
+		SourcePath:   pathtype.NewPathValue("D:/images/fcos.vhdx"),
+		SourceSha256: types.StringValue("abc123"),
+	})
+
+	if got.SourcePath.ValueString() != "D:/images/fcos.vhdx" {
+		t.Errorf("SourcePath = %q, want passthrough", got.SourcePath.ValueString())
+	}
+	if got.SourceSha256.ValueString() != "abc123" {
+		t.Errorf("SourceSha256 = %q, want passthrough", got.SourceSha256.ValueString())
+	}
+}
+
+// source_sha256 is Computed, so it arrives unknown on every create --
+// including fixed/dynamic/differencing, which have no source to hash.
+// Leaving the unknown in place makes Terraform reject the apply with
+// "provider returned invalid result object", so it has to collapse to
+// null whenever there is no source.
+func TestModelFromVHD_CollapsesSourceShaToNullWithoutSource(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		intent Model
+	}{
+		{
+			name:   "create mode: no source, unknown sha",
+			intent: Model{SourcePath: pathtype.NewPathNull(), SourceSha256: types.StringUnknown()},
+		},
+		{
+			name:   "unknown source_path also yields a null sha",
+			intent: Model{SourcePath: pathtype.NewPathUnknown(), SourceSha256: types.StringUnknown()},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := modelFromVHD(&hyperv.VHD{
+				Path:    "C:\\vhds\\plain.vhdx",
+				VhdType: "Dynamic",
+			}, tc.intent)
+
+			if got.SourceSha256.IsUnknown() {
+				t.Error("SourceSha256 is unknown after apply; Terraform rejects the result object")
+			}
+			if !got.SourceSha256.IsNull() {
+				t.Errorf("SourceSha256 = %v, want null", got.SourceSha256)
+			}
+			if got.SourcePath.IsUnknown() {
+				t.Error("SourcePath is unknown after apply; Terraform rejects the result object")
+			}
+		})
 	}
 }
