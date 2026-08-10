@@ -240,6 +240,22 @@ type NewImageFileFromBytesInput struct {
 	ReplaceWhileMounted bool   `json:"-"`
 }
 
+// NewImageFileFromSourcePathInput is the public input shape for the
+// source_path source mode. Both paths are host-local, so unlike the other
+// write modes there is no StreamFile leg and no staging_path for the
+// caller to compute -- new.ps1 picks its own.
+//
+// ExpectedSha256 is the hash the caller read from SourcePath (the resource
+// layer takes it at plan time). A mismatch at apply means the source
+// changed under us, which fails loudly rather than writing bytes the plan
+// never promised. ReplaceWhileMounted matches the local_path input.
+type NewImageFileFromSourcePathInput struct {
+	DestinationPath     string `json:"destination_path"`
+	SourcePath          string `json:"source_path"`
+	ExpectedSha256      string `json:"expected_sha256"`
+	ReplaceWhileMounted bool   `json:"replace_while_mounted"`
+}
+
 // VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.
 // SizeBytes is the declared logical size; FileSizeBytes is the actual
 // on-disk size (smaller than SizeBytes for dynamic and differencing).

@@ -17,39 +17,39 @@ import (
 // align with schema.go attribute names; conversion to/from the typed
 // hyperv.ImageFile DTO lives in resource.go.
 //
-// Four source modes, discriminated by which of URL / LocalPath /
-// ContentBase64 is set:
+// Five source modes, discriminated by which of URL / LocalPath /
+// ContentBase64 / SourcePath is set:
 //
 //   - URL non-nil                              => url mode (HttpClient fetch)
-//   - URL nil, LocalPath non-null              => local_path mode (runner streams
+//   - LocalPath non-null                       => local_path mode (runner streams
 //     bytes from a runner-side file via Connection.StreamFile)
-//   - URL nil, LocalPath null, ContentBase64
-//     non-null                                 => literal_bytes mode (runner
+//   - ContentBase64 non-null                   => literal_bytes mode (runner
 //     decodes base64, writes to a tmpfile, streams via the same wire path
 //     local_path mode uses)
-//   - all three nil/null                       => host_path mode (verify only)
+//   - SourcePath non-null                      => source_path mode (host-side
+//     copy from one host path to another; no runner<->host transfer)
+//   - all four nil/null                        => host_path mode (verify only)
 //
-// All three placement-mode discriminators (URL, LocalPath, ContentBase64)
-// are mutually exclusive; the ConfigValidator on the resource rejects
-// configs that set more than one. All three carry RequiresReplace at
-// the schema layer, so any mode switch destroys and recreates. The
-// Delete path keys on the same discriminators to gate the host-side
-// remove (host_path mode never removes, since the user attested the
-// file already existed).
+// All four placement-mode discriminators are mutually exclusive; the
+// ConfigValidator on the resource rejects configs that set more than
+// one. All four carry RequiresReplace at the schema layer, so any mode
+// switch destroys and recreates. The Delete path keys on the same
+// discriminators to gate the host-side remove (host_path mode never
+// removes, since the user attested the file already existed).
 //
 // ReplaceWhileMounted is the opt-in escape hatch for re-streaming over
 // a destination that's currently mounted as a DVD on a running VM. Only
-// honored in local_path and literal_bytes modes -- the modes with a
-// re-stream Update path; url-mode forces replacement on any change, and
-// host_path-mode never writes the destination.
+// honored in local_path, literal_bytes, and source_path modes -- the
+// modes with a re-write Update path; url-mode forces replacement on any
+// change, and host_path-mode never writes the destination.
 //
 // ForceDestroy is the opt-in escape hatch for destroying a file that is
 // currently mounted as a DVD on a running VM. When true, Delete asks
 // remove.ps1 to detach the holding slot(s) via Set-VMDvdDrive -Path
-// $null before retrying the delete. Honored in url, local_path, and
-// literal_bytes modes -- those are the modes that actually run the
-// host-side delete. Host_path-mode skips the delete entirely so the
-// flag is a no-op there.
+// $null before retrying the delete. Honored in url, local_path,
+// literal_bytes, and source_path modes -- those are the modes that
+// actually run the host-side delete. Host_path-mode skips the delete
+// entirely so the flag is a no-op there.
 //
 // DestinationPath uses the pathtype.Path custom type so users can
 // write either `C:/foo` or `C:\foo` without the framework rejecting
@@ -59,13 +59,15 @@ import (
 // covers the Computed mirror's refresh path. LocalPath uses Path
 // for the same slash-folding reason -- users on macOS / Linux runners
 // typically write forward slashes for the local path even when the
-// destination is a Windows-form path.
+// destination is a Windows-form path. SourcePath is a host path like
+// DestinationPath, and uses Path for the same reason it does.
 type Model struct {
 	ID                  pathtype.Path `tfsdk:"id"`
 	DestinationPath     pathtype.Path `tfsdk:"destination_path"`
 	URL                 types.Object  `tfsdk:"url"`
 	LocalPath           pathtype.Path `tfsdk:"local_path"`
 	ContentBase64       types.String  `tfsdk:"content_base64"`
+	SourcePath          pathtype.Path `tfsdk:"source_path"`
 	ReplaceWhileMounted types.Bool    `tfsdk:"replace_while_mounted"`
 	Sha256              types.String  `tfsdk:"sha256"`
 	SizeBytes           types.Int64   `tfsdk:"size_bytes"`

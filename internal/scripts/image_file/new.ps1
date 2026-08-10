@@ -4,29 +4,35 @@
 #
 #   stdin JSON  : {
 #                   "destination_path": "<absolute-path>",          # required
-#                   "source_mode":      "url"|"host_path"|"local_path", # required
+#                   "source_mode":      "url"|"host_path"|"local_path"|"source_path", # required
 #                   "url":              "<string>",                 # url mode
-#                   "expected_sha256":  "<hex>",                    # url + local_path
-#                   "staging_path":     "<absolute-path>"           # local_path
+#                   "expected_sha256":  "<hex>",                    # url + local_path + source_path
+#                   "staging_path":     "<absolute-path>",          # local_path
+#                   "source_path":      "<absolute-path>"           # source_path
 #                 }
 #   stdout JSON : same shape as get.ps1 (Path, SizeBytes, Sha256).
 #
 # Mode semantics:
-#   url        - download via HttpWebRequest to a sibling .part file in the
-#                destination directory, verify SHA-256 against
-#                expected_sha256, then atomic-rename (Move-Item) to
-#                destination_path. NTFS rename within a volume is atomic;
-#                the .part-in-destination-dir layout keeps it that way.
-#   host_path  - verify-only: the user attests the file already exists at
-#                destination_path. No copy. Missing-file surfaces as
-#                ObjectNotFound -> ErrNotFound, same as Read.
-#   local_path - the Go side has streamed bytes from the runner to
-#                staging_path on the host (via Connection.StreamFile).
-#                This script verifies the staged file's SHA-256 against
-#                the runner-computed expected_sha256 (transport-corruption
-#                check) and atomic-renames the staging file to
-#                destination_path. Same .part-in-destination-dir,
-#                same Move-Item-is-atomic guarantee as url mode.
+#   url         - download via HttpWebRequest to a sibling .part file in the
+#                 destination directory, verify SHA-256 against
+#                 expected_sha256, then atomic-rename (Move-Item) to
+#                 destination_path. NTFS rename within a volume is atomic;
+#                 the .part-in-destination-dir layout keeps it that way.
+#   host_path   - verify-only: the user attests the file already exists at
+#                 destination_path. No copy. Missing-file surfaces as
+#                 ObjectNotFound -> ErrNotFound, same as Read.
+#   local_path  - the Go side has streamed bytes from the runner to
+#                 staging_path on the host (via Connection.StreamFile).
+#                 This script verifies the staged file's SHA-256 against
+#                 the runner-computed expected_sha256 (transport-corruption
+#                 check) and atomic-renames the staging file to
+#                 destination_path. Same .part-in-destination-dir,
+#                 same Move-Item-is-atomic guarantee as url mode.
+#   source_path - host-side copy: Copy-Item from source_path to a sibling
+#                 .part of destination_path, verify the copied bytes'
+#                 SHA-256 against expected_sha256 (the hash the Go side
+#                 read from source_path at plan time), then atomic-rename.
+#                 Never crosses the wire; both endpoints are host-local.
 #
 # Why HttpWebRequest (not HttpClient, BITS, or Invoke-WebRequest):
 #   - HttpClient on .NET Framework 4.x (PS 5.1 / Server 2019) fails TLS
@@ -349,6 +355,52 @@ function New-HypervImageFileFromLocalPath {
     Read-HypervImageFileResult -Path $DestinationPath
 }
 
+# New-HypervImageFileFromSourcePath copies a host-local file at $SourcePath
+# into $DestinationPath. Staging through a sibling .part keeps the final
+# Move-Item on one NTFS volume (atomic) even when $SourcePath is on another.
+# Verify-and-rename delegates to New-HypervImageFileFromLocalPath -- once
+# the bytes are staged the two modes are the same operation. $ExpectedSha256
+# is the hash the Go side read from $SourcePath at plan time, so a mismatch
+# means the source changed between plan and apply.
+function New-HypervImageFileFromSourcePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $DestinationPath,
+        [Parameter(Mandatory)] [string] $SourcePath,
+        [Parameter(Mandatory)] [string] $ExpectedSha256,
+        [switch]                        $ReplaceWhileMounted
+    )
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+        $exception = [System.Management.Automation.ItemNotFoundException]::new(
+            "Image file source not found at path '$SourcePath'.")
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+            $exception, 'ImageFileSourceNotFound',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, $SourcePath)
+        throw $errorRecord
+    }
+    $dir = Split-Path -LiteralPath $DestinationPath
+    if ($dir) {
+        New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null
+    }
+    $stagingPath = "$DestinationPath.part-$([guid]::NewGuid().ToString('n'))"
+    try {
+        Copy-Item -LiteralPath $SourcePath -Destination $stagingPath -Force -ErrorAction Stop
+    }
+    catch {
+        # The delegate's finally-block never runs here, so a partial .part
+        # from a failed Copy-Item has to be cleaned up on this path.
+        if (Test-Path -LiteralPath $stagingPath) {
+            Remove-Item -LiteralPath $stagingPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+    New-HypervImageFileFromLocalPath `
+        -DestinationPath      $DestinationPath `
+        -StagingPath          $stagingPath `
+        -ExpectedSha256       $ExpectedSha256 `
+        -ReplaceWhileMounted:$ReplaceWhileMounted
+}
+
 # New-HypervImageFileFromHostPath verifies the user-asserted file exists
 # at destination_path and returns its metadata. No copy, no fetch -- the
 # user told us the bytes are already where they belong.
@@ -401,8 +453,19 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -ExpectedSha256                  $params.expected_sha256 `
                     -ReplaceWhileMounted:$detachFlag
             }
+            'source_path' {
+                $detachFlag = $false
+                if ($params.PSObject.Properties.Name -contains 'replace_while_mounted') {
+                    $detachFlag = [bool] $params.replace_while_mounted
+                }
+                New-HypervImageFileFromSourcePath `
+                    -DestinationPath                 $params.destination_path `
+                    -SourcePath                      $params.source_path `
+                    -ExpectedSha256                  $params.expected_sha256 `
+                    -ReplaceWhileMounted:$detachFlag
+            }
             default {
-                throw "Unknown source_mode '$($params.source_mode)'; expected 'url', 'host_path', or 'local_path'."
+                throw "Unknown source_mode '$($params.source_mode)'; expected 'url', 'host_path', 'local_path', or 'source_path'."
             }
         }
     }

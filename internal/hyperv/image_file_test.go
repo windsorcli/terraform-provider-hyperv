@@ -210,6 +210,158 @@ func TestClient_NewImageFileFromHostPath_NotFoundMapsToErrNotFound(t *testing.T)
 	}
 }
 
+// NewImageFileFromSourcePath is the one placement mode with no runner
+// leg: both paths are host-local, so the script call carries everything
+// and StreamFile is never touched. The zero-StreamCalls assertion is the
+// load-bearing half -- a regression that routed this mode through the
+// runner would still produce the right bytes on the host while dragging
+// a multi-GiB image across WinRM, which is exactly what the mode exists
+// to avoid.
+func TestClient_NewImageFileFromSourcePath_StdinMatchesWireContract(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+		DestinationPath: "C:\\vms\\cp1\\boot.vhdx",
+		SourcePath:      "D:\\images\\fcos.vhdx",
+		ExpectedSha256:  "abc123",
+	})
+	if err != nil {
+		t.Fatalf("NewImageFileFromSourcePath: %v", err)
+	}
+
+	if got := len(fr.StreamCalls()); got != 0 {
+		t.Errorf("StreamCalls = %d, want 0 -- source_path mode is host-local and must not stream", got)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	for _, want := range []string{
+		`"destination_path":"C:\\vms\\cp1\\boot.vhdx"`,
+		`"source_path":"D:\\images\\fcos.vhdx"`,
+		`"expected_sha256":"abc123"`,
+		`"source_mode":"source_path"`,
+	} {
+		if !strings.Contains(stdin, want) {
+			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+		}
+	}
+	if strings.Contains(stdin, "staging_path") {
+		t.Errorf("stdin should omit staging_path in source_path mode (the host picks it); got: %s", stdin)
+	}
+}
+
+// NewImageFileFromSourcePath forwards replace_while_mounted so a copy
+// landing on a destination some VM holds open as a DVD routes through
+// the host-side swap-via-pivot dance instead of a plain Move-Item.
+func TestClient_NewImageFileFromSourcePath_StdinForwardsReplaceWhileMounted(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   bool
+		want string
+	}{
+		{name: "true forwards as true", in: true, want: `"replace_while_mounted":true`},
+		{name: "false forwards as false", in: false, want: `"replace_while_mounted":false`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fr := testutil.NewFakeRunner().
+				On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0)
+			c := NewClient(fr)
+
+			_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+				DestinationPath:     "C:\\vms\\cp1\\seed.iso",
+				SourcePath:          "D:\\images\\seed.iso",
+				ExpectedSha256:      "abc123",
+				ReplaceWhileMounted: tc.in,
+			})
+			if err != nil {
+				t.Fatalf("NewImageFileFromSourcePath: %v", err)
+			}
+
+			stdin := string(fr.Calls()[0].StdinJSON)
+			if !strings.Contains(stdin, tc.want) {
+				t.Errorf("stdin missing %q\nfull stdin: %s", tc.want, stdin)
+			}
+		})
+	}
+}
+
+// A source that vanished between plan and apply surfaces as ObjectNotFound
+// from the host script; the resource layer keys on ErrNotFound to anchor
+// the diagnostic on source_path.
+func TestClient_NewImageFileFromSourcePath_NotFoundMapsToErrNotFound(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{"category":"ObjectNotFound","message":"image file source not found at path","cmdlet":""}`
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromSourcePath").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+		DestinationPath: "C:\\vms\\cp1\\boot.vhdx",
+		SourcePath:      "D:\\images\\gone.vhdx",
+		ExpectedSha256:  "abc123",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// A source replaced between plan and apply hashes differently than the
+// value the plan committed to, and the host script rejects the copy.
+// ErrChecksumMismatch is what lets the resource layer say so plainly
+// instead of surfacing a raw InvalidData envelope.
+func TestClient_NewImageFileFromSourcePath_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{"category":"InvalidData","message":"Checksum mismatch for staged file",` +
+		`"fullyQualifiedErrorId":"ImageFileChecksumMismatch","cmdlet":""}`
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromSourcePath").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	_, err := c.NewImageFileFromSourcePath(t.Context(), NewImageFileFromSourcePathInput{
+		DestinationPath: "C:\\vms\\cp1\\boot.vhdx",
+		SourcePath:      "D:\\images\\fcos.vhdx",
+		ExpectedSha256:  "abc123",
+	})
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("err = %v, want ErrChecksumMismatch", err)
+	}
+}
+
+// StatImageFile runs the same get.ps1 read as GetImageFile. It exists to
+// escape the 60s defaultReadTimeout for the source_path plan-time hash,
+// so the contract worth pinning is that the wire shape is identical --
+// callers get the same DTO whichever entry point they use.
+func TestClient_StatImageFile_StdinMatchesGetWireContract(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervImageFile").Return(testutil.ImageFileFixtureJSON, "", 0)
+	c := NewClient(fr)
+
+	got, err := c.StatImageFile(t.Context(), "D:\\images\\fcos.vhdx")
+	if err != nil {
+		t.Fatalf("StatImageFile: %v", err)
+	}
+	if got.Path == "" || got.Sha256 == "" {
+		t.Errorf("StatImageFile returned %+v, want the fixture's Path and Sha256 populated", got)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if want := `"path":"D:\\images\\fcos.vhdx"`; !strings.Contains(stdin, want) {
+		t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
+	}
+}
+
 // NewImageFileFromLocalPath orchestrates two transport calls (StreamFile
 // then RunScript). This test pins the wire shape of both: StreamFile
 // lands at a sibling .part of DestinationPath, RunScript carries

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -27,6 +28,11 @@ var (
 	_ resource.ResourceWithImportState      = (*Resource)(nil)
 	_ resource.ResourceWithModifyPlan       = (*Resource)(nil)
 )
+
+// sourceHashTimeout bounds the plan-time Get-FileHash of a source_path.
+// A wedged-host backstop, not a performance budget: hashing 30+ GiB off
+// spinning disk legitimately runs into the minutes.
+const sourceHashTimeout = 30 * time.Minute
 
 // Resource implements hyperv_image_file.
 type Resource struct {
@@ -56,18 +62,18 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 }
 
 // sourceModeExclusivityValidator rejects configs that set more than one
-// of the three placement-mode discriminators: `url`, `local_path`,
-// `content_base64`. Each represents a distinct source for the bytes
-// landing at `destination_path` (HTTP fetch / runner-side file /
-// in-memory payload), and picking more than one is ambiguous on the
-// wire. A config with none of them is host_path-mode (verify-only) and
-// is fine.
+// of the four placement-mode discriminators: `url`, `local_path`,
+// `content_base64`, `source_path`. Each represents a distinct source for
+// the bytes landing at `destination_path` (HTTP fetch / runner-side file
+// / in-memory payload / host-side file), and picking more than one is
+// ambiguous on the wire. A config with none of them is host_path-mode
+// (verify-only) and is fine.
 type sourceModeExclusivityValidator struct{}
 
 // Description / MarkdownDescription surface in `terraform validate -json`
 // and schema-introspection paths.
 func (v sourceModeExclusivityValidator) Description(_ context.Context) string {
-	return "url, local_path, and content_base64 are mutually exclusive source-mode discriminators"
+	return "url, local_path, content_base64, and source_path are mutually exclusive source-mode discriminators"
 }
 
 // MarkdownDescription mirrors Description -- no markdown-only formatting.
@@ -84,51 +90,72 @@ func (v sourceModeExclusivityValidator) ValidateResource(ctx context.Context, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(v.validate(data)...)
+	resp.Diagnostics.Append(v.validate(ctx, data)...)
 }
 
 // validate is the pure-Go core. Anchors the diagnostic on the most-
 // recently-introduced surface among the conflicting attributes (the
 // user is most likely to be confused about its interaction with the
-// older, more-established attributes), so:
+// older ones), so the precedence runs
+// source_path -> content_base64 -> local_path.
 //
-//   - url + local_path -> anchor on local_path
-//   - url + content_base64 -> anchor on content_base64
-//   - local_path + content_base64 -> anchor on content_base64
-//   - all three -> anchor on content_base64
-func (v sourceModeExclusivityValidator) validate(data Model) diag.Diagnostics {
+// A source_path equal to destination_path is rejected separately: the
+// copy would rewrite the source through a staging file, and lose it
+// outright if the copy failed partway.
+func (v sourceModeExclusivityValidator) validate(ctx context.Context, data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
 	urlSet := !data.URL.IsNull() && !data.URL.IsUnknown()
 	localPathSet := !data.LocalPath.IsNull() && !data.LocalPath.IsUnknown()
 	contentSet := !data.ContentBase64.IsNull() && !data.ContentBase64.IsUnknown()
+	sourcePathSet := !data.SourcePath.IsNull() && !data.SourcePath.IsUnknown()
 
 	count := 0
-	if urlSet {
-		count++
+	for _, set := range []bool{urlSet, localPathSet, contentSet, sourcePathSet} {
+		if set {
+			count++
+		}
 	}
-	if localPathSet {
-		count++
-	}
-	if contentSet {
-		count++
-	}
-	if count <= 1 {
+	if count > 1 {
+		anchor := path.Root("source_path")
+		switch {
+		case !sourcePathSet && contentSet:
+			anchor = path.Root("content_base64")
+		case !sourcePathSet && !contentSet:
+			anchor = path.Root("local_path")
+		}
+		diags.AddAttributeError(
+			anchor,
+			"url, local_path, content_base64, and source_path are mutually exclusive",
+			"The `url` block and the `local_path`, `content_base64`, and `source_path` attributes "+
+				"are mutually exclusive source-mode discriminators -- url-mode fetches over HTTP, "+
+				"local_path-mode streams from the Terraform runner, literal_bytes-mode "+
+				"(content_base64) lands an in-memory payload, source_path-mode copies from another "+
+				"path on the Hyper-V host. Pick one. To switch modes on an existing resource, the "+
+				"resource must be destroyed and recreated (all four attributes carry "+
+				"RequiresReplace).",
+		)
 		return diags
 	}
 
-	anchor := path.Root("content_base64")
-	if !contentSet {
-		anchor = path.Root("local_path")
+	if !sourcePathSet || data.DestinationPath.IsNull() || data.DestinationPath.IsUnknown() {
+		return diags
 	}
-	diags.AddAttributeError(
-		anchor,
-		"url, local_path, and content_base64 are mutually exclusive",
-		"The `url` block, `local_path` attribute, and `content_base64` attribute are mutually "+
-			"exclusive source-mode discriminators -- url-mode fetches over HTTP, local_path-mode "+
-			"streams from the Terraform runner, literal_bytes-mode (content_base64) lands an "+
-			"in-memory payload. Pick one. To switch modes on an existing resource, the resource "+
-			"must be destroyed and recreated (all three attributes carry RequiresReplace).",
-	)
+	// StringSemanticEquals, not Equal: `C:/images/x.vhdx` and
+	// `C:\Images\X.vhdx` are one file to Windows.
+	same, semanticDiags := data.SourcePath.StringSemanticEquals(ctx, data.DestinationPath)
+	diags.Append(semanticDiags...)
+	if same {
+		diags.AddAttributeError(
+			path.Root("source_path"),
+			"source_path and destination_path must differ",
+			"`source_path`-mode copies the host-side file at `source_path` to `destination_path`. "+
+				"Pointing both at the same file would rewrite the source in place through a staging "+
+				"copy, which is a no-op at best and loses the file if the copy fails partway.\n\n"+
+				"If the file is already where you want it, drop `source_path` -- the resource then "+
+				"operates in host_path-mode, which verifies presence and tracks the SHA-256 without "+
+				"writing anything.",
+		)
+	}
 	return diags
 }
 
@@ -147,10 +174,12 @@ func (v sourceModeExclusivityValidator) validate(data Model) diag.Diagnostics {
 // changes both, and the framework's post-apply consistency check
 // triggers on either one drifting from plan to apply.
 //
-// Skipped for url-mode and host_path-mode (none of the runner-side
-// inputs are set), during destroy (no plan), and when the relevant
-// runner-side input is itself unknown at plan time (driven from a
-// not-yet-applied dependency).
+// source_path-mode is the same idea one hop away: the hash is a get.ps1
+// round trip against the host-side source rather than a local read.
+//
+// Skipped for url-mode and host_path-mode (none of the source inputs are
+// set), during destroy (no plan), and when the relevant source input is
+// itself unknown at plan time (driven from a not-yet-applied dependency).
 func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -213,6 +242,61 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		sum := sha256.Sum256(decoded)
 		plan.Sha256 = types.StringValue(hex.EncodeToString(sum[:]))
 		plan.SizeBytes = types.Int64Value(int64(len(decoded)))
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+
+	case !plan.SourcePath.IsNull() && !plan.SourcePath.IsUnknown():
+		// Configure runs only for plan and apply, so validate has no
+		// client -- leaving the computed values unknown there is correct.
+		if r.client == nil {
+			return
+		}
+		sourcePath := plan.SourcePath.ValueString()
+
+		// StatImageFile, not GetImageFile: hashing a multi-GiB vhdx
+		// routinely outruns the latter's 60s cap.
+		ctx, cancel := context.WithTimeout(ctx, sourceHashTimeout)
+		defer cancel()
+
+		src, err := r.client.StatImageFile(ctx, sourcePath)
+		if err != nil {
+			if errors.Is(err, hyperv.ErrNotFound) {
+				// On a create the source may be produced by this same apply
+				// (a url-mode resource landing the upstream image). Defer to
+				// apply rather than failing the plan; a source still missing
+				// then fails Create.
+				if req.State.Raw.IsNull() {
+					tflog.Debug(ctx, "source_path absent at plan time; deferring hash to apply", map[string]any{
+						"source_path": sourcePath,
+					})
+					return
+				}
+				// On an update the source existed at create time, so its
+				// absence now is worth surfacing before apply.
+				resp.Diagnostics.AddAttributeError(
+					path.Root("source_path"),
+					"Source image file not found on host",
+					fmt.Sprintf("No file exists at %s on the Hyper-V host, though this resource "+
+						"was created from it.\n\n"+
+						"`source_path` names a path on the *host*, not on the Terraform runner. "+
+						"Something removed or renamed the source since the last apply. To stream a "+
+						"file from the runner instead, use `local_path`.",
+						sourcePath),
+				)
+				return
+			}
+			resp.Diagnostics.AddAttributeError(
+				path.Root("source_path"),
+				"Cannot hash source image file at plan time",
+				fmt.Sprintf("Reading %s on the Hyper-V host failed: %v", sourcePath, err),
+			)
+			return
+		}
+
+		// The copy is byte-for-byte, so the source's hash and size are what
+		// the destination reports after apply -- what the framework's
+		// post-apply consistency check compares against.
+		plan.Sha256 = types.StringValue(src.Sha256)
+		plan.SizeBytes = types.Int64Value(src.SizeBytes)
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	}
 }
@@ -389,6 +473,22 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			resp.Diagnostics.AddError("Create hyperv_image_file failed (literal_bytes mode)", err.Error())
 			return
 		}
+	case !plan.SourcePath.IsNull() && !plan.SourcePath.IsUnknown():
+		tflog.Debug(ctx, "creating hyperv_image_file (source_path mode)", map[string]any{
+			"destination_path":      dest,
+			"source_path":           plan.SourcePath.ValueString(),
+			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
+		})
+		f, err = r.client.NewImageFileFromSourcePath(ctx, hyperv.NewImageFileFromSourcePathInput{
+			DestinationPath:     dest,
+			SourcePath:          plan.SourcePath.ValueString(),
+			ExpectedSha256:      plan.Sha256.ValueString(),
+			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
+		})
+		if err != nil {
+			resp.Diagnostics.Append(sourcePathCopyDiagnostics(err, plan.SourcePath.ValueString(), "Create")...)
+			return
+		}
 	default:
 		tflog.Debug(ctx, "creating hyperv_image_file (host_path mode)", map[string]any{
 			"destination_path": dest,
@@ -411,7 +511,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	state := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy, plan.ForceDestroy)
+	state := modelFromImageFile(f, plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -446,40 +546,36 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	// Preserve the user's url block, local_path, content_base64,
-	// replace_while_mounted, and keep_on_destroy from prior state --
-	// all five are user intent and aren't reconstructible from the file
-	// contents on disk. The bench has no concept of these fields; the
-	// values live only in Terraform state, so Read must round-trip what's
-	// already there.
+	// modelFromImageFile carries the user-intent fields (source-mode
+	// discriminators and behavior flags) over from prior state -- the host
+	// has no concept of them, so Read must round-trip what's already
+	// there rather than rebuild them from the file on disk.
 	//
-	// Normalize keep_on_destroy and replace_while_mounted null -> false
-	// (the schema defaults) so the Import path (which calls Read with
-	// only the ID populated) produces state consistent with what Apply
-	// writes. Without this, ImportStateVerify fails with
-	// "keep_on_destroy: false vs <missing>".
-	keepOnDestroy := state.KeepOnDestroy
-	if keepOnDestroy.IsNull() {
-		keepOnDestroy = types.BoolValue(false)
+	// Normalize the three flags null -> false (the schema defaults) first
+	// so the Import path (which calls Read with only the ID populated)
+	// produces state consistent with what Apply writes. Without this,
+	// ImportStateVerify fails with "keep_on_destroy: false vs <missing>".
+	if state.KeepOnDestroy.IsNull() {
+		state.KeepOnDestroy = types.BoolValue(false)
 	}
-	replaceWhileMounted := state.ReplaceWhileMounted
-	if replaceWhileMounted.IsNull() {
-		replaceWhileMounted = types.BoolValue(false)
+	if state.ReplaceWhileMounted.IsNull() {
+		state.ReplaceWhileMounted = types.BoolValue(false)
 	}
-	forceDestroy := state.ForceDestroy
-	if forceDestroy.IsNull() {
-		forceDestroy = types.BoolValue(false)
+	if state.ForceDestroy.IsNull() {
+		state.ForceDestroy = types.BoolValue(false)
 	}
-	newState := modelFromImageFile(f, state.URL, state.LocalPath, state.ContentBase64, replaceWhileMounted, keepOnDestroy, forceDestroy)
+	newState := modelFromImageFile(f, state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Update is reached for two reasons: local_path-mode bytes changed
+// Update is reached for two reasons: the source bytes changed
 // (ModifyPlan-recomputed SHA differs from state) or a non-RequiresReplace
-// flag toggled (replace_while_mounted / keep_on_destroy). Only local_path
-// bytes-changed actually re-streams; the flag-only path takes the
-// SHA-equality shortcut and skips the wire entirely so a cidata-seed
-// flag flip doesn't re-stream the full ISO over WinRM.
+// flag toggled (replace_while_mounted / keep_on_destroy). Only a
+// bytes-changed Update actually re-writes the destination -- in
+// local_path mode by re-streaming, in source_path mode by re-copying
+// host-side. The flag-only path takes the SHA-equality shortcut and
+// skips the write entirely so a cidata-seed flag flip doesn't re-stream
+// the full ISO over WinRM.
 //
 // literal_bytes-mode bytes-changed never enters Update -- content_base64
 // is RequiresReplace, so a byte change triggers Destroy+Create. A
@@ -541,10 +637,31 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			resp.Diagnostics.AddError("Update hyperv_image_file failed (local_path mode)", err.Error())
 			return
 		}
-		// In local_path mode plan.URL and plan.ContentBase64 are null
-		// (mutually exclusive); pass them through unchanged so the round-
-		// trip preserves that nullness.
-		newState := modelFromImageFile(f, plan.URL, plan.LocalPath, plan.ContentBase64, plan.ReplaceWhileMounted, plan.KeepOnDestroy, plan.ForceDestroy)
+		// The other mode discriminators on plan are null (they're mutually
+		// exclusive); modelFromImageFile passes them through unchanged so
+		// the round-trip preserves that nullness.
+		newState := modelFromImageFile(f, plan)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+		return
+	}
+
+	if !plan.SourcePath.IsNull() && !plan.SourcePath.IsUnknown() {
+		tflog.Debug(ctx, "updating hyperv_image_file (source_path mode -- re-copying)", map[string]any{
+			"destination_path":      plan.DestinationPath.ValueString(),
+			"source_path":           plan.SourcePath.ValueString(),
+			"replace_while_mounted": plan.ReplaceWhileMounted.ValueBool(),
+		})
+		f, err := r.client.NewImageFileFromSourcePath(ctx, hyperv.NewImageFileFromSourcePathInput{
+			DestinationPath:     plan.DestinationPath.ValueString(),
+			SourcePath:          plan.SourcePath.ValueString(),
+			ExpectedSha256:      plan.Sha256.ValueString(),
+			ReplaceWhileMounted: plan.ReplaceWhileMounted.ValueBool(),
+		})
+		if err != nil {
+			resp.Diagnostics.Append(sourcePathCopyDiagnostics(err, plan.SourcePath.ValueString(), "Update")...)
+			return
+		}
+		newState := modelFromImageFile(f, plan)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -553,11 +670,13 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// Delete runs remove.ps1 for url-mode and local_path-mode resources --
-// both modes mean the provider put the file on the host, so removing
-// it on destroy is the symmetric operation. host_path-mode (URL nil
-// AND LocalPath null) leaves the file alone: the user attested it
-// already existed, so removing on destroy would surprise them.
+// Delete runs remove.ps1 for every mode in which the provider put the
+// file on the host -- url, local_path, literal_bytes, source_path --
+// since removing it on destroy is the symmetric operation. host_path-
+// mode (no source-mode discriminator set) leaves the file alone: the
+// user attested it already existed, so removing on destroy would
+// surprise them. source_path-mode removes only the copy at
+// destination_path; the source it was cloned from is not managed here.
 //
 // `force_destroy=true` forwards into remove.ps1's detach-then-retry
 // branch: when the initial Remove-Item hits a sharing violation whose
@@ -582,7 +701,8 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 
 	hostPathMode := state.URL.IsNull() &&
 		(state.LocalPath.IsNull() || state.LocalPath.IsUnknown()) &&
-		(state.ContentBase64.IsNull() || state.ContentBase64.IsUnknown())
+		(state.ContentBase64.IsNull() || state.ContentBase64.IsUnknown()) &&
+		(state.SourcePath.IsNull() || state.SourcePath.IsUnknown())
 	if hostPathMode {
 		tflog.Info(ctx, "host_path-mode hyperv_image_file; skipping host-side delete", map[string]any{
 			"destination_path": state.DestinationPath.ValueString(),
@@ -623,33 +743,68 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	resource.ImportStatePassthroughID(ctx, path.Root("destination_path"), req, resp)
 }
 
-// modelFromImageFile hydrates a Model from a typed ImageFile DTO. URL
-// and localPath are caller-supplied because both are user intent
-// (config/plan) and neither is reconstructible from the file on disk.
+// modelFromImageFile hydrates a Model from a typed ImageFile DTO,
+// carrying every user-intent field over from intent (the plan during
+// Create/Update, prior state during Read). Those fields -- the source-
+// mode discriminators and the behavior flags -- exist only in Terraform
+// state; the host has no concept of them and nothing on disk
+// reconstructs them, so they have to round-trip from the caller.
 //
-// URL is passed through as types.Object so the round-trip preserves
-// whatever state the caller holds (known/null/unknown). The Object
-// shape on the receiving Model mirrors what the framework expects
-// for the SingleNestedAttribute "url" declared in schema.go.
+// URL rides across as types.Object so the round-trip preserves whatever
+// state the caller holds (known/null/unknown). The Object shape mirrors
+// what the framework expects for the SingleNestedAttribute "url"
+// declared in schema.go.
 //
 // Path-typed attributes (id, destination_path) wrap the cmdlet's
 // canonical-form return value verbatim. Slash-style and case
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals; we don't need to preserve
 // the user's prior representation here.
-func modelFromImageFile(f *hyperv.ImageFile, url types.Object, localPath pathtype.Path, contentBase64 types.String, replaceWhileMounted types.Bool, keepOnDestroy types.Bool, forceDestroy types.Bool) Model {
+func modelFromImageFile(f *hyperv.ImageFile, intent Model) Model {
 	return Model{
 		ID:                  pathtype.NewPathValue(f.Path),
 		DestinationPath:     pathtype.NewPathValue(f.Path),
-		URL:                 url,
-		LocalPath:           localPath,
-		ContentBase64:       contentBase64,
-		ReplaceWhileMounted: replaceWhileMounted,
+		URL:                 intent.URL,
+		LocalPath:           intent.LocalPath,
+		ContentBase64:       intent.ContentBase64,
+		SourcePath:          intent.SourcePath,
+		ReplaceWhileMounted: intent.ReplaceWhileMounted,
 		Sha256:              types.StringValue(f.Sha256),
 		SizeBytes:           types.Int64Value(f.SizeBytes),
-		KeepOnDestroy:       keepOnDestroy,
-		ForceDestroy:        forceDestroy,
+		KeepOnDestroy:       intent.KeepOnDestroy,
+		ForceDestroy:        intent.ForceDestroy,
 	}
+}
+
+// sourcePathCopyDiagnostics maps a NewImageFileFromSourcePath failure to
+// diagnostics anchored on `source_path`. Shared by Create and Update --
+// both fail the same two ways: the source vanished, or it changed
+// between plan and apply.
+func sourcePathCopyDiagnostics(err error, sourcePath, op string) diag.Diagnostics {
+	var diags diag.Diagnostics
+	switch {
+	case errors.Is(err, hyperv.ErrChecksumMismatch):
+		diags.AddAttributeError(
+			path.Root("source_path"),
+			"Source image file changed during apply",
+			fmt.Sprintf("The copy of %s doesn't hash to the value the provider read from it "+
+				"during plan.\n\n"+
+				"The usual cause is the source being replaced between plan and apply -- exactly "+
+				"the in-place upgrade this mode watches for, just badly timed. Re-run "+
+				"`terraform apply` to plan against the new bytes. A mismatch that persists across "+
+				"retries points at a failing disk on the host instead.\n\n"+err.Error(), sourcePath),
+		)
+	case errors.Is(err, hyperv.ErrNotFound):
+		diags.AddAttributeError(
+			path.Root("source_path"),
+			"Source image file not found on host",
+			fmt.Sprintf("No file exists at %s on the Hyper-V host. It was present when the "+
+				"provider hashed it during plan, so something removed it since.", sourcePath),
+		)
+	default:
+		diags.AddError(op+" hyperv_image_file failed (source_path mode)", err.Error())
+	}
+	return diags
 }
 
 // stripSha256Prefix drops the "sha256:" prefix the schema validator pins on
