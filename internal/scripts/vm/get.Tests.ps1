@@ -238,7 +238,13 @@ Describe 'Get-HypervVM' {
                 )
             }
 
-            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+            # A scalar reports .Count = 1 and indexes at [0] just like a
+            # one-element array, so pin the brackets on the raw JSON --
+            # the Go decode into []BootOrderEntry rejects a scalar.
+            $raw = Get-HypervVM -Name 'sample-vm'
+            $raw | Should -Match '"BootOrder":\[\{'
+
+            $parsed = $raw | ConvertFrom-Json
             $parsed.BootOrder.Count | Should -Be 1
             $parsed.BootOrder[0].Type | Should -Be 'hard_disk_drive'
         }
