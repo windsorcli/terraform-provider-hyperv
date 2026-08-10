@@ -24,13 +24,14 @@ func resourceSchema() schema.Schema {
 		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
 			"the target host (or equivalent rights granted through a JEA endpoint). The connecting " +
 			"identity must also have write permission to `destination_path`.\n\n" +
-			"Manages a file (typically a VHDX or ISO) on the Hyper-V host. Four source modes:\n\n" +
+			"Manages a file (typically a VHDX or ISO) on the Hyper-V host. Five source modes:\n\n" +
 			"  * **`url`-mode** -- the provider downloads the file via a streamed HTTP GET (`System.Net.Http.HttpClient`), verifies the SHA-256 against the supplied checksum, and atomic-renames into place at `destination_path`.\n" +
 			"  * **`local_path`-mode** -- the provider streams a file from the Terraform runner to the host via the active connection backend (SSH or WinRM), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. The runner-side file is hashed at plan time so changes to its contents between applies trigger a re-stream.\n" +
 			"  * **`literal_bytes`-mode** -- the provider takes a base64-encoded byte payload from `content_base64` (typically wired from `data.hyperv_iso_volume.content_base64` or another runner-side data source), verifies the runner-computed SHA-256 against the bytes that landed, and atomic-renames into place. Same host-side wire path as `local_path`-mode -- the runner writes the bytes to a tmpfile and streams from there. Use this for synthesized seeds (cidata, autounattend, Talos machineconfig) so a `local_file` middleman isn't required.\n" +
+			"  * **`source_path`-mode** -- the provider copies a file the host already holds at `source_path` into `destination_path`, entirely host-side. Nothing crosses the runner-to-host link, so cloning a multi-GiB image runs at host disk speed. The source is hashed at plan time, so replacing it in place (the usual pattern for a vendor image refreshed on a schedule) surfaces as a `sha256` diff and re-copies.\n" +
 			"  * **`host_path`-mode** -- the user attests the file already exists at `destination_path`. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.\n\n" +
-			"The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; if `content_base64` is set, `literal_bytes`-mode; otherwise `host_path`-mode. The three placement modes (`url`, `local_path`, `content_base64`) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.\n\n" +
-			"**Drift detection:** SHA-256 is recomputed on every `Read`. Out-of-band file changes surface as a `sha256` change during refresh; large-file refreshes are correspondingly slow (Get-FileHash on a 5 GiB VHDX is ~30 s on spinning disk). In `local_path`-mode, the *runner-side* file is also hashed during plan so a content change since the last apply surfaces as a `sha256` diff that triggers Update.\n\n" +
+			"The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; if `content_base64` is set, `literal_bytes`-mode; if `source_path` is set, `source_path`-mode; otherwise `host_path`-mode. The four placement modes (`url`, `local_path`, `content_base64`, `source_path`) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.\n\n" +
+			"**Drift detection:** SHA-256 is recomputed on every `Read`. Out-of-band file changes surface as a `sha256` change during refresh; large-file refreshes are correspondingly slow (Get-FileHash on a 5 GiB VHDX is ~30 s on spinning disk). In `local_path`-mode the *runner-side* file is also hashed during plan, and in `source_path`-mode the *host-side source* is, so a content change since the last apply surfaces as a `sha256` diff that triggers Update.\n\n" +
 			"**Recovery from partial-create:** if the download/stream succeeds and the SHA-256 verifies but the atomic rename fails (e.g., destination path is on a different volume than the staging `.part` file), the file is left at the staging path with no Terraform state. Re-run `terraform apply` -- the next attempt re-streams to a fresh staging path. The PowerShell layer cleans up its own `.part` files on every failure path.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -188,6 +189,55 @@ func resourceSchema() schema.Schema {
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			"source_path": schema.StringAttribute{
+				CustomType: pathtype.Type,
+				Optional:   true,
+				MarkdownDescription: "Absolute path **on the Hyper-V host** of a file to copy to " +
+					"`destination_path`. When set, the resource operates in `source_path`-mode: the " +
+					"host copies the file to a sibling `.part` of `destination_path`, verifies the copied " +
+					"bytes against the SHA-256 the provider read from the source at plan time, and " +
+					"atomic-renames into place. Both endpoints are host-local, so the bytes never cross " +
+					"the runner-to-host link -- cloning a multi-GiB image is bounded by host disk speed " +
+					"rather than by SSH or WinRM throughput. Mutually exclusive with `url`, `local_path`, " +
+					"and `content_base64`.\n\n" +
+					"**The canonical use is cloning a periodically-refreshed vendor image into a per-VM " +
+					"boot disk.** Point `url`-mode (or an out-of-band process) at a stable host path for " +
+					"the upstream image, then point one `source_path` resource per VM at it. Unlike a " +
+					"`differencing` [`hyperv_vhd`](vhd), the copy has no lasting tie to its source: " +
+					"replacing the upstream image in place is safe, and re-parenting is never needed. " +
+					"Attach the result by feeding `destination_path` to a [`hyperv_vm`](vm) " +
+					"`hard_disk_drive[].path` -- that attribute takes any host path, so no " +
+					"`hyperv_vhd` resource is involved.\n\n" +
+					"**No resize.** The copy is a file, and `hyperv_vhd` has no adopt-existing mode, " +
+					"so there is no `Resize-VHD` path for a disk landed this way. Images that need " +
+					"growing before first boot are not served by this mode.\n\n" +
+					"**Forces replacement** when changed -- copying from a different source file is " +
+					"conceptually a different resource. **Content changes at the same source path are " +
+					"NOT a replace**: the provider hashes the host-side source at plan time, and a " +
+					"different SHA than what's in state surfaces as a `sha256` diff that triggers " +
+					"in-place Update (re-copy + atomic rename). That is what makes an upstream image " +
+					"refreshed under a fixed name propagate on the next `terraform apply`.\n\n" +
+					"**When the source is itself Terraform-managed** -- `source_path` wired to another " +
+					"`hyperv_image_file`'s `destination_path` -- the plan-time hash reads the source as " +
+					"it exists *now*. On the first apply the source doesn't exist yet, so `sha256` and " +
+					"`size_bytes` plan as `(known after apply)` and resolve once the dependency has run. " +
+					"On later applies where the source and the copy both change in the same run, plan " +
+					"hashes the old bytes and the copy catches up on the following apply. Sources " +
+					"refreshed outside Terraform -- the case this mode is built for -- have already " +
+					"changed by plan time and propagate immediately.\n\n" +
+					"Forward and back slashes are accepted equivalently; comparison is case-insensitive " +
+					"per Windows file-system semantics.\n\n" +
+					"**Performance:** the host reads the source twice per apply -- once for the plan-time " +
+					"hash, once for the copy itself -- and the destination once more for the post-apply " +
+					"`sha256`. Every `terraform plan` pays a full `Get-FileHash` of the source even when " +
+					"nothing has changed, which on a multi-GiB VHDX is tens of seconds. Use " +
+					"`host_path`-mode instead if you don't need the provider to track the copy.\n\n" +
+					"**Destroy removes `destination_path`, never the source.** The source is not managed " +
+					"by this resource; only the copy is.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"replace_while_mounted": schema.BoolAttribute{
 				Optional: true,
 				Computed: true,
@@ -202,10 +252,10 @@ func resourceSchema() schema.Schema {
 					"don't hot-swap and don't hit the same lock pattern; only DVDs do. Set to `true` for " +
 					"any image_file whose destination may be referenced by a `dvd_drive.iso_path` on a " +
 					"running VM (the canonical case is cidata seeds for cloud-init / Talos machineconfig).\n\n" +
-					"**Honored only in `local_path` and `literal_bytes` modes** -- those are the modes " +
-					"with a re-stream Update path. `url` mode forces replacement on any change so the " +
-					"flag is moot; `host_path` mode never writes to `destination_path` at all. Setting " +
-					"the flag in those modes is harmless: the value is silently ignored.",
+					"**Honored only in `local_path`, `literal_bytes`, and `source_path` modes** -- those " +
+					"are the modes with a re-write Update path. `url` mode forces replacement on any " +
+					"change so the flag is moot; `host_path` mode never writes to `destination_path` at " +
+					"all. Setting the flag in those modes is harmless: the value is silently ignored.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},

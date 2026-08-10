@@ -879,3 +879,242 @@ Describe 'New-HypervImageFileFromLocalPath' {
         }
     }
 }
+
+Describe 'New-HypervImageFileFromSourcePath' {
+
+    BeforeEach { Mock New-Item { } }
+
+    Context 'happy path (source_path mode)' {
+
+        It 'copies the source to a sibling .part of the destination, not to the destination itself' {
+            # Staging is what keeps an interrupted copy from leaving truncated
+            # bytes under the canonical name, and it keeps the follow-up
+            # Move-Item within one NTFS volume even when the source lives on
+            # another -- so the rename stays atomic.
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            New-HypervImageFileFromSourcePath `
+                -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                -SourcePath      'D:\images\fcos.vhdx' `
+                -ExpectedSha256  'expected' | Out-Null
+
+            Should -Invoke Copy-Item -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -eq 'D:\images\fcos.vhdx' -and
+                $Destination -like 'C:\vms\cp1\boot.vhdx.part-*' -and
+                $Force -eq $true
+            }
+        }
+
+        It 'verifies the copied bytes and atomic-renames the staging file into place' {
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            New-HypervImageFileFromSourcePath `
+                -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                -SourcePath      'D:\images\fcos.vhdx' `
+                -ExpectedSha256  'expected' | Out-Null
+
+            Should -Invoke Get-FileHash -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -like 'C:\vms\cp1\boot.vhdx.part-*' -and
+                $Algorithm -eq 'SHA256'
+            }
+            Should -Invoke Move-Item -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -like 'C:\vms\cp1\boot.vhdx.part-*' -and
+                $Destination -eq 'C:\vms\cp1\boot.vhdx' -and
+                $Force -eq $true
+            }
+        }
+
+        It 'never invokes Save-HypervHttpFile (the copy is host-local, nothing is fetched)' {
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Save-HypervHttpFile { }
+
+            New-HypervImageFileFromSourcePath `
+                -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                -SourcePath      'D:\images\fcos.vhdx' `
+                -ExpectedSha256  'expected' | Out-Null
+
+            Should -Invoke Save-HypervHttpFile -Times 0 -Exactly
+        }
+
+        It 'creates the destination parent directory before staging the copy' {
+            # Same platform-conditional pattern as url- and local_path-mode: on
+            # non-Windows Pester runs Split-Path returns '' for backslash paths,
+            # the $dir guard skips New-Item, and the function must still not throw.
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            New-HypervImageFileFromSourcePath `
+                -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                -SourcePath      'D:\images\fcos.vhdx' `
+                -ExpectedSha256  'expected' | Out-Null
+
+            # Count is not pinned: this function creates the directory so
+            # Copy-Item has somewhere to stage, and the verify-and-rename
+            # delegate creates it again for its own callers. New-Item -Force
+            # on an existing directory is a no-op, so the second call costs
+            # nothing and the contract worth locking is the parameters.
+            $dir = Split-Path -LiteralPath 'C:\vms\cp1\boot.vhdx'
+            if ($dir) {
+                Should -Invoke New-Item -ParameterFilter {
+                    $ItemType -eq 'Directory' -and $Force -eq $true -and $Path -eq $dir
+                }
+            } else {
+                Should -Invoke New-Item -Times 0 -Exactly
+            }
+        }
+
+        It 'emits the canonical three-field shape after rename (matches get.ps1)' {
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample -FullName 'C:\vms\cp1\boot.vhdx' -Length 5368709120 }
+
+            $parsed = New-HypervImageFileFromSourcePath `
+                -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                -SourcePath      'D:\images\fcos.vhdx' `
+                -ExpectedSha256  'expected' | ConvertFrom-Json
+
+            $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
+                'Path', 'Sha256', 'SizeBytes'
+            )
+            $parsed.Path      | Should -Be 'C:\vms\cp1\boot.vhdx'
+            $parsed.SizeBytes | Should -Be 5368709120
+            $parsed.Sha256    | Should -Be 'expected'
+        }
+    }
+
+    Context 'error propagation (source_path mode)' {
+
+        It 'throws ObjectNotFound with ImageFileSourceNotFound when the source is missing (no copy attempted)' {
+            # The Go side maps ObjectNotFound to ErrNotFound and anchors the
+            # diagnostic on source_path, so the source-missing and
+            # destination-missing cases stay distinguishable by error id.
+            Mock Test-Path { $false }
+            Mock Copy-Item { }
+            Mock Move-Item { }
+            Mock Get-FileHash { }
+            Mock Get-Item { }
+
+            $captured = $null
+            try {
+                New-HypervImageFileFromSourcePath `
+                    -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                    -SourcePath      'D:\images\gone.vhdx' `
+                    -ExpectedSha256  'expected'
+            } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $captured.FullyQualifiedErrorId            | Should -Match 'ImageFileSourceNotFound'
+            Should -Invoke Copy-Item -Times 0 -Exactly
+            Should -Invoke Move-Item -Times 0 -Exactly
+        }
+
+        It 'throws InvalidData with ImageFileChecksumMismatch when the copy does not match the plan-time hash (skips Move-Item)' {
+            # The expected hash was read from the source during plan, so a
+            # mismatch means the source changed between plan and apply.
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'DIFFERENTNOW' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            $captured = $null
+            try {
+                New-HypervImageFileFromSourcePath `
+                    -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                    -SourcePath      'D:\images\fcos.vhdx' `
+                    -ExpectedSha256  'expected'
+            } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'InvalidData'
+            $captured.FullyQualifiedErrorId            | Should -Match 'ImageFileChecksumMismatch'
+            Should -Invoke Move-Item -Times 0 -Exactly
+            Should -Invoke Remove-Item -Times 1 -Exactly
+        }
+
+        It 'removes the partial .part and rethrows when Copy-Item fails mid-copy' {
+            # The verify-and-rename delegate never runs in this case, so its
+            # finally-block cleanup never fires -- this function has to clean
+            # up after itself or a failed apply leaves a partial behind.
+            Mock Test-Path { $true }
+            Mock Copy-Item {
+                $exception   = [System.IO.IOException]::new('There is not enough space on the disk.')
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                    $exception, 'CopyFailed',
+                    [System.Management.Automation.ErrorCategory]::WriteError, $LiteralPath)
+                throw $errorRecord
+            }
+            Mock Remove-Item { }
+            Mock Move-Item { }
+            Mock Get-FileHash { }
+            Mock Get-Item { }
+
+            $captured = $null
+            try {
+                New-HypervImageFileFromSourcePath `
+                    -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                    -SourcePath      'D:\images\fcos.vhdx' `
+                    -ExpectedSha256  'expected'
+            } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'WriteError'
+            Should -Invoke Remove-Item -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -like 'C:\vms\cp1\boot.vhdx.part-*'
+            }
+            Should -Invoke Move-Item -Times 0 -Exactly
+        }
+    }
+
+    Context 'replace-while-mounted mode (ReplaceWhileMounted switch)' {
+
+        It 'routes the rename through the DVD-safe replace when the switch is set' {
+            # Forwarding the switch to the delegate is the whole contract
+            # here; the swap-via-pivot dance itself is covered by the
+            # local_path tests.
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            Mock Invoke-HypervDvdSafeReplace { }
+
+            New-HypervImageFileFromSourcePath `
+                -DestinationPath      'C:\vms\cp1\seed.iso' `
+                -SourcePath           'D:\images\seed.iso' `
+                -ExpectedSha256       'expected' `
+                -ReplaceWhileMounted:$true | Out-Null
+
+            Should -Invoke Invoke-HypervDvdSafeReplace -Times 1 -Exactly -ParameterFilter {
+                $StagingPath -like 'C:\vms\cp1\seed.iso.part-*' -and
+                $DestinationPath -eq 'C:\vms\cp1\seed.iso'
+            }
+            Should -Invoke Move-Item -Times 0 -Exactly
+        }
+    }
+}

@@ -1,6 +1,6 @@
 package image_file_test
 
-// Acceptance tests for hyperv_image_file. Three modes:
+// Acceptance tests for hyperv_image_file. Four modes:
 //
 //   - host_path: file is already on the bench; the resource verifies
 //     presence and tracks SHA-256 for drift. Cheapest to test (no I/O,
@@ -17,6 +17,11 @@ package image_file_test
 //     runner-computed value, atomic-renames into place. Hermetic too:
 //     the runner-side fixture is written in t.TempDir(); destination is
 //     a per-test path under HYPERV_TEST_VHD_DIR.
+//   - source_path: provider copies a file the bench already holds to a
+//     second path on the bench, verifies the copy against the SHA read
+//     from the source at plan time, atomic-renames into place. Hermetic:
+//     the source is staged out-of-band via the typed client under
+//     HYPERV_TEST_VHD_DIR, so no runner-to-bench transfer is involved.
 //
 // See docs/contributing/acceptance-tests.md for the bench setup that
 // stages a test fixture file at a stable path.
@@ -44,6 +49,7 @@ import (
 	"github.com/ulikunitz/xz"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
 
 // sha256Pattern matches the lowercase-hex form the resource's computed
@@ -826,4 +832,151 @@ func joinHostPath(dir, name string) string {
 // semantic-equals check accepts both as equivalent.
 func toForwardSlash(p string) string {
 	return strings.ReplaceAll(p, `\`, `/`)
+}
+
+// TestAcc_ImageFile_sourcePath exercises source_path mode end to end and,
+// more importantly, the reason the mode exists: an upstream image replaced
+// in place under a fixed name must propagate to the copy on the next
+// apply. Step 1 stages a source on the bench and copies it; step 2 swaps
+// the source's bytes out-of-band and re-applies. ModifyPlan hashes the
+// host-side source at plan time, so the swap surfaces as a sha256 diff and
+// Update re-copies -- no config change, no taint, no differencing-disk
+// re-parenting.
+//
+// The source is staged with the typed client rather than a second
+// hyperv_image_file resource on purpose. That matches the workflow this
+// mode targets (a vendor image refreshed by something outside Terraform),
+// and it sidesteps the one-apply lag a Terraform-managed source would
+// have: plan hashes the source as it is *now*, which for a source
+// scheduled to change in the same apply is still the old bytes.
+func TestAcc_ImageFile_sourcePath(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	sourcePath := joinHostPath(dir, acctest.RandomName("img-src")+".bin")
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-copy")+".bin"))
+
+	v1 := []byte("tfacc source_path mode v1\n")
+	v1Hex := hex.EncodeToString(sha256OfBytes(v1))
+	v2 := []byte("tfacc source_path mode v2 (upstream image refreshed in place)\n")
+	v2Hex := hex.EncodeToString(sha256OfBytes(v2))
+
+	stageSource(t, client, sourcePath, v1)
+	// The source is not Terraform-managed, so nothing in the test case
+	// removes it. Clean up explicitly or the bench accumulates fixtures.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := client.RemoveImageFile(ctx, sourcePath, false); err != nil {
+			t.Logf("cleanup: remove source %s: %v", sourcePath, err)
+		}
+	})
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// The provider placed the copy, so destroy must remove it. The
+		// source is untouched by destroy -- t.Cleanup above is what
+		// reclaims it, and it running without error is itself evidence
+		// the destroy didn't take the source with it.
+		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileSourcePathConfig(dest, toForwardSlash(sourcePath)),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("destination_path"),
+						knownvalue.StringExact(dest),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("source_path"),
+						knownvalue.StringExact(toForwardSlash(sourcePath)),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(v1Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(v1))),
+					),
+				},
+			},
+			{
+				// Replace the source's bytes at the same path, the way an
+				// image refresh does. ModifyPlan re-hashes the source, the
+				// framework sees the diff against state's sha256, and
+				// Update re-copies.
+				PreConfig: func() { stageSource(t, client, sourcePath, v2) },
+				Config:    imageFileSourcePathConfig(dest, toForwardSlash(sourcePath)),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(v2Hex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.test",
+						tfjsonpath.New("size_bytes"),
+						knownvalue.Int64Exact(int64(len(v2))),
+					),
+				},
+			},
+		},
+	})
+}
+
+// TestAcc_ImageFile_sourcePathEqualsDestination proves the same-file guard
+// fires from the real plan-time validation path, not just from the unit
+// test's direct call into validate. Copying a file over itself would
+// rewrite the source through a staging file and lose it outright if the
+// copy failed partway, so this has to reject before any I/O happens.
+func TestAcc_ImageFile_sourcePathEqualsDestination(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+
+	same := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-same")+".bin"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      imageFileSourcePathConfig(same, same),
+				ExpectError: regexp.MustCompile("must differ"),
+			},
+		},
+	})
+}
+
+// stageSource writes body to path on the bench, out of band from
+// Terraform. Used to stand up (and later replace) the upstream image the
+// source_path tests copy from. NewImageFileFromBytes is the cheapest
+// typed-client route to "put these exact bytes at this host path" -- it
+// overwrites, so replacing the fixture is the same call as creating it.
+func stageSource(t *testing.T, client *hyperv.Client, path string, body []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := client.NewImageFileFromBytes(ctx, hyperv.NewImageFileFromBytesInput{
+		DestinationPath: path,
+		Bytes:           body,
+	}); err != nil {
+		t.Fatalf("stage source at %s: %v", path, err)
+	}
+}
+
+// imageFileSourcePathConfig is the smallest valid HCL for source_path
+// mode -- both paths are on the bench and no other source-mode
+// discriminator is set.
+func imageFileSourcePathConfig(destPath, sourcePath string) string {
+	return fmt.Sprintf(`
+resource "hyperv_image_file" "test" {
+  destination_path = %q
+  source_path      = %q
+}
+`, destPath, sourcePath)
 }
