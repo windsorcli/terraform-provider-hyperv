@@ -48,6 +48,12 @@ function Read-HypervVMResult {
                 # skipped: not yet in the schema, and emitting a
                 # half-shaped record the Go side can't act on would
                 # surface as a phantom diff every plan.
+                #
+                # Those entries carry a null Device, as do records left
+                # behind by a device that has since been removed.
+                if ($null -eq $entry.Device) {
+                    continue
+                }
                 $deviceType = $entry.Device.GetType().Name
                 switch ($deviceType) {
                     'HardDiskDrive' {

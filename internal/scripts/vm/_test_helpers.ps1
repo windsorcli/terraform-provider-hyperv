@@ -305,6 +305,8 @@ function New-HypervVMFirmwareSample {
 #   'HardDiskDrive'    -> emits a Device with ControllerType / Number / Location
 #   'DvdDrive'         -> ditto
 #   'VMNetworkAdapter' -> emits a Device with Name
+#   'None'             -> emits a $null Device, as Hyper-V returns for
+#                         File and Unknown firmware entries
 #
 # The Device's CLR type name is set via PSObject.TypeNames.Insert
 # so the script's $entry.Device.GetType().Name pseudo-test matches
@@ -315,13 +317,20 @@ function New-HypervVMBootOrderEntrySample {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('HardDiskDrive', 'DvdDrive', 'VMNetworkAdapter')]
+        [ValidateSet('HardDiskDrive', 'DvdDrive', 'VMNetworkAdapter', 'None')]
         [string] $DeviceType,
+        [string] $BootType           = 'Drive',
         [string] $ControllerType     = 'SCSI',
         [int]    $ControllerNumber   = 0,
         [int]    $ControllerLocation = 0,
         [string] $Name               = 'primary'
     )
+    if ($DeviceType -eq 'None') {
+        return [pscustomobject]@{
+            BootType = $BootType
+            Device   = $null
+        }
+    }
     $device = switch ($DeviceType) {
         'HardDiskDrive' {
             New-Object psobject -Property @{
@@ -351,7 +360,7 @@ function New-HypervVMBootOrderEntrySample {
     # so we add a ScriptMethod that shadows it.
     $device | Add-Member -MemberType ScriptMethod -Name GetType -Force -Value ([scriptblock]::Create("[pscustomobject]@{ Name = '$DeviceType' }"))
     [pscustomobject]@{
-        BootType = 'Drive'
+        BootType = $BootType
         Device   = $device
     }
 }

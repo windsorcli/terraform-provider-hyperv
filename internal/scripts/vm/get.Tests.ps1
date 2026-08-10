@@ -224,6 +224,40 @@ Describe 'Get-HypervVM' {
             $parsed.BootOrder[2].ControllerType     | Should -Be ''
         }
 
+        It 'skips firmware boot entries whose Device is null' {
+            # File and Unknown firmware entries (UEFI bootloader paths, or
+            # records left behind by a removed device) come back with a
+            # null Device. Dereferencing one fails the whole read.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware {
+                New-HypervVMFirmwareSample -BootOrder @(
+                    New-HypervVMBootOrderEntrySample -DeviceType 'None' -BootType 'File'
+                    New-HypervVMBootOrderEntrySample -DeviceType 'HardDiskDrive' `
+                        -ControllerType 'SCSI' -ControllerNumber 0 -ControllerLocation 0
+                    New-HypervVMBootOrderEntrySample -DeviceType 'None' -BootType 'Unknown'
+                )
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+            $parsed.BootOrder.Count | Should -Be 1
+            $parsed.BootOrder[0].Type | Should -Be 'hard_disk_drive'
+        }
+
+        It 'emits an empty BootOrder array when every entry has a null Device' {
+            # Skipping every entry must still serialize as [], not null --
+            # the Go-side decode into []BootOrderEntry depends on it.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware {
+                New-HypervVMFirmwareSample -BootOrder @(
+                    New-HypervVMBootOrderEntrySample -DeviceType 'None' -BootType 'File'
+                    New-HypervVMBootOrderEntrySample -DeviceType 'None' -BootType 'Unknown'
+                )
+            }
+
+            $raw = Get-HypervVM -Name 'sample-vm'
+            $raw | Should -Match '"BootOrder":\[\]'
+        }
+
         It 'emits per-NIC MacAddress and VlanID with the documented null/zero conventions' {
             # Two NICs to pin both branches of the read script's
             # per-NIC enrichment:
