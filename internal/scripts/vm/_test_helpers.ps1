@@ -306,7 +306,8 @@ function New-HypervVMFirmwareSample {
 #   'DvdDrive'         -> ditto
 #   'VMNetworkAdapter' -> emits a Device with Name
 #   'None'             -> emits a $null Device, as Hyper-V returns for
-#                         File and Unknown firmware entries
+#                         File and Unknown firmware entries; requires
+#                         an explicit -BootType
 #
 # The Device's CLR type name is set via PSObject.TypeNames.Insert
 # so the script's $entry.Device.GetType().Name pseudo-test matches
@@ -326,6 +327,11 @@ function New-HypervVMBootOrderEntrySample {
         [string] $Name               = 'primary'
     )
     if ($DeviceType -eq 'None') {
+        # Hyper-V pairs a null Device with File or Unknown, never the
+        # 'Drive' default -- make the caller name which one.
+        if (-not $PSBoundParameters.ContainsKey('BootType')) {
+            throw "-DeviceType 'None' requires an explicit -BootType (File or Unknown)."
+        }
         return [pscustomobject]@{
             BootType = $BootType
             Device   = $null
