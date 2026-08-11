@@ -341,6 +341,19 @@ func TestAcc_VHD_sourcePathDeferred(t *testing.T) {
 						tfjsonpath.New("size_bytes"), knownvalue.Int64Exact(vhdInitialSizeBytes)),
 				},
 			},
+			{
+				// The deferred path needs the same idempotency guarantee the
+				// non-deferred test gets. A source_sha256 that resolved at
+				// apply but doesn't match what ModifyPlan computes on the next
+				// run would re-copy forever, and the first step alone cannot
+				// see that -- it only proves the value became known.
+				Config: vhdSourcePathChainedConfig(sourcePath, copyPath, vhdInitialSizeBytes),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
 		},
 	})
 }

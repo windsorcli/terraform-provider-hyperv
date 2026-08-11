@@ -117,6 +117,8 @@ Mutually exclusive with `parent_path`, and `vhd_type` / `block_size_bytes` are r
 **Re-copy on source change.** `source_sha256` records the source's hash as of the last copy. The provider re-hashes the source at plan time, so an image replaced in place surfaces as a `source_sha256` diff and re-copies. **This overwrites the disk**, discarding anything the guest wrote -- which is the intended upgrade path for immutable OS images (CoreOS, Talos) and destructive for a disk holding state you care about.
 
 **Forces replacement** when changed. Every plan pays a full `Get-FileHash` of the source, which on a multi-GiB image is tens of seconds.
+
+**Plan accuracy on a layout change.** Only the source's hash is read at plan time, not its layout, so replacing the source with a disk of a different `vhd_type` (dynamic to fixed, say) shows up as a `source_sha256` diff with `vhd_type` still reading its prior value. The apply re-copies and writes the correct type, and the next plan is clean. Reading the layout at plan time would make `vhd_type`'s `RequiresReplace` fire and turn the in-place re-copy into a destroy-then-create, which is more disruptive for no difference in the end state.
 - `vhd_type` (String) Disk layout. One of `fixed` (pre-allocated), `dynamic` (sparse), or `differencing` (child of a parent). **Required** unless `source_path` is set, in which case the layout is inherited from the source disk and supplying a value is rejected. **Forces replacement** when changed -- there is no in-place conversion path.
 
 ### Read-Only

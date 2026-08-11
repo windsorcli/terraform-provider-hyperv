@@ -83,7 +83,14 @@ func resourceSchema() schema.Schema {
 					"guest wrote -- which is the intended upgrade path for immutable OS images (CoreOS, Talos) " +
 					"and destructive for a disk holding state you care about.\n\n" +
 					"**Forces replacement** when changed. Every plan pays a full `Get-FileHash` of the source, " +
-					"which on a multi-GiB image is tens of seconds.",
+					"which on a multi-GiB image is tens of seconds.\n\n" +
+					"**Plan accuracy on a layout change.** Only the source's hash is read at plan time, not " +
+					"its layout, so replacing the source with a disk of a different `vhd_type` (dynamic to " +
+					"fixed, say) shows up as a `source_sha256` diff with `vhd_type` still reading its prior " +
+					"value. The apply re-copies and writes the correct type, and the next plan is clean. " +
+					"Reading the layout at plan time would make `vhd_type`'s `RequiresReplace` fire and turn " +
+					"the in-place re-copy into a destroy-then-create, which is more disruptive for no " +
+					"difference in the end state.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

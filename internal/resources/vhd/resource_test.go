@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
@@ -915,5 +916,107 @@ func TestModelFromVHD_CollapsesSourceShaToNullWithoutSource(t *testing.T) {
 				t.Error("SourcePath is unknown after apply; Terraform rejects the result object")
 			}
 		})
+	}
+}
+
+// A resize that fails after the copy has already been renamed into place
+// leaves a disk on the host that no state describes -- wrong size, and
+// invisible to `terraform state`. copyAndResize removes it so a failed
+// apply leaves nothing behind, matching the cleanup contract new.ps1's
+// finally blocks give the staging file.
+func TestCopyAndResize_RemovesCopyWhenResizeFails(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0).
+		On("function Set-HypervVHD").Return("", `{"category":"InvalidArgument","message":"shrink requires empty trailing blocks","cmdlet":"Resize-VHD"}`, 1).
+		On("function Remove-HypervVHD").Return("", "", 0)
+
+	r := &Resource{client: hyperv.NewClient(fr)}
+
+	_, _, err := r.copyAndResize(t.Context(), Model{
+		Path:         pathtype.NewPathValue("C:/vms/cp1/boot.vhdx"),
+		SourcePath:   pathtype.NewPathValue("D:/images/fcos.vhdx"),
+		SourceSha256: types.StringValue("abc123"),
+		SizeBytes:    types.Int64Value(1024),
+	})
+	if err == nil {
+		t.Fatal("copyAndResize returned nil error; the resize failure must surface")
+	}
+	if !strings.Contains(err.Error(), "shrink requires empty trailing blocks") {
+		t.Errorf("err = %v, want the resize error preserved (not replaced by a cleanup error)", err)
+	}
+
+	var sawRemove bool
+	for _, call := range fr.Calls() {
+		if strings.Contains(call.Script, "function Remove-HypervVHD") {
+			sawRemove = true
+		}
+	}
+	if !sawRemove {
+		t.Error("no remove.ps1 call; the orphaned copy is left on the host after a failed resize")
+	}
+}
+
+// A cleanup that itself fails must not displace the resize error -- that
+// is the one the operator needs in order to understand what went wrong.
+func TestCopyAndResize_CleanupFailureDoesNotMaskResizeError(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0).
+		On("function Set-HypervVHD").Return("", `{"category":"InvalidArgument","message":"resize boom","cmdlet":"Resize-VHD"}`, 1).
+		On("function Remove-HypervVHD").Return("", `{"category":"PermissionDenied","message":"cleanup boom","cmdlet":"Remove-Item"}`, 1)
+
+	r := &Resource{client: hyperv.NewClient(fr)}
+
+	_, _, err := r.copyAndResize(t.Context(), Model{
+		Path:         pathtype.NewPathValue("C:/vms/cp1/boot.vhdx"),
+		SourcePath:   pathtype.NewPathValue("D:/images/fcos.vhdx"),
+		SourceSha256: types.StringValue("abc123"),
+		SizeBytes:    types.Int64Value(1024),
+	})
+	if err == nil {
+		t.Fatal("copyAndResize returned nil error")
+	}
+	if strings.Contains(err.Error(), "cleanup boom") {
+		t.Errorf("err = %v, want the resize error; the cleanup failure must only be logged", err)
+	}
+	if !strings.Contains(err.Error(), "resize boom") {
+		t.Errorf("err = %v, want the resize error preserved", err)
+	}
+}
+
+// Without size_bytes there is no resize step, so a successful copy must
+// not trigger the failure-path cleanup that would delete the disk it just
+// made.
+func TestCopyAndResize_NoResizeWhenSizeUnset(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0).
+		On("function Get-HypervVHD").Return(`{"Path":"C:\\vms\\cp1\\boot.vhdx","VhdType":"Dynamic","SizeBytes":1024,"FileSizeBytes":512,"BlockSizeBytes":2097152,"ParentPath":"","Format":"VHDX","Attached":false}`, "", 0)
+
+	r := &Resource{client: hyperv.NewClient(fr)}
+
+	_, sourceSha, err := r.copyAndResize(t.Context(), Model{
+		Path:         pathtype.NewPathValue("C:/vms/cp1/boot.vhdx"),
+		SourcePath:   pathtype.NewPathValue("D:/images/fcos.vhdx"),
+		SourceSha256: types.StringValue("abc123"),
+		SizeBytes:    types.Int64Null(),
+	})
+	if err != nil {
+		t.Fatalf("copyAndResize: %v", err)
+	}
+	if sourceSha == "" {
+		t.Error("sourceSha is empty; the copy's hash is what source_sha256 records")
+	}
+	for _, call := range fr.Calls() {
+		if strings.Contains(call.Script, "function Set-HypervVHD") {
+			t.Error("resize ran without size_bytes set")
+		}
+		if strings.Contains(call.Script, "function Remove-HypervVHD") {
+			t.Error("cleanup ran on the success path; the copy would be deleted")
+		}
 	}
 }

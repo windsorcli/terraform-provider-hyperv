@@ -642,6 +642,21 @@ func (r *Resource) copyAndResize(ctx context.Context, plan Model) (*hyperv.VHD, 
 		})
 		v, resizeErr := r.client.ResizeVHD(ctx, plan.Path.ValueString(), plan.SizeBytes.ValueInt64())
 		if resizeErr != nil {
+			// The copy already landed at path, but returning an error means no
+			// state is written -- the disk would sit on the host untracked, at
+			// the source's size rather than the planned one. Remove it so a
+			// failed apply leaves nothing behind, the same contract new.ps1's
+			// finally blocks give the staging file.
+			//
+			// Best-effort: a removal failure is logged, never returned. It must
+			// not displace the resize error, which is what the operator needs
+			// to read.
+			if rmErr := r.client.RemoveVHD(ctx, plan.Path.ValueString()); rmErr != nil && !errors.Is(rmErr, hyperv.ErrNotFound) {
+				tflog.Warn(ctx, "resize failed; copied disk left on host", map[string]any{
+					"path":  plan.Path.ValueString(),
+					"error": rmErr.Error(),
+				})
+			}
 			return nil, "", resizeErr
 		}
 		return v, copied.Sha256, nil
