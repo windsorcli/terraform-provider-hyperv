@@ -1002,6 +1002,59 @@ Describe 'New-HypervImageFileFromSourcePath' {
             $parsed.SizeBytes | Should -Be 5368709120
             $parsed.Sha256    | Should -Be 'expected'
         }
+
+        It 'hashes the source itself when no expectation is supplied' {
+            # The Go side leaves expected_sha256 empty when the source did not
+            # exist at plan time because the same apply creates it. A Mandatory
+            # parameter would reject the empty string outright, so the copy has
+            # to derive its own expectation rather than skip verification.
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'DERIVED' }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+
+            { New-HypervImageFileFromSourcePath `
+                -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                -SourcePath      'D:\images\fcos.vhdx' `
+                -ExpectedSha256  '' } | Should -Not -Throw
+
+            # Once for the self-derived expectation, once for the staged copy.
+            Should -Invoke Get-FileHash -ParameterFilter {
+                $LiteralPath -eq 'D:\images\fcos.vhdx' -and $Algorithm -eq 'SHA256'
+            }
+            Should -Invoke Move-Item -Times 1 -Exactly
+        }
+
+        It 'still verifies the copy when the expectation is derived (mismatch throws)' {
+            # A derived expectation must not degrade into "trust the copy":
+            # the source hash and the staged-copy hash are read separately, so
+            # a corrupt copy still fails.
+            Mock Test-Path { $true }
+            Mock Copy-Item { }
+            Mock Move-Item { }
+            Mock Remove-Item { }
+            Mock Get-Item { New-HypervImageFileSample }
+            $script:hashCall = 0
+            Mock Get-FileHash {
+                $script:hashCall++
+                if ($script:hashCall -eq 1) { New-HypervImageFileHashSample -Hash 'SOURCEHASH' }
+                else { New-HypervImageFileHashSample -Hash 'CORRUPTCOPY' }
+            }
+
+            $captured = $null
+            try {
+                New-HypervImageFileFromSourcePath `
+                    -DestinationPath 'C:\vms\cp1\boot.vhdx' `
+                    -SourcePath      'D:\images\fcos.vhdx' `
+                    -ExpectedSha256  ''
+            } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileChecksumMismatch'
+            Should -Invoke Move-Item -Times 0 -Exactly
+        }
     }
 
     Context 'error propagation (source_path mode)' {

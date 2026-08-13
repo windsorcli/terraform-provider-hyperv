@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -21,7 +22,13 @@ var (
 	_ resource.ResourceWithConfigure        = (*Resource)(nil)
 	_ resource.ResourceWithConfigValidators = (*Resource)(nil)
 	_ resource.ResourceWithImportState      = (*Resource)(nil)
+	_ resource.ResourceWithModifyPlan       = (*Resource)(nil)
 )
+
+// sourceHashTimeout bounds the plan-time Get-FileHash of a source_path.
+// A wedged-host backstop, not a performance budget: hashing 30+ GiB off
+// spinning disk legitimately runs into the minutes.
+const sourceHashTimeout = 30 * time.Minute
 
 // Resource implements hyperv_vhd.
 type Resource struct {
@@ -51,7 +58,101 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 		parentPathRequiresDifferencingValidator{},
 		sizeBytesRequiresFixedOrDynamicValidator{},
 		blockSizeBytesRejectedForDifferencingValidator{},
+		sourcePathModeValidator{},
 	}
+}
+
+// sourcePathModeValidator owns every rule that involves `source_path`.
+// The mode copies an existing disk rather than creating one, so the
+// layout attributes are inherited from the source and supplying them is
+// an error; conversely `vhd_type` is only optional because this mode
+// exists, so its absence has to be rejected everywhere else.
+type sourcePathModeValidator struct{}
+
+// Description is the one-line summary surfaced by `terraform validate -json`
+// and schema-introspection paths.
+func (v sourcePathModeValidator) Description(_ context.Context) string {
+	return "source_path inherits vhd_type, parent_path, and block_size_bytes from the source; vhd_type is required without it"
+}
+
+// MarkdownDescription mirrors Description -- no markdown-only formatting.
+func (v sourcePathModeValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateResource pulls the typed Model from the Config and dispatches to
+// validate, which holds the actual rule logic. Split for direct unit
+// testing without tfsdk.Config plumbing.
+func (v sourcePathModeValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data Model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(v.validate(ctx, data)...)
+}
+
+// validate is the pure-Go core. Takes ctx because the source-equals-path
+// check needs pathtype's semantic comparison.
+func (v sourcePathModeValidator) validate(ctx context.Context, data Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.SourcePath.IsUnknown() || data.VhdType.IsUnknown() {
+		return diags
+	}
+
+	if data.SourcePath.IsNull() {
+		// vhd_type is Optional only so source_path-mode can omit it. Without
+		// source_path there is no source to inherit a layout from, so the
+		// framework's own Required check has to be reproduced here.
+		if data.VhdType.IsNull() {
+			diags.AddAttributeError(
+				path.Root("vhd_type"),
+				"vhd_type is required",
+				"Set vhd_type to fixed, dynamic, or differencing. It may be omitted only in "+
+					"source_path-mode, where the layout is inherited from the disk being copied.",
+			)
+		}
+		return diags
+	}
+
+	for _, inherited := range []struct {
+		name string
+		set  bool
+	}{
+		{"vhd_type", !data.VhdType.IsNull()},
+		{"parent_path", !data.ParentPath.IsNull() && !data.ParentPath.IsUnknown()},
+		{"block_size_bytes", !data.BlockSizeBytes.IsNull() && !data.BlockSizeBytes.IsUnknown()},
+	} {
+		if !inherited.set {
+			continue
+		}
+		diags.AddAttributeError(
+			path.Root(inherited.name),
+			inherited.name+" is not valid with source_path",
+			"source_path-mode copies an existing disk, so its layout comes from the source rather "+
+				"than from configuration. Remove "+inherited.name+", or remove source_path and let "+
+				"the resource create a new disk instead.\n\n"+
+				"`size_bytes` is the exception: setting it grows the copy after it lands.",
+		)
+	}
+
+	if data.Path.IsNull() || data.Path.IsUnknown() {
+		return diags
+	}
+	// StringSemanticEquals, not Equal: `C:/vhds/x.vhdx` and `C:\VHDs\X.vhdx`
+	// are one file to Windows.
+	same, semanticDiags := data.SourcePath.StringSemanticEquals(ctx, data.Path)
+	diags.Append(semanticDiags...)
+	if same {
+		diags.AddAttributeError(
+			path.Root("source_path"),
+			"source_path and path must differ",
+			"source_path-mode copies the disk at source_path to path. Pointing both at the same "+
+				"file would rewrite the source through a staging copy, which is a no-op at best and "+
+				"loses the disk if the copy fails partway.",
+		)
+	}
+	return diags
 }
 
 // parentPathRequiresDifferencingValidator enforces parent_path IFF
@@ -90,6 +191,12 @@ func (v parentPathRequiresDifferencingValidator) ValidateResource(ctx context.Co
 func (v parentPathRequiresDifferencingValidator) validate(data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if data.VhdType.IsUnknown() || data.ParentPath.IsUnknown() {
+		return diags
+	}
+	// source_path-mode has no vhd_type to reason about; sourcePathModeValidator
+	// owns the parent_path pairing there. Unknown counts as set: validators see
+	// Config, where `source_path = other.path` has not resolved yet.
+	if !data.SourcePath.IsNull() {
 		return diags
 	}
 	isDifferencing := data.VhdType.ValueString() == "differencing"
@@ -152,6 +259,13 @@ func (v sizeBytesRequiresFixedOrDynamicValidator) ValidateResource(ctx context.C
 func (v sizeBytesRequiresFixedOrDynamicValidator) validate(data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if data.VhdType.IsUnknown() || data.SizeBytes.IsUnknown() {
+		return diags
+	}
+	// size_bytes is optional in source_path-mode: omitted keeps the source's
+	// size, set grows the copy. Neither branch below applies. Unknown counts as
+	// set: validators see Config, where `source_path = other.path` has not
+	// resolved yet.
+	if !data.SourcePath.IsNull() {
 		return diags
 	}
 	isDifferencing := data.VhdType.ValueString() == "differencing"
@@ -254,6 +368,70 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 	r.client = client
 }
 
+// ModifyPlan hashes the host-side `source_path` at plan time and writes it
+// into the planned `source_sha256`. That is what makes an upstream image
+// replaced in place under a fixed name surface as a diff and re-copy.
+//
+// Nothing to do outside source_path-mode, during destroy (no plan), when
+// the source is unknown (driven from a not-yet-applied dependency), or
+// during validate (Configure hasn't run, so there is no client).
+func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.SourcePath.IsNull() || plan.SourcePath.IsUnknown() || r.client == nil {
+		return
+	}
+	sourcePath := plan.SourcePath.ValueString()
+
+	// StatImageFile, not GetImageFile: hashing a multi-GiB disk routinely
+	// outruns the latter's 60s cap.
+	ctx, cancel := context.WithTimeout(ctx, sourceHashTimeout)
+	defer cancel()
+
+	src, err := r.client.StatImageFile(ctx, sourcePath)
+	if err != nil {
+		if errors.Is(err, hyperv.ErrNotFound) {
+			// On a create the source may be produced by this same apply (a
+			// hyperv_image_file landing the upstream image). Defer to apply
+			// rather than failing the plan; a source still missing then
+			// fails Create.
+			if req.State.Raw.IsNull() {
+				tflog.Debug(ctx, "source_path absent at plan time; deferring hash to apply", map[string]any{
+					"source_path": sourcePath,
+				})
+				return
+			}
+			resp.Diagnostics.AddAttributeError(
+				path.Root("source_path"),
+				"Source disk not found on host",
+				fmt.Sprintf("No file exists at %s on the Hyper-V host, though this disk was copied "+
+					"from it.\n\nsource_path names a path on the *host*, not on the Terraform runner. "+
+					"Something removed or renamed the source since the last apply.", sourcePath),
+			)
+			return
+		}
+		resp.Diagnostics.AddAttributeError(
+			path.Root("source_path"),
+			"Cannot hash source disk at plan time",
+			fmt.Sprintf("Reading %s on the Hyper-V host failed: %v", sourcePath, err),
+		)
+		return
+	}
+
+	// Only source_sha256 is planned from the source. size_bytes is the
+	// user's declared target when set, and the post-resize value otherwise
+	// -- deriving it from the source here would fight the resize.
+	plan.SourceSha256 = types.StringValue(src.Sha256)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
 // Create dispatches on vhd_type to the appropriate client method and
 // writes the post-create read shape back to state.
 func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -266,6 +444,18 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	var plan Model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.SourcePath.IsNull() && !plan.SourcePath.IsUnknown() {
+		v, sourceSha, err := r.copyAndResize(ctx, plan)
+		if err != nil {
+			resp.Diagnostics.Append(sourcePathDiagnostics(err, plan.SourcePath.ValueString(), "Create")...)
+			return
+		}
+		plan.SourceSha256 = types.StringValue(sourceSha)
+		state := modelFromVHD(v, plan)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		return
 	}
 
@@ -319,7 +509,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	state := modelFromVHD(v)
+	state := modelFromVHD(v, plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -354,16 +544,20 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	newState := modelFromVHD(v)
+	newState := modelFromVHD(v, state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Update handles the only in-place mutation: size_bytes change. Every
-// other attribute is RequiresReplace at the schema layer and triggers
-// destroy+recreate before reaching here.
+// Update handles the two in-place mutations: a size_bytes change, and in
+// source_path-mode a source whose contents changed since the last copy.
+// Every other attribute is RequiresReplace at the schema layer and
+// triggers destroy+recreate before reaching here.
 //
-// When size_bytes hasn't changed (e.g., framework re-runs Update due to
-// a Computed-attribute diff after refresh), pass plan straight to state
+// A changed source wins over a plain resize: the re-copy replaces the disk
+// wholesale, and copyAndResize grows the fresh copy in the same pass.
+//
+// When neither has changed (e.g., the framework re-runs Update due to a
+// Computed-attribute diff after refresh), pass plan straight to state
 // without a host call.
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
@@ -376,6 +570,24 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	sourceChanged := !plan.SourcePath.IsNull() && !plan.SourcePath.IsUnknown() &&
+		!plan.SourceSha256.IsUnknown() && !plan.SourceSha256.Equal(state.SourceSha256)
+	if sourceChanged {
+		tflog.Debug(ctx, "re-copying hyperv_vhd (source changed)", map[string]any{
+			"path":        plan.Path.ValueString(),
+			"source_path": plan.SourcePath.ValueString(),
+		})
+		v, sourceSha, err := r.copyAndResize(ctx, plan)
+		if err != nil {
+			resp.Diagnostics.Append(sourcePathDiagnostics(err, plan.SourcePath.ValueString(), "Update")...)
+			return
+		}
+		plan.SourceSha256 = types.StringValue(sourceSha)
+		newState := modelFromVHD(v, plan)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
 
@@ -395,8 +607,94 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	newState := modelFromVHD(v)
+	newState := modelFromVHD(v, plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+}
+
+// copyAndResize is the source_path-mode write path, shared by Create and
+// the re-copy branch of Update. Copies the source over path, grows the
+// result when size_bytes is set, and returns the refreshed disk plus the
+// source's SHA-256.
+//
+// The copy's own hash is the source's hash -- the bytes are identical
+// until the resize runs -- so the return value is read off the copy
+// rather than costing a second Get-FileHash of the source.
+//
+// A planned size smaller than what landed is passed to Resize-VHD anyway
+// rather than pre-rejected: the cmdlet's shrink diagnostic (trailing
+// blocks must be empty) is clearer than anything invented here.
+func (r *Resource) copyAndResize(ctx context.Context, plan Model) (*hyperv.VHD, string, error) {
+	copied, err := r.client.CopyHostFile(ctx, hyperv.CopyHostFileInput{
+		DestinationPath: plan.Path.ValueString(),
+		SourcePath:      plan.SourcePath.ValueString(),
+		// Empty when the source did not exist at plan time; the host script
+		// derives its own expectation in that case.
+		ExpectedSha256: plan.SourceSha256.ValueString(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	if !plan.SizeBytes.IsNull() && !plan.SizeBytes.IsUnknown() {
+		tflog.Debug(ctx, "growing copied hyperv_vhd", map[string]any{
+			"path":       plan.Path.ValueString(),
+			"size_bytes": plan.SizeBytes.ValueInt64(),
+		})
+		v, resizeErr := r.client.ResizeVHD(ctx, plan.Path.ValueString(), plan.SizeBytes.ValueInt64())
+		if resizeErr != nil {
+			// The copy already landed at path, but returning an error means no
+			// state is written -- the disk would sit on the host untracked, at
+			// the source's size rather than the planned one. Remove it so a
+			// failed apply leaves nothing behind, the same contract new.ps1's
+			// finally blocks give the staging file.
+			//
+			// Best-effort: a removal failure is logged, never returned. It must
+			// not displace the resize error, which is what the operator needs
+			// to read.
+			if rmErr := r.client.RemoveVHD(ctx, plan.Path.ValueString()); rmErr != nil && !errors.Is(rmErr, hyperv.ErrNotFound) {
+				tflog.Warn(ctx, "resize failed; copied disk left on host", map[string]any{
+					"path":  plan.Path.ValueString(),
+					"error": rmErr.Error(),
+				})
+			}
+			return nil, "", resizeErr
+		}
+		return v, copied.Sha256, nil
+	}
+
+	v, err := r.client.GetVHD(ctx, plan.Path.ValueString())
+	if err != nil {
+		return nil, "", err
+	}
+	return v, copied.Sha256, nil
+}
+
+// sourcePathDiagnostics maps a source_path-mode write failure to
+// diagnostics anchored on `source_path`. Shared by Create and Update --
+// both fail the same two ways: the source vanished, or it changed
+// between plan and apply.
+func sourcePathDiagnostics(err error, sourcePath, op string) diag.Diagnostics {
+	var diags diag.Diagnostics
+	switch {
+	case errors.Is(err, hyperv.ErrChecksumMismatch):
+		diags.AddAttributeError(
+			path.Root("source_path"),
+			"Source disk changed during apply",
+			fmt.Sprintf("The copy of %s doesn't hash to the value the provider read from it "+
+				"during plan.\n\nThe usual cause is the source being replaced between plan and "+
+				"apply. Re-run `terraform apply` to plan against the new bytes.\n\n", sourcePath)+
+				err.Error(),
+		)
+	case errors.Is(err, hyperv.ErrNotFound):
+		diags.AddAttributeError(
+			path.Root("source_path"),
+			"Source disk not found on host",
+			fmt.Sprintf("No file exists at %s on the Hyper-V host.", sourcePath),
+		)
+	default:
+		diags.AddError(op+" hyperv_vhd failed (source_path mode)", err.Error())
+	}
+	return diags
 }
 
 // Delete runs remove.ps1. ErrNotFound is treated as success (the file is
@@ -437,19 +735,38 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // lowercase). Empty parent_path collapses to null so non-differencing
 // disks don't carry a phantom empty string.
 //
+// source_path and source_sha256 come from intent (the plan during
+// Create/Update, prior state during Read) rather than from the DTO:
+// Get-VHD has no idea the disk was copied, so nothing on the host
+// reconstructs them.
+//
 // Path-typed attributes (id, path, parent_path) wrap the cmdlet's
 // canonical-form return value verbatim. Slash-style and case
 // differences between user input and the cmdlet's return are reconciled
 // by pathtype.Path's StringSemanticEquals, so the historical
 // preserveCaseOrNullify shim is gone -- the framework now handles what
 // that helper was inventing by hand.
-func modelFromVHD(v *hyperv.VHD) Model {
+func modelFromVHD(v *hyperv.VHD, intent Model) Model {
+	// source_sha256 is Computed, so it arrives unknown on every create --
+	// including the three create modes, which have no source to hash. The
+	// framework rejects an unknown left over after apply, so collapse it to
+	// null wherever there is no source to describe.
+	sourceSha := intent.SourceSha256
+	if intent.SourcePath.IsNull() || intent.SourcePath.IsUnknown() || sourceSha.IsUnknown() {
+		sourceSha = types.StringNull()
+	}
+	sourcePath := intent.SourcePath
+	if sourcePath.IsUnknown() {
+		sourcePath = pathtype.NewPathNull()
+	}
 	return Model{
 		ID:             pathtype.NewPathValue(v.Path),
 		Path:           pathtype.NewPathValue(v.Path),
 		VhdType:        types.StringValue(strings.ToLower(v.VhdType)),
 		SizeBytes:      types.Int64Value(v.SizeBytes),
 		ParentPath:     parentPathOrNull(v.ParentPath),
+		SourcePath:     sourcePath,
+		SourceSha256:   sourceSha,
 		BlockSizeBytes: types.Int64Value(v.BlockSizeBytes),
 		FileSizeBytes:  types.Int64Value(v.FileSizeBytes),
 		Format:         types.StringValue(v.Format),
