@@ -12,7 +12,7 @@ packages:
   - name: go-task/task@v3.53.1
   - name: golang/go@go1.27.0
   - name: golangci/golangci-lint@v2.13.1
-  - name: goreleaser/goreleaser@v2.17.1
+  - name: goreleaser/goreleaser@v2.18.0
   - name: securego/gosec@v2.28.0
   - name: hashicorp/terraform@v1.15.9
   - name: mikefarah/yq@v4.53.6
