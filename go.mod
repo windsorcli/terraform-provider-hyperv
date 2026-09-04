@@ -1,6 +1,6 @@
 module github.com/windsorcli/terraform-provider-hyperv
 
-go 1.25.8
+go 1.26.0
 
 toolchain go1.27.1
 
@@ -16,7 +16,7 @@ require (
 	github.com/klauspost/compress v1.19.2
 	github.com/masterzen/winrm v0.0.0-20260407182533-5570be7f80cf
 	github.com/ulikunitz/xz v0.5.16
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
