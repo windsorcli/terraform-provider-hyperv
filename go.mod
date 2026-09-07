@@ -5,6 +5,7 @@ go 1.25.8
 toolchain go1.27.1
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/bodgit/ntlmssp v0.0.0-20240506230425-31973bb52d9b
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
