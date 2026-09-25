@@ -139,7 +139,7 @@ function New-HypervNatStaticMapping {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         $fw = $params.firewall
         New-HypervNatStaticMapping `
             -NatName $params.nat_name `

@@ -127,7 +127,7 @@ function Set-HypervVMBootOrder {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Set-HypervVMBootOrder -Name $params.name -BootOrder $params.boot_order
     }
     catch {

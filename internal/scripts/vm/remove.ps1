@@ -62,7 +62,7 @@ function Remove-HypervVM {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Remove-HypervVM -Name $params.name
     }
     catch {
