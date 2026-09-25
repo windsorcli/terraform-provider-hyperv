@@ -402,6 +402,22 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
+	// Decode the plan's typed list-shaped attributes before creating
+	// anything on the host. A decode failure here is a schema
+	// programming error, not a user action, but failing before NewVM
+	// keeps it from orphaning a VM Terraform never records in state.
+	planHdds, hddDiags := plan.HardDiskDriveModels(ctx)
+	resp.Diagnostics.Append(hddDiags...)
+	planNics, nicDiags := plan.NetworkAdapterModels(ctx)
+	resp.Diagnostics.Append(nicDiags...)
+	planDvds, dvdDiags := plan.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdDiags...)
+	planBoot, bootDiags := plan.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	in := buildNewInput(plan)
 	tflog.Debug(ctx, "creating hyperv_vm", map[string]any{
 		"name":       in.Name,
@@ -412,21 +428,6 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	// regardless -- so the discarded return here costs nothing.
 	if _, err := r.client.NewVM(ctx, in); err != nil {
 		resp.Diagnostics.AddError("Create hyperv_vm failed", err.Error())
-		return
-	}
-
-	// Decode the plan's typed list-shaped attributes once at this
-	// boundary so the attachment/order loops below stay slice-shaped
-	// and don't repeat the ElementsAs ceremony.
-	planHdds, hddDiags := plan.HardDiskDriveModels(ctx)
-	resp.Diagnostics.Append(hddDiags...)
-	planNics, nicDiags := plan.NetworkAdapterModels(ctx)
-	resp.Diagnostics.Append(nicDiags...)
-	planDvds, dvdDiags := plan.DvdDriveModels(ctx)
-	resp.Diagnostics.Append(dvdDiags...)
-	planBoot, bootDiags := plan.BootOrderEntries(ctx)
-	resp.Diagnostics.Append(bootDiags...)
-	if resp.Diagnostics.HasError() {
 		return
 	}
 
