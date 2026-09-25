@@ -281,7 +281,7 @@ func (v networkAdapterUniqueNamesValidator) ValidateResource(ctx context.Context
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(v.validate(data)...)
+	resp.Diagnostics.Append(v.validate(ctx, data)...)
 }
 
 // validate scans for duplicates by name. Skips Unknown entries (a NIC
@@ -289,10 +289,13 @@ func (v networkAdapterUniqueNamesValidator) ValidateResource(ctx context.Context
 // known yet). The first duplicate found gets the diagnostic;
 // surfacing all of them at once would require a more elaborate
 // "report all" pattern that isn't worth the complexity here.
-func (v networkAdapterUniqueNamesValidator) validate(data Model) diag.Diagnostics {
-	var diags diag.Diagnostics
-	seen := make(map[string]int, len(data.NetworkAdapters))
-	for i, n := range data.NetworkAdapters {
+func (v networkAdapterUniqueNamesValidator) validate(ctx context.Context, data Model) diag.Diagnostics {
+	nics, diags := data.NetworkAdapterModels(ctx)
+	if diags.HasError() {
+		return diags
+	}
+	seen := make(map[string]int, len(nics))
+	for i, n := range nics {
 		if n.Name.IsNull() || n.Name.IsUnknown() {
 			continue
 		}
@@ -412,6 +415,21 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
+	// Decode the plan's typed list-shaped attributes once at this
+	// boundary so the attachment/order loops below stay slice-shaped
+	// and don't repeat the ElementsAs ceremony.
+	planHdds, hddDiags := plan.HardDiskDriveModels(ctx)
+	resp.Diagnostics.Append(hddDiags...)
+	planNics, nicDiags := plan.NetworkAdapterModels(ctx)
+	resp.Diagnostics.Append(nicDiags...)
+	planDvds, dvdDiags := plan.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdDiags...)
+	planBoot, bootDiags := plan.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Attach hard disks after the VM exists. Each attachment is a
 	// separate cmdlet on the host (Add-VMHardDiskDrive); errors here
 	// leave the VM created but partially-configured -- next plan will
@@ -419,7 +437,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	// attach failure because the user's intent is "have this VM" and
 	// the half-configured state is recoverable; tearing it down would
 	// take us further from desired.
-	for _, h := range plan.HardDiskDrives {
+	for _, h := range planHdds {
 		if err := r.client.AttachHardDisk(ctx, attachInputFor(plan.Name.ValueString(), h)); err != nil {
 			resp.Diagnostics.AddError("Attach hard disk failed", fmt.Sprintf(
 				"VM %s, slot %s/%d/%d, path %s: %s",
@@ -436,7 +454,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	// Attach NICs after the VM exists. Same partial-failure semantics
 	// as HDD attachment -- if attach fails partway through, the next
 	// plan reconciles. We don't tear down the VM on attach failure.
-	for _, n := range plan.NetworkAdapters {
+	for _, n := range planNics {
 		if err := r.client.AttachNetworkAdapter(ctx, attachNICInputFor(plan.Name.ValueString(), n)); err != nil {
 			resp.Diagnostics.AddError("Attach network adapter failed", fmt.Sprintf(
 				"VM %s, NIC %s, switch %s: %s",
@@ -446,17 +464,6 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 				err))
 			return
 		}
-	}
-
-	// Decode the plan's typed list-shaped attributes once at this
-	// boundary so the attachment/order loops below stay slice-shaped
-	// and don't repeat the ElementsAs ceremony.
-	planDvds, dvdDiags := plan.DvdDriveModels(ctx)
-	resp.Diagnostics.Append(dvdDiags...)
-	planBoot, bootDiags := plan.BootOrderEntries(ctx)
-	resp.Diagnostics.Append(bootDiags...)
-	if resp.Diagnostics.HasError() {
-		return
 	}
 
 	// Attach DVDs. Order rationale (NICs first, DVDs after): pure
@@ -585,13 +592,36 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
+	// Decode plan and state list-shaped attributes once at this
+	// boundary so every reconciliation block below stays slice-shaped
+	// and doesn't repeat the ElementsAs ceremony.
+	planHdds, hddPlanDiags := plan.HardDiskDriveModels(ctx)
+	resp.Diagnostics.Append(hddPlanDiags...)
+	stateHdds, hddStateDiags := state.HardDiskDriveModels(ctx)
+	resp.Diagnostics.Append(hddStateDiags...)
+	planNics, nicPlanDiags := plan.NetworkAdapterModels(ctx)
+	resp.Diagnostics.Append(nicPlanDiags...)
+	stateNics, nicStateDiags := state.NetworkAdapterModels(ctx)
+	resp.Diagnostics.Append(nicStateDiags...)
+	planDvds, dvdPlanDiags := plan.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdPlanDiags...)
+	stateDvds, dvdStateDiags := state.DvdDriveModels(ctx)
+	resp.Diagnostics.Append(dvdStateDiags...)
+	planBoot, bootPlanDiags := plan.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootPlanDiags...)
+	stateBoot, bootStateDiags := state.BootOrderEntries(ctx)
+	resp.Diagnostics.Append(bootStateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Reconcile hard-disk attachments first. Order rationale: most
 	// attachment changes are SCSI hot-plug (gen 2) which doesn't
 	// require power-off, while scalar mutations (vcpu, memory_bytes,
 	// secure_boot) generally do. Doing attachments first keeps the
 	// "VM must be off for scalar updates" error path from blocking
 	// attachment changes the user could do online.
-	hddAttach, hddDetach := diffHardDiskDrives(plan.HardDiskDrives, state.HardDiskDrives)
+	hddAttach, hddDetach := diffHardDiskDrives(planHdds, stateHdds)
 	for _, h := range hddDetach {
 		if err := r.client.DetachHardDisk(ctx, detachInputFor(plan.Name.ValueString(), h)); err != nil {
 			// "Slot already empty" is ErrNotFound; treat as no-op
@@ -626,7 +656,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	// NIC reconciliation: same shape as HDD, keyed on Name. Detach
 	// first (frees the name) then attach so a switch swap at the
 	// same name resolves cleanly.
-	nicAttach, nicDetach := diffNetworkAdapters(plan.NetworkAdapters, state.NetworkAdapters)
+	nicAttach, nicDetach := diffNetworkAdapters(planNics, stateNics)
 	for _, n := range nicDetach {
 		if err := r.client.DetachNetworkAdapter(ctx, detachNICInputFor(plan.Name.ValueString(), n)); err != nil {
 			if errors.Is(err, hyperv.ErrNotFound) {
@@ -645,21 +675,6 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 				plan.Name.ValueString(), n.Name.ValueString(), n.SwitchName.ValueString(), err))
 			return
 		}
-	}
-
-	// Decode plan and state list-shaped attributes once. Same shape
-	// as Create's decode-at-the-boundary pattern; the Update body
-	// references both plan and state slices in several places.
-	planDvds, dvdPlanDiags := plan.DvdDriveModels(ctx)
-	resp.Diagnostics.Append(dvdPlanDiags...)
-	stateDvds, dvdStateDiags := state.DvdDriveModels(ctx)
-	resp.Diagnostics.Append(dvdStateDiags...)
-	planBoot, bootPlanDiags := plan.BootOrderEntries(ctx)
-	resp.Diagnostics.Append(bootPlanDiags...)
-	stateBoot, bootStateDiags := state.BootOrderEntries(ctx)
-	resp.Diagnostics.Append(bootStateDiags...)
-	if resp.Diagnostics.HasError() {
-		return
 	}
 
 	// DVD reconciliation: same slot-tuple shape as HDD. ISO swap at
@@ -1133,6 +1148,14 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 	// type mismatch (a programming error, not a runtime fault); panic
 	// rather than threading diags through the modelFromVM signature
 	// since callers can't recover from a static-type bug at runtime.
+	hddList, hddDiags := HardDiskDriveListFromSlice(ctx, hdds)
+	if hddDiags.HasError() {
+		panic(fmt.Sprintf("HardDiskDriveListFromSlice: %v", hddDiags))
+	}
+	nicList, nicDiags := NetworkAdapterListFromSlice(ctx, nics)
+	if nicDiags.HasError() {
+		panic(fmt.Sprintf("NetworkAdapterListFromSlice: %v", nicDiags))
+	}
 	dvdList, dvdDiags := DvdDriveListFromSlice(ctx, dvds)
 	if dvdDiags.HasError() {
 		panic(fmt.Sprintf("DvdDriveListFromSlice: %v", dvdDiags))
@@ -1148,8 +1171,8 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		Generation:         types.Int64Value(int64(v.Generation)),
 		CPU:                &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},
 		Memory:             memoryModelFromVM(v),
-		HardDiskDrives:     hdds,
-		NetworkAdapters:    nics,
+		HardDiskDrives:     hddList,
+		NetworkAdapters:    nicList,
 		DvdDrives:          dvdList,
 		BootOrder:          bootList,
 		SecureBoot:         secureBoot,
