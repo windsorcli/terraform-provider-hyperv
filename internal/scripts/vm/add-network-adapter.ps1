@@ -63,7 +63,7 @@ function Add-HypervVMNetworkAdapter {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         $invokeArgs = @{
             Name       = $params.name
             VMName     = $params.vm_name

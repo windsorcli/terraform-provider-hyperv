@@ -105,7 +105,7 @@ function Get-HypervVM {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Get-HypervVM -Name $params.name
     }
     catch {

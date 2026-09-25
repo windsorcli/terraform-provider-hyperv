@@ -57,7 +57,7 @@ function Save-HypervHttpFile {
         [Parameter(Mandatory)] [string] $Url,
         [Parameter(Mandatory)] [string] $OutFile
     )
-    # Explicitly pin TLS 1.2 via ServicePointManager — WS2019 defaults can
+    # Explicitly pin TLS 1.2 via ServicePointManager - WS2019 defaults can
     # include TLS 1.0/1.1 which modern servers reject.
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
     $request = [System.Net.HttpWebRequest]::Create($Url)
@@ -431,7 +431,7 @@ function New-HypervImageFileFromHostPath {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
 
         switch ($params.source_mode) {
             'url' {
