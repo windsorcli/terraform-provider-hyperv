@@ -37,7 +37,7 @@ function Resolve-HypervCheckpointBasePath {
         }
         $current = $parent
     }
-    return $current
+    throw "Resolve-HypervCheckpointBasePath: '$Path' did not resolve to a base disk within 32 hops -- likely a cyclic or corrupt checkpoint chain."
 }
 
 # Read-HypervVMResult emits the canonical 14-field VM read shape consumed

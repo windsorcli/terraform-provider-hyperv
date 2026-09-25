@@ -463,5 +463,19 @@ Describe 'Get-HypervVM' {
             { Get-HypervVM -Name 'sample-vm' } |
                 Should -Throw -ExpectedMessage '*firmware read failure*'
         }
+
+        It 'throws when a checkpoint parent chain never resolves within the depth cap' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMHardDiskDrive {
+                @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\cyclic.avhdx')
+            }
+            Mock Get-VHD {
+                New-HypervVHDSample -Path 'C:\hyperv\vhds\cyclic.avhdx' `
+                    -VhdType 'Differencing' -ParentPath 'C:\hyperv\vhds\cyclic.avhdx'
+            }
+
+            { Get-HypervVM -Name 'sample-vm' } |
+                Should -Throw -ExpectedMessage '*did not resolve to a base disk*'
+        }
     }
 }
