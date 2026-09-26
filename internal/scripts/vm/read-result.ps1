@@ -121,13 +121,20 @@ function Read-HypervVMResult {
     # explicitly typed as an array (the @() prefix below). Without that
     # cast a single-HDD case round-trips as a scalar object, breaking the
     # Go-side decode into []HardDiskDrive.
+    #
+    # Built with a foreach loop rather than Select-Object calculated
+    # properties: Select-Object silently swallows an exception thrown
+    # inside an Expression scriptblock instead of propagating it, which
+    # would hide a Resolve-HypervCheckpointBasePath failure entirely.
     $hdds = @(
-        Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop |
-            Select-Object `
-                @{ N = 'Path';               E = { Resolve-HypervCheckpointBasePath -Path $_.Path } },
-                @{ N = 'ControllerType';     E = { $_.ControllerType.ToString() } },
-                @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
-                @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
+        foreach ($hdd in (Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop)) {
+            [pscustomobject]@{
+                Path               = Resolve-HypervCheckpointBasePath -Path $hdd.Path
+                ControllerType     = $hdd.ControllerType.ToString()
+                ControllerNumber   = [int] $hdd.ControllerNumber
+                ControllerLocation = [int] $hdd.ControllerLocation
+            }
+        }
     )
     # Network adapters: same @() wrapper rationale as HDDs -- empty
     # array on the wire becomes []NetworkAdapter on the Go side, not
