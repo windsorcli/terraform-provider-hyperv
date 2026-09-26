@@ -466,6 +466,7 @@ Describe 'Get-HypervVM' {
 
         It 'throws when a checkpoint parent chain never resolves within the depth cap' {
             Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
             Mock Get-VMHardDiskDrive {
                 @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\cyclic.avhdx')
             }
