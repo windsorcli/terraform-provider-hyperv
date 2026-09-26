@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
@@ -872,14 +873,18 @@ func TestModelFromVM_PopulatesHardDiskDrives(t *testing.T) {
 			{Path: "C:\\b.vhdx", ControllerType: "SCSI", ControllerNumber: 0, ControllerLocation: 1},
 		},
 	})
-	if len(got.HardDiskDrives) != 2 {
-		t.Fatalf("len(HardDiskDrives) = %d, want 2", len(got.HardDiskDrives))
+	hdds, diags := got.HardDiskDriveModels(t.Context())
+	if diags.HasError() {
+		t.Fatalf("HardDiskDriveModels: %v", diags)
 	}
-	if got.HardDiskDrives[0].Path.ValueString() != "C:\\a.vhdx" {
-		t.Errorf("first HDD path = %q, want C:\\a.vhdx", got.HardDiskDrives[0].Path.ValueString())
+	if len(hdds) != 2 {
+		t.Fatalf("len(HardDiskDrives) = %d, want 2", len(hdds))
 	}
-	if got.HardDiskDrives[1].ControllerLocation.ValueInt64() != 1 {
-		t.Errorf("second HDD location = %d, want 1", got.HardDiskDrives[1].ControllerLocation.ValueInt64())
+	if hdds[0].Path.ValueString() != "C:\\a.vhdx" {
+		t.Errorf("first HDD path = %q, want C:\\a.vhdx", hdds[0].Path.ValueString())
+	}
+	if hdds[1].ControllerLocation.ValueInt64() != 1 {
+		t.Errorf("second HDD location = %d, want 1", hdds[1].ControllerLocation.ValueInt64())
 	}
 }
 
@@ -896,11 +901,11 @@ func TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice(t *testing.T) {
 		Generation:     2,
 		HardDiskDrives: []hyperv.HardDiskDrive{},
 	})
-	if got.HardDiskDrives == nil {
-		t.Error("HardDiskDrives = nil, want empty []HardDiskDriveModel")
+	if got.HardDiskDrives.IsNull() || got.HardDiskDrives.IsUnknown() {
+		t.Errorf("HardDiskDrives = %v, want known empty list", got.HardDiskDrives)
 	}
-	if len(got.HardDiskDrives) != 0 {
-		t.Errorf("HardDiskDrives length = %d, want 0", len(got.HardDiskDrives))
+	if len(got.HardDiskDrives.Elements()) != 0 {
+		t.Errorf("HardDiskDrives length = %d, want 0", len(got.HardDiskDrives.Elements()))
 	}
 }
 
@@ -911,6 +916,16 @@ func TestModelFromVM_EmptyHardDiskDrivesIsEmptySlice(t *testing.T) {
 func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
 	t.Parallel()
 
+	nic := func(name types.String, sw string) NetworkAdapterModel {
+		return NetworkAdapterModel{
+			Name:        name,
+			SwitchName:  types.StringValue(sw),
+			IPAddresses: types.ListNull(types.StringType),
+			MacAddress:  mactype.NewMACNull(),
+			VlanID:      types.Int64Null(),
+		}
+	}
+
 	cases := []struct {
 		name      string
 		nics      []NetworkAdapterModel
@@ -919,22 +934,22 @@ func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
 		{
 			name: "two NICs with distinct names -> ok",
 			nics: []NetworkAdapterModel{
-				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
-				{Name: types.StringValue("secondary"), SwitchName: types.StringValue("b")},
+				nic(types.StringValue("primary"), "a"),
+				nic(types.StringValue("secondary"), "b"),
 			},
 		},
 		{
 			name: "two NICs sharing the same name -> fires",
 			nics: []NetworkAdapterModel{
-				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
-				{Name: types.StringValue("primary"), SwitchName: types.StringValue("b")},
+				nic(types.StringValue("primary"), "a"),
+				nic(types.StringValue("primary"), "b"),
 			},
 			wantError: true,
 		},
 		{
 			name: "single NIC -> ok (trivially unique)",
 			nics: []NetworkAdapterModel{
-				{Name: types.StringValue("only"), SwitchName: types.StringValue("a")},
+				nic(types.StringValue("only"), "a"),
 			},
 		},
 		{
@@ -944,8 +959,8 @@ func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
 		{
 			name: "unknown name in second slot -> skip (deferred dep)",
 			nics: []NetworkAdapterModel{
-				{Name: types.StringValue("primary"), SwitchName: types.StringValue("a")},
-				{Name: types.StringUnknown(), SwitchName: types.StringValue("b")},
+				nic(types.StringValue("primary"), "a"),
+				nic(types.StringUnknown(), "b"),
 			},
 		},
 	}
@@ -953,7 +968,11 @@ func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			diags := v.validate(Model{NetworkAdapters: tc.nics})
+			nicList, listDiags := NetworkAdapterListFromSlice(t.Context(), tc.nics)
+			if listDiags.HasError() {
+				t.Fatalf("NetworkAdapterListFromSlice: %v", listDiags)
+			}
+			diags := v.validate(t.Context(), Model{NetworkAdapters: nicList})
 			if got := diags.HasError(); got != tc.wantError {
 				t.Errorf("HasError = %v, want %v; diags: %v", got, tc.wantError, diags)
 			}
@@ -1028,15 +1047,19 @@ func TestModelFromVM_PopulatesNetworkAdapters(t *testing.T) {
 			{Name: "primary", SwitchName: "lab-internal"},
 		},
 	})
-	if len(got.NetworkAdapters) != 2 {
-		t.Fatalf("got %d NICs, want 2", len(got.NetworkAdapters))
+	nics, diags := got.NetworkAdapterModels(t.Context())
+	if diags.HasError() {
+		t.Fatalf("NetworkAdapterModels: %v", diags)
+	}
+	if len(nics) != 2 {
+		t.Fatalf("got %d NICs, want 2", len(nics))
 	}
 	// After sort, primary comes first.
-	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
-		t.Errorf("first NIC name = %q, want primary (sorted)", got.NetworkAdapters[0].Name.ValueString())
+	if nics[0].Name.ValueString() != "primary" {
+		t.Errorf("first NIC name = %q, want primary (sorted)", nics[0].Name.ValueString())
 	}
-	if got.NetworkAdapters[1].SwitchName.ValueString() != "lab-external" {
-		t.Errorf("second NIC switch = %q, want lab-external", got.NetworkAdapters[1].SwitchName.ValueString())
+	if nics[1].SwitchName.ValueString() != "lab-external" {
+		t.Errorf("second NIC switch = %q, want lab-external", nics[1].SwitchName.ValueString())
 	}
 }
 

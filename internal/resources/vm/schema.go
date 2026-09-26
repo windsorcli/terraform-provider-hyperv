@@ -45,59 +45,29 @@ var macAddressRegex = regexp.MustCompile(`(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$|^[0
 // and without the Default the framework's tftypes -> Go reflect path
 // errors at apply time with "Suggested Type: basetypes.ListValue".
 //
-// Keep these tags 1:1 with HardDiskDriveModel's tfsdk tags. A drift
-// silently produces "schema mismatch" diagnostics that take a long
-// time to track down.
+// Delegates to HardDiskDriveAttrTypes (model.go) so the schema and the
+// tfsdk model share one source of truth instead of two maps that can
+// silently drift.
 func hardDiskObjectAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"path":                pathtype.Type,
-		"controller_type":     types.StringType,
-		"controller_number":   types.Int64Type,
-		"controller_location": types.Int64Type,
-	}
+	return HardDiskDriveAttrTypes
 }
 
-// networkAdapterObjectAttrTypes is the analog for network_adapter.
-// Same Default-empty-list rationale as HDDs. Keep in lockstep with
-// NetworkAdapterModel and the network_adapter NestedAttributeObject
-// schema below -- a drift between any of the three triggers
-// "schema mismatch" diagnostics that take a while to track down.
+// networkAdapterObjectAttrTypes is the analog for network_adapter,
+// delegating to NetworkAdapterAttrTypes (model.go).
 func networkAdapterObjectAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"name":         types.StringType,
-		"switch_name":  types.StringType,
-		"ip_addresses": types.ListType{ElemType: types.StringType},
-		"mac_address":  mactype.Type,
-		"vlan_id":      types.Int64Type,
-	}
+	return NetworkAdapterAttrTypes
 }
 
-// dvdDriveObjectAttrTypes is the analog for dvd_drive. Slot tuple
-// matches HardDiskDrive; iso_path uses the path custom type for
-// slash-style folding.
+// dvdDriveObjectAttrTypes is the analog for dvd_drive, delegating to
+// DvdDriveAttrTypes (model.go).
 func dvdDriveObjectAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"iso_path":            pathtype.Type,
-		"controller_type":     types.StringType,
-		"controller_number":   types.Int64Type,
-		"controller_location": types.Int64Type,
-	}
+	return DvdDriveAttrTypes
 }
 
-// bootOrderObjectAttrTypes is the analog for boot_order. The shape is
-// a discriminated union: type drives which subset of the remaining
-// fields is meaningful. Required for the Default empty-list value
-// since boot_order is Optional+Computed and the framework otherwise
-// hands us an "unknown" ListValue that the v1.19 reflect path can't
-// decode into a Go slice (same issue as hard_disk_drive et al).
+// bootOrderObjectAttrTypes is the analog for boot_order, delegating to
+// BootOrderEntryAttrTypes (model.go).
 func bootOrderObjectAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"type":                types.StringType,
-		"controller_type":     types.StringType,
-		"controller_number":   types.Int64Type,
-		"controller_location": types.Int64Type,
-		"name":                types.StringType,
-	}
+	return BootOrderEntryAttrTypes
 }
 
 // resourceSchema returns the locked-in schema for hyperv_vm.
