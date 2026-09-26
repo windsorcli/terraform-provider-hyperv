@@ -15,7 +15,7 @@ require (
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/compress v1.19.2
 	github.com/masterzen/winrm v0.0.0-20260407182533-5570be7f80cf
-	github.com/ulikunitz/xz v0.5.16
+	github.com/ulikunitz/xz v0.5.17
 	golang.org/x/crypto v0.55.0
 )
 
