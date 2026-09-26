@@ -124,6 +124,13 @@ function Get-VMHardDiskDrive {
     )
 }
 
+function Get-VHD {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] [string] $Path
+    )
+}
+
 function Add-VMHardDiskDrive {
     [CmdletBinding()]
     param(
@@ -388,6 +395,23 @@ function New-HypervVMHardDiskDriveSample {
         ControllerType     = $ControllerType
         ControllerNumber   = $ControllerNumber
         ControllerLocation = $ControllerLocation
+    }
+}
+
+# New-HypervVHDSample builds a Get-VHD-shaped object for use in Mock
+# blocks. Defaults model a base (non-differencing) VHDX; per-test
+# overrides cover the checkpoint differencing-disk shape.
+function New-HypervVHDSample {
+    [CmdletBinding()]
+    param(
+        [string] $Path       = 'C:\hyperv\vhds\sample.vhdx',
+        [string] $VhdType    = 'Dynamic',
+        [string] $ParentPath = ''
+    )
+    [pscustomobject]@{
+        Path       = $Path
+        VhdType    = $VhdType
+        ParentPath = $ParentPath
     }
 }
 

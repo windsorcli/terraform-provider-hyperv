@@ -11,6 +11,35 @@
 # function is in scope when the test exercises a verb script that calls
 # Read-HypervVMResult.
 
+# Resolve-HypervCheckpointBasePath walks Get-VMHardDiskDrive's reported
+# Path back to the base VHD when it's an active checkpoint differencing
+# disk. .avhd/.avhdx is Hyper-V's reserved extension for the disk it
+# creates automatically per checkpoint; while a checkpoint exists on a
+# Running VM, Get-VMHardDiskDrive reports that leaf instead of the base
+# disk the config attaches, which fails Terraform's apply-consistency
+# check. A user-managed differencing VHD (the hyperv_vhd resource) keeps
+# a .vhdx extension and is left untouched by the extension check below.
+function Resolve-HypervCheckpointBasePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Path
+    )
+    $current = $Path
+    # 32 is a generous cap against a cyclic or corrupt parent chain --
+    # real checkpoint chains are nowhere near this deep.
+    for ($depth = 0; $depth -lt 32; $depth++) {
+        if ($current -notmatch '\.avhdx?$') {
+            return $current
+        }
+        $parent = (Get-VHD -Path $current -ErrorAction Stop).ParentPath
+        if (-not $parent) {
+            return $current
+        }
+        $current = $parent
+    }
+    throw "Resolve-HypervCheckpointBasePath: '$Path' did not resolve to a base disk within 32 hops -- likely a cyclic or corrupt checkpoint chain."
+}
+
 # Read-HypervVMResult emits the canonical 14-field VM read shape consumed
 # by the Go-side modelFromVM. The wire fields are deliberately PascalCase
 # matched to the hyperv.VM Go struct's json tags, NOT to the schema's
@@ -92,13 +121,20 @@ function Read-HypervVMResult {
     # explicitly typed as an array (the @() prefix below). Without that
     # cast a single-HDD case round-trips as a scalar object, breaking the
     # Go-side decode into []HardDiskDrive.
+    #
+    # Built with a foreach loop rather than Select-Object calculated
+    # properties: Select-Object silently swallows an exception thrown
+    # inside an Expression scriptblock instead of propagating it, which
+    # would hide a Resolve-HypervCheckpointBasePath failure entirely.
     $hdds = @(
-        Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop |
-            Select-Object `
-                @{ N = 'Path';               E = { $_.Path } },
-                @{ N = 'ControllerType';     E = { $_.ControllerType.ToString() } },
-                @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
-                @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
+        foreach ($hdd in (Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop)) {
+            [pscustomobject]@{
+                Path               = Resolve-HypervCheckpointBasePath -Path $hdd.Path
+                ControllerType     = $hdd.ControllerType.ToString()
+                ControllerNumber   = [int] $hdd.ControllerNumber
+                ControllerLocation = [int] $hdd.ControllerLocation
+            }
+        }
     )
     # Network adapters: same @() wrapper rationale as HDDs -- empty
     # array on the wire becomes []NetworkAdapter on the Go side, not

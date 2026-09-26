@@ -374,7 +374,7 @@ Required:
 
 - `controller_location` (Number) Slot position within the controller (0-based). Required for the same reason as `controller_number`.
 - `controller_number` (Number) Controller index within the bus (0-based). Required: the slot tuple identifies the attachment, and auto-assignment isn't supported in this slice.
-- `path` (String) Absolute path on the host of the VHD/VHDX to attach. Forward and back slashes are accepted equivalently; case is folded for comparison per Windows file-system semantics.
+- `path` (String) Absolute path on the host of the VHD/VHDX to attach. Forward and back slashes are accepted equivalently; case is folded for comparison per Windows file-system semantics. While the VM has a checkpoint, this still reads back as the configured base disk rather than the checkpoint's differencing disk.
 
 Optional:
 

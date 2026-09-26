@@ -115,6 +115,76 @@ Describe 'Get-HypervVM' {
             $second.ControllerLocation | Should -Be 1
         }
 
+        It 'resolves an active checkpoint differencing disk to its base VHD path' {
+            # A Running VM with a checkpoint reports the checkpoint's
+            # .avhdx as the attached disk instead of the base .vhdx the
+            # config attaches -- the read must walk back to the base or
+            # Terraform's apply-consistency check rejects it.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\root_ABCDEF.avhdx')
+            }
+            Mock Get-VHD -ParameterFilter { $Path -eq 'C:\hyperv\vhds\root_ABCDEF.avhdx' } -MockWith {
+                New-HypervVHDSample -Path 'C:\hyperv\vhds\root_ABCDEF.avhdx' `
+                    -VhdType 'Differencing' -ParentPath 'C:\hyperv\vhds\root.vhdx'
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.HardDiskDrives[0].Path | Should -Be 'C:\hyperv\vhds\root.vhdx'
+        }
+
+        It 'walks multiple checkpoint layers back to the base VHD' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\root_222.avhdx')
+            }
+            Mock Get-VHD -ParameterFilter { $Path -eq 'C:\hyperv\vhds\root_222.avhdx' } -MockWith {
+                New-HypervVHDSample -Path 'C:\hyperv\vhds\root_222.avhdx' `
+                    -VhdType 'Differencing' -ParentPath 'C:\hyperv\vhds\root_111.avhdx'
+            }
+            Mock Get-VHD -ParameterFilter { $Path -eq 'C:\hyperv\vhds\root_111.avhdx' } -MockWith {
+                New-HypervVHDSample -Path 'C:\hyperv\vhds\root_111.avhdx' `
+                    -VhdType 'Differencing' -ParentPath 'C:\hyperv\vhds\root.vhdx'
+            }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.HardDiskDrives[0].Path | Should -Be 'C:\hyperv\vhds\root.vhdx'
+        }
+
+        It 'leaves a non-checkpoint path unchanged without calling Get-VHD' {
+            # A user-managed differencing disk (hyperv_vhd) keeps a .vhdx
+            # extension and is the disk Terraform actually manages -- it
+            # must round-trip verbatim, not resolve to its own parent.
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\child.vhdx')
+            }
+            Mock Get-VHD { New-HypervVHDSample -VhdType 'Differencing' -ParentPath 'C:\hyperv\vhds\unexpected.vhdx' }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.HardDiskDrives[0].Path | Should -Be 'C:\hyperv\vhds\child.vhdx'
+            Should -Invoke Get-VHD -Times 0 -Exactly
+        }
+
+        It 'returns the checkpoint path unchanged when Get-VHD reports no parent' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\orphan.avhdx')
+            }
+            Mock Get-VHD { New-HypervVHDSample -Path 'C:\hyperv\vhds\orphan.avhdx' -VhdType 'Differencing' -ParentPath '' }
+
+            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
+
+            $parsed.HardDiskDrives[0].Path | Should -Be 'C:\hyperv\vhds\orphan.avhdx'
+        }
+
         It 'returns SecureBootEnabled=true when firmware reports SecureBoot=On' {
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample -SecureBoot 'On' }
@@ -392,6 +462,21 @@ Describe 'Get-HypervVM' {
 
             { Get-HypervVM -Name 'sample-vm' } |
                 Should -Throw -ExpectedMessage '*firmware read failure*'
+        }
+
+        It 'throws when a checkpoint parent chain never resolves within the depth cap' {
+            Mock Get-VM { New-HypervVMSample -Generation 2 }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+            Mock Get-VMHardDiskDrive {
+                @(New-HypervVMHardDiskDriveSample -Path 'C:\hyperv\vhds\cyclic.avhdx')
+            }
+            Mock Get-VHD {
+                New-HypervVHDSample -Path 'C:\hyperv\vhds\cyclic.avhdx' `
+                    -VhdType 'Differencing' -ParentPath 'C:\hyperv\vhds\cyclic.avhdx'
+            }
+
+            { Get-HypervVM -Name 'sample-vm' } |
+                Should -Throw -ExpectedMessage '*did not resolve to a base disk*'
         }
     }
 }

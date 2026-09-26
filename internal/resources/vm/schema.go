@@ -297,7 +297,9 @@ func resourceSchema() schema.Schema {
 							Required:   true,
 							MarkdownDescription: "Absolute path on the host of the VHD/VHDX to " +
 								"attach. Forward and back slashes are accepted equivalently; case " +
-								"is folded for comparison per Windows file-system semantics.",
+								"is folded for comparison per Windows file-system semantics. While " +
+								"the VM has a checkpoint, this still reads back as the configured " +
+								"base disk rather than the checkpoint's differencing disk.",
 						},
 						"controller_type": schema.StringAttribute{
 							Optional: true,
