@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-testing/config"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -1262,6 +1263,29 @@ func TestAcc_VM_hardDiskDriveAndNetworkAdapterDrivenByVariable(t *testing.T) {
 						"hyperv_vm.test",
 						tfjsonpath.New("network_adapter"),
 						knownvalue.ListSizeExact(1),
+					),
+				},
+			},
+			{
+				// Empty object -> both optional fields resolve to null,
+				// exercising the conditional's null branch the first
+				// step never takes. Read still reports "no attachments"
+				// as an empty collection, not null -- same as every
+				// other test in this file.
+				Config: vmHardDiskAndNetworkAdapterDrivenByVariableConfig(name, diskPath, switchName),
+				ConfigVariables: config.Variables{
+					"vm": config.ObjectVariable(map[string]config.Variable{}),
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("hard_disk_drive"),
+						knownvalue.SetSizeExact(0),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter"),
+						knownvalue.ListSizeExact(0),
 					),
 				},
 			},
