@@ -573,6 +573,54 @@ func TestAcc_ImageFile_localPath(t *testing.T) {
 	})
 }
 
+// TestAcc_ImageFile_sharedDestinationPath drives two independent
+// hyperv_image_file resources at the same destination_path with
+// identical content and no dependency between them, so Terraform's
+// default parallelism can genuinely run their Create calls concurrently.
+// This is the bug the checksum-cache fix exists for: the second resource
+// to land must adopt the already-correct file instead of erroring with
+// a "Cannot create a file when that file already exists" diagnostic.
+func TestAcc_ImageFile_sharedDestinationPath(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
+	client := acctest.NewClient(t)
+
+	runnerDir := t.TempDir()
+	fixturePath := filepath.Join(runnerDir, "fixture.bin")
+	payload := []byte("tfacc shared destination_path fixture\n")
+	payloadHex := hex.EncodeToString(sha256OfBytes(payload))
+	if err := os.WriteFile(fixturePath, payload, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-shared")+".bin"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		// Whichever resource's destroy runs first deletes the shared
+		// file; the other's destroy then finds it already gone
+		// (ErrNotFound), which Delete already treats as success.
+		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
+		Steps: []resource.TestStep{
+			{
+				Config: imageFileSharedDestinationConfig(dest, fixturePath),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.a",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(payloadHex),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_image_file.b",
+						tfjsonpath.New("sha256"),
+						knownvalue.StringExact(payloadHex),
+					),
+				},
+			},
+		},
+	})
+}
+
 // TestAcc_ImageFile_keepOnDestroy_localPath exercises the cache-the-
 // bytes escape hatch: with keep_on_destroy=true, a streamed local_path
 // file persists on the bench after `terraform destroy` removes the
@@ -605,7 +653,7 @@ func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := client.RemoveImageFile(ctx, dest, false); err != nil {
+		if err := client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{Path: dest}); err != nil {
 			t.Logf("orphan cleanup of %s failed (file may have been removed already): %v", dest, err)
 		}
 	})
@@ -718,6 +766,25 @@ resource "hyperv_image_file" "test" {
   local_path       = %q
 }
 `, destPath, localPath)
+}
+
+// imageFileSharedDestinationConfig declares two independent
+// hyperv_image_file resources, both local_path mode, pointed at the same
+// destination_path with identical content -- no cross-reference between
+// them, so Terraform's default parallelism can run their Creates
+// concurrently.
+func imageFileSharedDestinationConfig(destPath, localPath string) string {
+	return fmt.Sprintf(`
+resource "hyperv_image_file" "a" {
+  destination_path = %q
+  local_path       = %q
+}
+
+resource "hyperv_image_file" "b" {
+  destination_path = %q
+  local_path       = %q
+}
+`, destPath, localPath, destPath, localPath)
 }
 
 // imageFileLocalPathKeepOnDestroyConfig is local_path mode with
@@ -867,7 +934,7 @@ func TestAcc_ImageFile_sourcePath(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := client.RemoveImageFile(ctx, sourcePath, false); err != nil {
+		if err := client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{Path: sourcePath}); err != nil {
 			t.Logf("cleanup: remove source %s: %v", sourcePath, err)
 		}
 	})

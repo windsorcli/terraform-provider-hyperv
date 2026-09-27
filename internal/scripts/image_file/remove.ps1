@@ -2,16 +2,27 @@
 #
 # Wire contract (locked in by Tests.ps1):
 #
-#   stdin JSON  : { "path": "<absolute-path>", "force": <bool> }
+#   stdin JSON  : { "path": "<absolute-path>", "force": <bool>,
+#                   "expected_sha256": "<hex or empty>" }
 #   stdout      : empty (caller passes dst=nil to runScript).
 #   stderr/exit : missing file -> Write-HypervError envelope with
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side so Delete can treat already-gone as success.
+#                 Content drift -> category=InvalidData,
+#                 FullyQualifiedErrorId=ImageFileContentDrift, mapped to
+#                 ErrContentDrift so Delete refuses instead of deleting.
 #
 # Delete is gated on the Go side: only invoked when the source mode placed
 # the file (source_mode=url). For host_path mode, Delete is a no-op in Go --
 # the user did not ask the provider to put the file there, so removing it on
 # destroy would surprise them.
+#
+# `expected_sha256` is the resource's last-known state.sha256. Empty skips
+# the check (e.g. no prior state to compare against). A mismatch means the
+# on-host file changed since this resource last read it -- most likely
+# another resource sharing the same destination_path, or an out-of-band
+# edit -- so the delete is refused rather than silently removing content
+# this resource no longer recognizes.
 #
 # `force` is the opt-in detach-then-retry escape hatch. When true and the
 # initial Remove-Item hits a sharing violation whose holders are Hyper-V
@@ -159,7 +170,8 @@ function Remove-HypervImageFile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Path,
-        [switch] $Force
+        [switch] $Force,
+        [Parameter()] [string] $ExpectedSha256 = ''
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         $exception = [System.Management.Automation.ItemNotFoundException]::new(
@@ -168,6 +180,20 @@ function Remove-HypervImageFile {
             $exception, 'ImageFileNotFound',
             [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Path)
         throw $errorRecord
+    }
+    if ($ExpectedSha256) {
+        $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) {
+            $exception = [System.IO.InvalidDataException]::new(
+                "Refusing to delete '$Path': its content no longer matches this resource's " +
+                "last-known state (expected sha256=$($ExpectedSha256.ToLowerInvariant()), " +
+                "found sha256=$actualHash). Something else changed this file since it was " +
+                "last read.")
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                $exception, 'ImageFileContentDrift',
+                [System.Management.Automation.ErrorCategory]::InvalidData, $Path)
+            throw $errorRecord
+        }
     }
     try {
         Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
@@ -256,7 +282,11 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($null -ne $params.PSObject.Properties['force']) {
             $forceFlag = [bool] $params.force
         }
-        Remove-HypervImageFile -Path $params.path -Force:$forceFlag
+        $expectedSha256 = ''
+        if ($null -ne $params.PSObject.Properties['expected_sha256']) {
+            $expectedSha256 = [string] $params.expected_sha256
+        }
+        Remove-HypervImageFile -Path $params.path -Force:$forceFlag -ExpectedSha256 $expectedSha256
     }
     catch {
         Write-HypervError $_

@@ -32,6 +32,8 @@ func resourceSchema() schema.Schema {
 			"  * **`host_path`-mode** -- the user attests the file already exists at `destination_path`. The provider verifies presence and tracks the SHA-256 for drift, but never copies, fetches, or (on destroy) deletes the file.\n\n" +
 			"The mode is implicit: if the `url` block is present, the resource operates in `url`-mode; if `local_path` is set, `local_path`-mode; if `content_base64` is set, `literal_bytes`-mode; if `source_path` is set, `source_path`-mode; otherwise `host_path`-mode. The four placement modes (`url`, `local_path`, `content_base64`, `source_path`) are mutually exclusive (the resource validator rejects configs that set more than one). Switching modes between applies forces replacement.\n\n" +
 			"**Drift detection:** SHA-256 is recomputed on every `Read`. Out-of-band file changes surface as a `sha256` change during refresh; large-file refreshes are correspondingly slow (Get-FileHash on a 5 GiB VHDX is ~30 s on spinning disk). In `local_path`-mode the *runner-side* file is also hashed during plan, and in `source_path`-mode the *host-side source* is, so a content change since the last apply surfaces as a `sha256` diff that triggers Update.\n\n" +
+			"**Caching:** before writing, the provider checks whether `destination_path` already holds content matching the expected SHA-256 (the supplied `checksum` in `url`-mode, or the source hash in the other placement modes) and skips the fetch or copy entirely on a match, returning the existing file's metadata instead. A second resource landing on an already-populated `destination_path` -- the shared-base-image pattern below -- is a fast no-op rather than a redundant multi-GiB download or copy.\n\n" +
+			"**Sharing a `destination_path` across resources:** the check above only avoids wasted writes -- it does not create shared ownership. `Destroy` removes `destination_path` unconditionally unless `keep_on_destroy` is set or the mode is `host_path`, with no awareness of any other resource pointed at the same path. If more than one resource needs to reference the same file, only one of them should use a placement mode (`url`, `local_path`, `content_base64`, `source_path`); every other reference should use `host_path`-mode, which never deletes on destroy.\n\n" +
 			"**Recovery from partial-create:** if the download/stream succeeds and the SHA-256 verifies but the atomic rename fails (e.g., destination path is on a different volume than the staging `.part` file), the file is left at the staging path with no Terraform state. Re-run `terraform apply` -- the next attempt re-streams to a fresh staging path. The PowerShell layer cleans up its own `.part` files on every failure path.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -289,7 +291,13 @@ func resourceSchema() schema.Schema {
 					"harmless on `host_path` but communicates intent.\n\n" +
 					"**Caveat:** the bytes outlive the resource. Files on the host accumulate over time if " +
 					"you set this and never come back. There is no provider-level sweep; clean up out-of-band " +
-					"or with a `null_resource` + `local-exec` if you need automated reclamation.",
+					"or with a `null_resource` + `local-exec` if you need automated reclamation.\n\n" +
+					"**Destroy safety net:** with this flag `false` (the default), destroy first checks that " +
+					"the file at `destination_path` still hashes to the `sha256` this resource last recorded " +
+					"and refuses to delete it otherwise. A mismatch means something else -- most likely " +
+					"another resource sharing the same `destination_path` -- changed the file since this " +
+					"resource last read it; deleting it in that case would remove content this resource no " +
+					"longer recognizes.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},

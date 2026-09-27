@@ -727,8 +727,26 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		"destination_path": state.DestinationPath.ValueString(),
 		"force_destroy":    state.ForceDestroy.ValueBool(),
 	})
-	err := r.client.RemoveImageFile(ctx, state.DestinationPath.ValueString(), state.ForceDestroy.ValueBool())
-	if err != nil && !errors.Is(err, hyperv.ErrNotFound) {
+	err := r.client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{
+		Path:           state.DestinationPath.ValueString(),
+		Force:          state.ForceDestroy.ValueBool(),
+		ExpectedSha256: state.Sha256.ValueString(),
+	})
+	if err != nil {
+		if errors.Is(err, hyperv.ErrNotFound) {
+			return
+		}
+		if errors.Is(err, hyperv.ErrContentDrift) {
+			resp.Diagnostics.AddError(
+				"Destination file changed since last read",
+				"The file at destination_path no longer matches the sha256 this resource last "+
+					"recorded, so destroy refused to delete it. This usually means another "+
+					"resource or process wrote to the same destination_path. Run `terraform "+
+					"refresh` to see the current content, confirm it's safe to remove, and "+
+					"delete it out-of-band if so.\n\n"+err.Error(),
+			)
+			return
+		}
 		resp.Diagnostics.AddError("Delete hyperv_image_file failed", err.Error())
 		return
 	}

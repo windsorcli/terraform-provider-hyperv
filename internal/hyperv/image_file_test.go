@@ -25,6 +25,15 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
+// stubNoExistingDestination registers a get.ps1 response reporting the
+// destination doesn't exist yet, so skipIfDestinationMatches's pre-fetch
+// check falls through to the caller's normal create path -- every write
+// method now probes the destination first.
+func stubNoExistingDestination(fr *testutil.FakeRunner) *testutil.FakeRunner {
+	return fr.On("function Get-HypervImageFile").
+		Return("", `{"category":"ObjectNotFound","message":"not found","cmdlet":""}`, 1)
+}
+
 // GetImageFile happy path: typed result decoded from the canned JSON shape
 // the Pester contract locked in. Pins the field-by-field mapping --
 // breakage here means the wire contract drifted.
@@ -118,7 +127,7 @@ func TestClient_GetImageFile_PermissionDeniedMapsToErrUnauthorized(t *testing.T)
 func TestClient_NewImageFileFromURL_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromUrl").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -131,7 +140,7 @@ func TestClient_NewImageFileFromURL_StdinMatchesWireContract(t *testing.T) {
 		t.Fatalf("NewImageFileFromURL: %v", err)
 	}
 
-	stdin := string(fr.Calls()[0].StdinJSON)
+	stdin := string(fr.Calls()[1].StdinJSON)
 	for _, want := range []string{
 		`"destination_path":"C:\\hyperv\\images\\ubuntu-22.04.vhdx"`,
 		`"url":"https://example.com/ubuntu.vhdx"`,
@@ -223,7 +232,7 @@ func TestClient_NewImageFileFromHostPath_NotFoundMapsToErrNotFound(t *testing.T)
 func TestClient_CopyHostFile_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -240,7 +249,7 @@ func TestClient_CopyHostFile_StdinMatchesWireContract(t *testing.T) {
 		t.Errorf("StreamCalls = %d, want 0 -- source_path mode is host-local and must not stream", got)
 	}
 
-	stdin := string(fr.Calls()[0].StdinJSON)
+	stdin := string(fr.Calls()[1].StdinJSON)
 	for _, want := range []string{
 		`"destination_path":"C:\\vms\\cp1\\boot.vhdx"`,
 		`"source_path":"D:\\images\\fcos.vhdx"`,
@@ -274,7 +283,7 @@ func TestClient_CopyHostFile_StdinForwardsReplaceWhileMounted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			fr := testutil.NewFakeRunner().
+			fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 				On("function New-HypervImageFileFromSourcePath").Return(testutil.ImageFileFixtureJSON, "", 0)
 			c := NewClient(fr)
 
@@ -288,7 +297,7 @@ func TestClient_CopyHostFile_StdinForwardsReplaceWhileMounted(t *testing.T) {
 				t.Fatalf("CopyHostFile: %v", err)
 			}
 
-			stdin := string(fr.Calls()[0].StdinJSON)
+			stdin := string(fr.Calls()[1].StdinJSON)
 			if !strings.Contains(stdin, tc.want) {
 				t.Errorf("stdin missing %q\nfull stdin: %s", tc.want, stdin)
 			}
@@ -441,7 +450,7 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	wantHash := sha256.Sum256(payload)
 	wantHex := hex.EncodeToString(wantHash[:])
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -466,10 +475,10 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	}
 
 	calls := fr.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("Calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("Calls = %d, want 2 (pre-fetch destination check + the write itself)", len(calls))
 	}
-	stdin := string(calls[0].StdinJSON)
+	stdin := string(calls[1].StdinJSON)
 	for _, want := range []string{
 		`"destination_path":"C:/hyperv/iso/fixture.iso"`,
 		`"source_mode":"local_path"`,
@@ -488,7 +497,7 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	var got struct {
 		StagingPath string `json:"staging_path"`
 	}
-	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+	if err := json.Unmarshal(calls[1].StdinJSON, &got); err != nil {
 		t.Fatalf("stdin not valid JSON: %v", err)
 	}
 	if got.StagingPath != streams[0].RemotePath {
@@ -524,7 +533,7 @@ func TestClient_NewImageFileFromLocalPath_StdinForwardsReplaceWhileMounted(t *te
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fr := testutil.NewFakeRunner().
+			fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 				On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 			c := NewClient(fr)
 
@@ -536,7 +545,7 @@ func TestClient_NewImageFileFromLocalPath_StdinForwardsReplaceWhileMounted(t *te
 				t.Fatalf("NewImageFileFromLocalPath: %v", err)
 			}
 
-			stdin := string(fr.Calls()[0].StdinJSON)
+			stdin := string(fr.Calls()[1].StdinJSON)
 			if !strings.Contains(stdin, tc.want) {
 				t.Errorf("stdin missing %q\nfull stdin: %s", tc.want, stdin)
 			}
@@ -554,7 +563,7 @@ func TestClient_NewImageFileFromLocalPath_StdinForwardsReplaceWhileMounted(t *te
 func TestClient_NewImageFileFromBytes_StdinMatchesLocalPathContract(t *testing.T) {
 	t.Parallel()
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -580,10 +589,10 @@ func TestClient_NewImageFileFromBytes_StdinMatchesLocalPathContract(t *testing.T
 	}
 
 	calls := fr.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("Calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("Calls = %d, want 2 (pre-fetch destination check + the write itself)", len(calls))
 	}
-	stdin := string(calls[0].StdinJSON)
+	stdin := string(calls[1].StdinJSON)
 	for _, want := range []string{
 		`"destination_path":"C:/hyperv/seeds/cidata.iso"`,
 		`"source_mode":"local_path"`,
@@ -598,7 +607,7 @@ func TestClient_NewImageFileFromBytes_StdinMatchesLocalPathContract(t *testing.T
 	var got struct {
 		StagingPath string `json:"staging_path"`
 	}
-	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+	if err := json.Unmarshal(calls[1].StdinJSON, &got); err != nil {
 		t.Fatalf("stdin not valid JSON: %v", err)
 	}
 	if got.StagingPath != streams[0].RemotePath {
@@ -696,7 +705,7 @@ func TestClient_NewImageFileFromLocalPath_StreamFailureSurfacesAndSkipsRunScript
 	}
 
 	want := errors.New("transport refused")
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0).
 		SetStreamFileErr(want)
 	c := NewClient(fr)
@@ -708,8 +717,10 @@ func TestClient_NewImageFileFromLocalPath_StreamFailureSurfacesAndSkipsRunScript
 	if !errors.Is(err, want) {
 		t.Errorf("err = %v, want %v wrapped", err, want)
 	}
-	if len(fr.Calls()) != 0 {
-		t.Errorf("RunScript Calls = %d, want 0 (stream failure must short-circuit)", len(fr.Calls()))
+	// The pre-fetch destination check always runs (call 0); the write's
+	// own RunScript must still never run after StreamFile fails.
+	if len(fr.Calls()) != 1 {
+		t.Errorf("RunScript Calls = %d, want 1 (stream failure must short-circuit the write)", len(fr.Calls()))
 	}
 }
 
@@ -874,7 +885,7 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -908,10 +919,10 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 	// runner publisher-side checksum check has already been done in
 	// process before the script runs.
 	calls := fr.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("Calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("Calls = %d, want 2 (pre-fetch destination check + the write itself)", len(calls))
 	}
-	stdin := string(calls[0].StdinJSON)
+	stdin := string(calls[1].StdinJSON)
 	for _, want := range []string{
 		`"destination_path":"C:/hyperv/images/talos.vhdx"`,
 		`"source_mode":"local_path"`,
@@ -926,7 +937,7 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 	var got struct {
 		StagingPath string `json:"staging_path"`
 	}
-	if err := json.Unmarshal(calls[0].StdinJSON, &got); err != nil {
+	if err := json.Unmarshal(calls[1].StdinJSON, &got); err != nil {
 		t.Fatalf("stdin not valid JSON: %v", err)
 	}
 	if got.StagingPath != streams[0].RemotePath {
@@ -957,7 +968,7 @@ func runCodecHappyPath(t *testing.T, codec string, decompressed, compressed []by
 	}))
 	t.Cleanup(srv.Close)
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -979,7 +990,7 @@ func runCodecHappyPath(t *testing.T, codec string, decompressed, compressed []by
 			fr.StreamCalls()[0].RemotePath, dest)
 	}
 
-	stdin := string(fr.Calls()[0].StdinJSON)
+	stdin := string(fr.Calls()[1].StdinJSON)
 	wantSha := `"expected_sha256":"` + hexSum(decompressed) + `"`
 	if !strings.Contains(stdin, wantSha) {
 		t.Errorf("stdin missing decompressed sha %q\nfull stdin: %s", wantSha, stdin)
@@ -1240,7 +1251,7 @@ func TestClient_NewImageFileFromURL_GzipCompressedChecksumMismatch(t *testing.T)
 	}))
 	t.Cleanup(srv.Close)
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -1258,8 +1269,10 @@ func TestClient_NewImageFileFromURL_GzipCompressedChecksumMismatch(t *testing.T)
 		t.Errorf("StreamCalls = %d, want 0 (compressed-checksum mismatch must short-circuit)",
 			len(fr.StreamCalls()))
 	}
-	if len(fr.Calls()) != 0 {
-		t.Errorf("RunScript Calls = %d, want 0 (compressed-checksum mismatch must short-circuit)",
+	// Call 0 is the pre-fetch destination check; the write's own
+	// RunScript must still never run after a checksum mismatch.
+	if len(fr.Calls()) != 1 {
+		t.Errorf("RunScript Calls = %d, want 1 (compressed-checksum mismatch must short-circuit the write)",
 			len(fr.Calls()))
 	}
 }
@@ -1276,7 +1289,7 @@ func TestClient_NewImageFileFromURL_GzipDecompressionFailed(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromLocalPath").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -1293,8 +1306,10 @@ func TestClient_NewImageFileFromURL_GzipDecompressionFailed(t *testing.T) {
 		t.Errorf("StreamCalls = %d, want 0 (decompression failure must short-circuit)",
 			len(fr.StreamCalls()))
 	}
-	if len(fr.Calls()) != 0 {
-		t.Errorf("RunScript Calls = %d, want 0 (decompression failure must short-circuit)",
+	// Call 0 is the pre-fetch destination check; the write's own
+	// RunScript must still never run after a decompression failure.
+	if len(fr.Calls()) != 1 {
+		t.Errorf("RunScript Calls = %d, want 1 (decompression failure must short-circuit the write)",
 			len(fr.Calls()))
 	}
 }
@@ -1340,7 +1355,7 @@ func TestClient_NewImageFileFromURL_GzipHTTPNon2xx(t *testing.T) {
 func TestClient_NewImageFileFromURL_NoCompressionUsesHostDirectFlow(t *testing.T) {
 	t.Parallel()
 
-	fr := testutil.NewFakeRunner().
+	fr := stubNoExistingDestination(testutil.NewFakeRunner()).
 		On("function New-HypervImageFileFromUrl").Return(testutil.ImageFileFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -1358,7 +1373,7 @@ func TestClient_NewImageFileFromURL_NoCompressionUsesHostDirectFlow(t *testing.T
 	if len(fr.StreamCalls()) != 0 {
 		t.Errorf("StreamCalls = %d, want 0 for host-direct flow", len(fr.StreamCalls()))
 	}
-	stdin := string(fr.Calls()[0].StdinJSON)
+	stdin := string(fr.Calls()[1].StdinJSON)
 	if !strings.Contains(stdin, `"source_mode":"url"`) {
 		t.Errorf("stdin missing source_mode=url; got: %s", stdin)
 	}
@@ -1535,7 +1550,7 @@ func TestClient_RemoveImageFile_HappyPath(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveImageFile(t.Context(), "C:\\images\\to-delete.vhdx", false); err != nil {
+	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{Path: "C:\\images\\to-delete.vhdx"}); err != nil {
 		t.Fatalf("RemoveImageFile: %v", err)
 	}
 
@@ -1558,9 +1573,53 @@ func TestClient_RemoveImageFile_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	err := c.RemoveImageFile(t.Context(), "C:\\images\\already-gone.vhdx", false)
+	err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{Path: "C:\\images\\already-gone.vhdx"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// RemoveImageFile maps the InvalidData + ImageFileContentDrift envelope to
+// ErrContentDrift so Delete can refuse the destroy instead of removing
+// content this resource no longer recognizes.
+func TestClient_RemoveImageFile_ContentDriftMapsToErrContentDrift(t *testing.T) {
+	t.Parallel()
+
+	envelope := `{"category":"InvalidData","fullyQualifiedErrorId":"ImageFileContentDrift","message":"content changed","cmdlet":""}`
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervImageFile").Return("", envelope, 1)
+	c := NewClient(fr)
+
+	err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{
+		Path:           "C:\\images\\shared-base.vhdx",
+		ExpectedSha256: "abc123",
+	})
+	if !errors.Is(err, ErrContentDrift) {
+		t.Errorf("err = %v, want ErrContentDrift", err)
+	}
+}
+
+// RemoveImageFile forwards expected_sha256 into the stdin JSON so
+// remove.ps1 can run the drift check. An empty ExpectedSha256 must still
+// forward as an explicit empty string -- remove.ps1 treats presence-with-
+// empty-value as "skip the check," same as new.ps1's optional hash fields.
+func TestClient_RemoveImageFile_ForwardsExpectedSha256InStdin(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Remove-HypervImageFile").Return("", "", 0)
+	c := NewClient(fr)
+
+	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{
+		Path:           "C:\\images\\seed.iso",
+		ExpectedSha256: "abc123",
+	}); err != nil {
+		t.Fatalf("RemoveImageFile: %v", err)
+	}
+
+	stdin := string(fr.Calls()[0].StdinJSON)
+	if !strings.Contains(stdin, `"expected_sha256":"abc123"`) {
+		t.Errorf("stdin should forward expected_sha256; got: %s", stdin)
 	}
 }
 
@@ -1575,7 +1634,7 @@ func TestClient_RemoveImageFile_ForwardsForceTrueInStdin(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveImageFile(t.Context(), "C:\\images\\seed.iso", true); err != nil {
+	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{Path: "C:\\images\\seed.iso", Force: true}); err != nil {
 		t.Fatalf("RemoveImageFile: %v", err)
 	}
 

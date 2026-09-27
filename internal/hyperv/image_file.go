@@ -55,6 +55,23 @@ func (c *Client) StatImageFile(ctx context.Context, path string) (*ImageFile, er
 	return &f, nil
 }
 
+// skipIfDestinationMatches reports whether destinationPath already holds
+// content hashing to expectedSha256, returning that file's metadata when
+// so. A miss -- no expected hash to check, a missing destination, or any
+// error reading it -- just means "no shortcut"; callers fall through to
+// their normal fetch/copy path, so this never introduces a new failure
+// mode, only a skip.
+func (c *Client) skipIfDestinationMatches(ctx context.Context, destinationPath, expectedSha256 string) (*ImageFile, bool) {
+	if expectedSha256 == "" {
+		return nil, false
+	}
+	existing, err := c.GetImageFile(ctx, destinationPath)
+	if err != nil || !strings.EqualFold(existing.Sha256, expectedSha256) {
+		return nil, false
+	}
+	return existing, true
+}
+
 // NewImageFileFromURL fetches a file by URL. With Compression="" the
 // host-side new.ps1 url-mode path runs: HttpClient streams to a sibling
 // .part file in the destination directory, the host verifies the SHA-256
@@ -75,6 +92,10 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 		return nil, fmt.Errorf("runner_download and compression are mutually exclusive: runner_download streams raw bytes without decompression")
 	}
 	defer c.lockDestinationPath(in.DestinationPath)()
+
+	if existing, ok := c.skipIfDestinationMatches(ctx, in.DestinationPath, in.ExpectedSha256); ok {
+		return existing, nil
+	}
 
 	if in.RunnerDownload {
 		return c.newImageFileFromRunnerDownload(ctx, in)
@@ -570,6 +591,10 @@ func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileF
 		return nil, fmt.Errorf("compute sha256 of %s: %w", in.LocalPath, err)
 	}
 
+	if existing, ok := c.skipIfDestinationMatches(ctx, in.DestinationPath, expectedSha); ok {
+		return existing, nil
+	}
+
 	stagingPath, err := pickStagingPath(in.DestinationPath)
 	if err != nil {
 		return nil, fmt.Errorf("pick staging path: %w", err)
@@ -631,6 +656,10 @@ func (c *Client) NewImageFileFromBytes(ctx context.Context, in NewImageFileFromB
 	defer c.lockDestinationPath(in.DestinationPath)()
 
 	expectedSha := sha256Hex(in.Bytes)
+
+	if existing, ok := c.skipIfDestinationMatches(ctx, in.DestinationPath, expectedSha); ok {
+		return existing, nil
+	}
 
 	tmpFile, err := os.CreateTemp("", "hyperv-image-*.bin")
 	if err != nil {
@@ -745,6 +774,10 @@ func pickStagingPath(destinationPath string) (string, error) {
 func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*ImageFile, error) {
 	defer c.lockDestinationPath(in.DestinationPath)()
 
+	if existing, ok := c.skipIfDestinationMatches(ctx, in.DestinationPath, in.ExpectedSha256); ok {
+		return existing, nil
+	}
+
 	body, err := scripts.ImageFileScript("new")
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
@@ -828,23 +861,24 @@ func (c *Client) SweepImageFiles(ctx context.Context, parentDir, prefix string) 
 	return result.Removed, nil
 }
 
-// `force` opts into the detach-then-retry escape hatch in remove.ps1:
-// when the initial Remove-Item hits a sharing violation whose holders
-// are Hyper-V DVDs, the host script detaches each slot via
+// Force opts into the detach-then-retry escape hatch in remove.ps1: when
+// the initial Remove-Item hits a sharing violation whose holders are
+// Hyper-V DVDs, the host script detaches each slot via
 // Set-VMDvdDrive -Path $null and retries the delete once. Used by the
 // resource Delete when the `force_destroy` attribute is set on the
 // hyperv_image_file resource. Default (false) keeps the safer behavior:
 // surface the locked-file diagnostic and let the operator resolve the
 // holder explicitly.
-func (c *Client) RemoveImageFile(ctx context.Context, path string, force bool) error {
+//
+// Returns ErrContentDrift when ExpectedSha256 is set and no longer
+// matches the on-host file -- remove.ps1 refuses the delete rather than
+// removing content this resource no longer recognizes.
+func (c *Client) RemoveImageFile(ctx context.Context, in RemoveImageFileInput) error {
 	body, err := scripts.ImageFileScript("remove")
 	if err != nil {
 		return fmt.Errorf("load image_file/remove.ps1: %w", err)
 	}
-	stdin, err := json.Marshal(struct {
-		Path  string `json:"path"`
-		Force bool   `json:"force"`
-	}{Path: path, Force: force})
+	stdin, err := json.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("marshal remove.ps1 input: %w", err)
 	}

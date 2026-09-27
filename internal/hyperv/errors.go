@@ -25,6 +25,7 @@ var (
 	ErrInvalidParentPath   = errors.New("hyperv: invalid parent path")
 	ErrChecksumMismatch    = errors.New("hyperv: image file checksum mismatch")
 	ErrDecompressionFailed = errors.New("hyperv: image file decompression failed")
+	ErrContentDrift        = errors.New("hyperv: destination file no longer matches the resource's last-known content")
 	ErrPSExecution         = errors.New("hyperv: powershell execution failed")
 )
 
@@ -79,6 +80,11 @@ func mapCategory(env errorEnvelope) error {
 		// InvalidData uses fall through to ErrPSExecution.
 		if strings.HasPrefix(env.FullyQualifiedErrorId, "ImageFileChecksumMismatch") {
 			return ErrChecksumMismatch
+		}
+		// remove.ps1 throws this category with FQId "ImageFileContentDrift"
+		// when the on-host file no longer hashes to expected_sha256.
+		if strings.HasPrefix(env.FullyQualifiedErrorId, "ImageFileContentDrift") {
+			return ErrContentDrift
 		}
 		return ErrPSExecution
 	default:

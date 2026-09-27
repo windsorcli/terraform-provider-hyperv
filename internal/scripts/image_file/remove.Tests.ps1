@@ -80,6 +80,47 @@ Describe 'Remove-HypervImageFile' {
             Should -Throw -ExpectedMessage '*IO fault*'
     }
 
+    Context 'content drift check (ExpectedSha256)' {
+
+        It 'skips the hash check and deletes normally when ExpectedSha256 is omitted' {
+            Mock Test-Path { $true }
+            Mock Get-FileHash { }
+            Mock Remove-Item { }
+
+            Remove-HypervImageFile -Path 'C:\images\foo.vhdx'
+
+            Should -Invoke Get-FileHash -Times 0 -Exactly
+            Should -Invoke Remove-Item -Times 1 -Exactly
+        }
+
+        It 'deletes normally when the on-host hash matches ExpectedSha256' {
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'ABCDEF' }
+            Mock Remove-Item { }
+
+            Remove-HypervImageFile -Path 'C:\images\foo.vhdx' -ExpectedSha256 'abcdef'
+
+            Should -Invoke Remove-Item -Times 1 -Exactly
+        }
+
+        It 'refuses the delete and throws ImageFileContentDrift when the hash no longer matches' {
+            # Another resource (or an out-of-band edit) changed the file
+            # since this resource last read it -- deleting it would
+            # remove content this resource no longer recognizes.
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'CHANGED' }
+            Mock Remove-Item { }
+
+            $captured = $null
+            try { Remove-HypervImageFile -Path 'C:\images\foo.vhdx' -ExpectedSha256 'original' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'InvalidData'
+            $captured.FullyQualifiedErrorId | Should -Match 'ImageFileContentDrift'
+            Should -Invoke Remove-Item -Times 0 -Exactly
+        }
+    }
+
     Context 'sharing-violation diagnostic' {
         # ERROR_SHARING_VIOLATION = Win32 0x20, surfaces as IOException
         # with HResult -2147024864 (0x80070020 as a signed int32).

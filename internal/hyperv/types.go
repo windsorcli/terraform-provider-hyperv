@@ -256,6 +256,20 @@ type CopyHostFileInput struct {
 	ReplaceWhileMounted bool   `json:"replace_while_mounted"`
 }
 
+// RemoveImageFileInput is the public input shape for RemoveImageFile.
+//
+// ExpectedSha256 is the resource's last-known state.sha256. Empty skips
+// the drift check (e.g. a caller with no prior state). A non-empty value
+// that no longer matches the on-host file means something else changed
+// the destination since this resource last read it -- remove.ps1 refuses
+// the delete rather than removing content this resource no longer
+// recognizes.
+type RemoveImageFileInput struct {
+	Path           string `json:"path"`
+	Force          bool   `json:"force"`
+	ExpectedSha256 string `json:"expected_sha256"`
+}
+
 // VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.
 // SizeBytes is the declared logical size; FileSizeBytes is the actual
 // on-disk size (smaller than SizeBytes for dynamic and differencing).
