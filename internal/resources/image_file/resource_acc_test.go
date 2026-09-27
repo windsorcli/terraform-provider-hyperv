@@ -653,7 +653,7 @@ func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{Path: dest}); err != nil {
+		if err := client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{DestinationPath: dest}); err != nil {
 			t.Logf("orphan cleanup of %s failed (file may have been removed already): %v", dest, err)
 		}
 	})
@@ -934,7 +934,7 @@ func TestAcc_ImageFile_sourcePath(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{Path: sourcePath}); err != nil {
+		if err := client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{DestinationPath: sourcePath}); err != nil {
 			t.Logf("cleanup: remove source %s: %v", sourcePath, err)
 		}
 	})

@@ -728,9 +728,9 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		"force_destroy":    state.ForceDestroy.ValueBool(),
 	})
 	err := r.client.RemoveImageFile(ctx, hyperv.RemoveImageFileInput{
-		Path:           state.DestinationPath.ValueString(),
-		Force:          state.ForceDestroy.ValueBool(),
-		ExpectedSha256: state.Sha256.ValueString(),
+		DestinationPath: state.DestinationPath.ValueString(),
+		Force:           state.ForceDestroy.ValueBool(),
+		ExpectedSha256:  state.Sha256.ValueString(),
 	})
 	if err != nil {
 		if errors.Is(err, hyperv.ErrNotFound) {

@@ -880,7 +880,7 @@ func (c *Client) SweepImageFiles(ctx context.Context, parentDir, prefix string) 
 // the same file surfaces as a sharing violation indistinguishable from
 // an antivirus lock.
 func (c *Client) RemoveImageFile(ctx context.Context, in RemoveImageFileInput) error {
-	defer c.lockDestinationPath(in.Path)()
+	defer c.lockDestinationPath(in.DestinationPath)()
 
 	body, err := scripts.ImageFileScript("remove")
 	if err != nil {

@@ -265,9 +265,9 @@ type CopyHostFileInput struct {
 // the delete rather than removing content this resource no longer
 // recognizes.
 type RemoveImageFileInput struct {
-	Path           string `json:"path"`
-	Force          bool   `json:"force"`
-	ExpectedSha256 string `json:"expected_sha256"`
+	DestinationPath string `json:"path"`
+	Force           bool   `json:"force"`
+	ExpectedSha256  string `json:"expected_sha256"`
 }
 
 // VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.

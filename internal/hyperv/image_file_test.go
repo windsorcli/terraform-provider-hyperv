@@ -1550,7 +1550,7 @@ func TestClient_RemoveImageFile_HappyPath(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{Path: "C:\\images\\to-delete.vhdx"}); err != nil {
+	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{DestinationPath: "C:\\images\\to-delete.vhdx"}); err != nil {
 		t.Fatalf("RemoveImageFile: %v", err)
 	}
 
@@ -1573,7 +1573,7 @@ func TestClient_RemoveImageFile_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", envelope, 1)
 	c := NewClient(fr)
 
-	err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{Path: "C:\\images\\already-gone.vhdx"})
+	err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{DestinationPath: "C:\\images\\already-gone.vhdx"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -1591,8 +1591,8 @@ func TestClient_RemoveImageFile_ContentDriftMapsToErrContentDrift(t *testing.T) 
 	c := NewClient(fr)
 
 	err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{
-		Path:           "C:\\images\\shared-base.vhdx",
-		ExpectedSha256: "abc123",
+		DestinationPath: "C:\\images\\shared-base.vhdx",
+		ExpectedSha256:  "abc123",
 	})
 	if !errors.Is(err, ErrContentDrift) {
 		t.Errorf("err = %v, want ErrContentDrift", err)
@@ -1611,8 +1611,8 @@ func TestClient_RemoveImageFile_ForwardsExpectedSha256InStdin(t *testing.T) {
 	c := NewClient(fr)
 
 	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{
-		Path:           "C:\\images\\seed.iso",
-		ExpectedSha256: "abc123",
+		DestinationPath: "C:\\images\\seed.iso",
+		ExpectedSha256:  "abc123",
 	}); err != nil {
 		t.Fatalf("RemoveImageFile: %v", err)
 	}
@@ -1634,7 +1634,7 @@ func TestClient_RemoveImageFile_ForwardsForceTrueInStdin(t *testing.T) {
 		On("function Remove-HypervImageFile").Return("", "", 0)
 	c := NewClient(fr)
 
-	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{Path: "C:\\images\\seed.iso", Force: true}); err != nil {
+	if err := c.RemoveImageFile(t.Context(), RemoveImageFileInput{DestinationPath: "C:\\images\\seed.iso", Force: true}); err != nil {
 		t.Fatalf("RemoveImageFile: %v", err)
 	}
 
@@ -1659,7 +1659,7 @@ func TestClient_RemoveImageFile_SerializesSameDestinationPath(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = c.RemoveImageFile(context.Background(), RemoveImageFileInput{Path: "C:\\images\\shared-base.vhdx"})
+			_ = c.RemoveImageFile(context.Background(), RemoveImageFileInput{DestinationPath: "C:\\images\\shared-base.vhdx"})
 		}()
 	}
 	wg.Wait()
@@ -1692,7 +1692,7 @@ func TestClient_CopyHostFileAndRemoveImageFile_SerializeSameDestinationPath(t *t
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = c.RemoveImageFile(context.Background(), RemoveImageFileInput{Path: "C:\\images\\shared-base.vhdx"})
+			_ = c.RemoveImageFile(context.Background(), RemoveImageFileInput{DestinationPath: "C:\\images\\shared-base.vhdx"})
 		}()
 	}
 	wg.Wait()
