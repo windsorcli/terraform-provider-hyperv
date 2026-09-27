@@ -1669,6 +1669,39 @@ func TestClient_RemoveImageFile_SerializesSameDestinationPath(t *testing.T) {
 	}
 }
 
+// Mixing a write method with RemoveImageFile on the same destination_path
+// proves the lock spans create and destroy together, not just calls to
+// the same method -- the two prior tests each only exercise one method
+// racing itself.
+func TestClient_CopyHostFileAndRemoveImageFile_SerializeSameDestinationPath(t *testing.T) {
+	t.Parallel()
+
+	runner := &concurrentDestRunner{}
+	c := NewClient(runner)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.CopyHostFile(context.Background(), CopyHostFileInput{
+				DestinationPath: "C:\\images\\shared-base.vhdx",
+				SourcePath:      "D:\\images\\source.vhdx",
+			})
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = c.RemoveImageFile(context.Background(), RemoveImageFileInput{Path: "C:\\images\\shared-base.vhdx"})
+		}()
+	}
+	wg.Wait()
+
+	if runner.maxInFlight > 1 {
+		t.Fatalf("maxInFlight = %d, want 1: concurrent CopyHostFile and RemoveImageFile calls for the same destination_path must serialize", runner.maxInFlight)
+	}
+}
+
 // TestClient_SweepImageFiles_DecodesRemovedList pins the wire contract:
 // sweep.ps1 emits {"removed":[...]} and the client returns the slice.
 // Mirrors TestClient_SweepNetNats_DecodesRemovedList in netnat_test.go.
