@@ -39,10 +39,26 @@ import (
 //
 // One RWMutex per Client is correct because NetNat is host-singleton:
 // there's exactly one ordering of NetNat writes per host.
+//
+// imageFileLocks serializes writes to a given destination_path (image
+// file and VHD copy methods). Two resources sharing a destination_path
+// otherwise race new.ps1's verify-then-rename and can hit "file already
+// exists" even with identical bytes. Keyed per-path so unrelated images
+// still write in parallel.
 type Client struct {
-	runner     connection.Runner
-	httpClient *http.Client
-	netNatMu   sync.RWMutex
+	runner         connection.Runner
+	httpClient     *http.Client
+	netNatMu       sync.RWMutex
+	imageFileLocks sync.Map // map[string]*sync.Mutex, keyed by destination_path
+}
+
+// lockDestinationPath returns an unlock func for destinationPath's lock.
+// Call as: defer c.lockDestinationPath(path)()
+func (c *Client) lockDestinationPath(destinationPath string) func() {
+	v, _ := c.imageFileLocks.LoadOrStore(destinationPath, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // ClientOption customizes a Client at construction time. Functional-

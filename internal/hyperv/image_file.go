@@ -74,6 +74,8 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 	if in.RunnerDownload && normalizeCompression(in.Compression) != "" {
 		return nil, fmt.Errorf("runner_download and compression are mutually exclusive: runner_download streams raw bytes without decompression")
 	}
+	defer c.lockDestinationPath(in.DestinationPath)()
+
 	if in.RunnerDownload {
 		return c.newImageFileFromRunnerDownload(ctx, in)
 	}
@@ -561,6 +563,8 @@ func normalizeCompression(s string) string {
 // but the file was deleted between then and the script's Test-Path);
 // in normal flow this can't happen.
 func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileFromLocalPathInput) (*ImageFile, error) {
+	defer c.lockDestinationPath(in.DestinationPath)()
+
 	expectedSha, err := ComputeFileSHA256(in.LocalPath)
 	if err != nil {
 		return nil, fmt.Errorf("compute sha256 of %s: %w", in.LocalPath, err)
@@ -624,6 +628,8 @@ func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileF
 // this method targets; for multi-GiB files prefer NewImageFileFromLocalPath
 // or NewImageFileFromURL instead.
 func (c *Client) NewImageFileFromBytes(ctx context.Context, in NewImageFileFromBytesInput) (*ImageFile, error) {
+	defer c.lockDestinationPath(in.DestinationPath)()
+
 	expectedSha := sha256Hex(in.Bytes)
 
 	tmpFile, err := os.CreateTemp("", "hyperv-image-*.bin")
@@ -737,6 +743,8 @@ func pickStagingPath(destinationPath string) (string, error) {
 // in.ExpectedSha256 (the source changed between plan and apply), or
 // ErrNotFound when the source is absent at apply time.
 func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*ImageFile, error) {
+	defer c.lockDestinationPath(in.DestinationPath)()
+
 	body, err := scripts.ImageFileScript("new")
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)

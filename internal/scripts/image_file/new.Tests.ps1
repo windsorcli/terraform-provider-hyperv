@@ -254,6 +254,70 @@ Describe 'New-HypervImageFileFromUrl' {
     }
 }
 
+Describe 'Move-HypervImageFileIntoPlace' {
+
+    Context 'happy path' {
+        It 'moves once and does not inspect hashes when Move-Item succeeds' {
+            Mock Move-Item { }
+            Mock Test-Path { $true }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+
+            Move-HypervImageFileIntoPlace `
+                -StagingPath 'C:\images\ubuntu.vhdx.part-abc' `
+                -DestinationPath 'C:\images\ubuntu.vhdx'
+
+            Should -Invoke Move-Item -Times 1 -Exactly
+            Should -Invoke Get-FileHash -Times 0 -Exactly
+        }
+    }
+
+    Context 'two resources racing the same destination_path' {
+        It 'adopts the destination when a losing Move-Item finds identical bytes already there' {
+            Mock Move-Item { throw 'Cannot create a file when that file already exists.' }
+            Mock Test-Path { $true }
+            Mock Get-FileHash {
+                if ($LiteralPath -eq 'C:\images\ubuntu.vhdx.part-abc') {
+                    New-HypervImageFileHashSample -Hash 'SAME'
+                } else {
+                    New-HypervImageFileHashSample -Hash 'same'
+                }
+            }
+
+            { Move-HypervImageFileIntoPlace `
+                -StagingPath 'C:\images\ubuntu.vhdx.part-abc' `
+                -DestinationPath 'C:\images\ubuntu.vhdx' } | Should -Not -Throw
+        }
+
+        It 're-throws when the losing Move-Item finds different bytes already there' {
+            Mock Move-Item { throw 'Cannot create a file when that file already exists.' }
+            Mock Test-Path { $true }
+            Mock Get-FileHash {
+                if ($LiteralPath -eq 'C:\images\ubuntu.vhdx.part-abc') {
+                    New-HypervImageFileHashSample -Hash 'STAGED'
+                } else {
+                    New-HypervImageFileHashSample -Hash 'DIFFERENT'
+                }
+            }
+
+            { Move-HypervImageFileIntoPlace `
+                -StagingPath 'C:\images\ubuntu.vhdx.part-abc' `
+                -DestinationPath 'C:\images\ubuntu.vhdx' } | Should -Throw
+        }
+
+        It 're-throws when Move-Item fails for a reason unrelated to a same-content race (staging file gone)' {
+            Mock Move-Item { throw 'Cannot create a file when that file already exists.' }
+            Mock Test-Path { $false }
+            Mock Get-FileHash { New-HypervImageFileHashSample -Hash 'EXPECTED' }
+
+            { Move-HypervImageFileIntoPlace `
+                -StagingPath 'C:\images\ubuntu.vhdx.part-abc' `
+                -DestinationPath 'C:\images\ubuntu.vhdx' } | Should -Throw
+
+            Should -Invoke Get-FileHash -Times 0 -Exactly
+        }
+    }
+}
+
 Describe 'New-HypervImageFileFromHostPath' {
 
     Context 'happy path (host_path mode)' {

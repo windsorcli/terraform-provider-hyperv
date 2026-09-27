@@ -14,11 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 
+	"github.com/windsorcli/terraform-provider-hyperv/internal/connection"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
@@ -290,6 +293,59 @@ func TestClient_CopyHostFile_StdinForwardsReplaceWhileMounted(t *testing.T) {
 				t.Errorf("stdin missing %q\nfull stdin: %s", tc.want, stdin)
 			}
 		})
+	}
+}
+
+// concurrentDestRunner tracks concurrent RunScript calls; *FakeRunner
+// returns instantly, so it can't expose an overlap.
+type concurrentDestRunner struct {
+	mu          sync.Mutex
+	inFlight    int
+	maxInFlight int
+}
+
+func (r *concurrentDestRunner) RunScript(_ context.Context, _ string, _ []byte) (connection.Result, error) {
+	r.mu.Lock()
+	r.inFlight++
+	if r.inFlight > r.maxInFlight {
+		r.maxInFlight = r.inFlight
+	}
+	r.mu.Unlock()
+
+	time.Sleep(20 * time.Millisecond)
+
+	r.mu.Lock()
+	r.inFlight--
+	r.mu.Unlock()
+
+	return connection.Result{Stdout: []byte(testutil.ImageFileFixtureJSON)}, nil
+}
+
+func (r *concurrentDestRunner) StreamFile(context.Context, string, string) error { return nil }
+
+// Concurrent CopyHostFile calls for the same destination_path must never
+// overlap inside RunScript.
+func TestClient_CopyHostFile_SerializesSameDestinationPath(t *testing.T) {
+	t.Parallel()
+
+	runner := &concurrentDestRunner{}
+	c := NewClient(runner)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.CopyHostFile(context.Background(), CopyHostFileInput{
+				DestinationPath: "C:\\images\\shared-base.vhdx",
+				SourcePath:      "D:\\images\\source.vhdx",
+			})
+		}()
+	}
+	wg.Wait()
+
+	if runner.maxInFlight > 1 {
+		t.Fatalf("maxInFlight = %d, want 1: concurrent CopyHostFile calls for the same destination_path must serialize", runner.maxInFlight)
 	}
 }
 
