@@ -741,9 +741,10 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 				"Destination file changed since last read",
 				"The file at destination_path no longer matches the sha256 this resource last "+
 					"recorded, so destroy refused to delete it. This usually means another "+
-					"resource or process wrote to the same destination_path. Run `terraform "+
-					"refresh` to see the current content, confirm it's safe to remove, and "+
-					"delete it out-of-band if so.\n\n"+err.Error(),
+					"resource or process wrote to the same destination_path. If the current "+
+					"content is fine to adopt, run `terraform refresh` to update sha256 to it, "+
+					"then destroy again. If it belongs to something else and shouldn't be "+
+					"removed by this resource, delete it out-of-band instead.\n\n"+err.Error(),
 			)
 			return
 		}
