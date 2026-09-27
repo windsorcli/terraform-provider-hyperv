@@ -297,7 +297,9 @@ func resourceSchema() schema.Schema {
 					"and refuses to delete it otherwise. A mismatch means something else -- most likely " +
 					"another resource sharing the same `destination_path` -- changed the file since this " +
 					"resource last read it; deleting it in that case would remove content this resource no " +
-					"longer recognizes.",
+					"longer recognizes. This check is the same full-file `Get-FileHash` cost `Read` pays, so " +
+					"it adds real time to destroying a large VHDX or ISO; setting this flag to `true` skips " +
+					"the check along with the delete itself.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},

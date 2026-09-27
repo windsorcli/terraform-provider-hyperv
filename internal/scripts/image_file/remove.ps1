@@ -182,6 +182,8 @@ function Remove-HypervImageFile {
         throw $errorRecord
     }
     if ($ExpectedSha256) {
+        # Same cost as the Read-time hash: full-file SHA-256, so a
+        # multi-GiB VHDX adds real time to every destroy.
         $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) {
             $exception = [System.IO.InvalidDataException]::new(
