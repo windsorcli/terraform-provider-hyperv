@@ -21,9 +21,11 @@ package vm_test
 // HYPERV_TEST_VHD_DIR.
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
@@ -32,6 +34,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
 
 // VM-side memory cannot be smaller than 32 MiB on Hyper-V Server
@@ -1229,4 +1232,172 @@ resource "hyperv_vm" "test" {
 %s%s%s  }
 }
 `, vmName, startupBytes, dynamicLine, minLine, maxLine)
+}
+
+// TestAcc_VM_hardDiskDriveAndNetworkAdapterDrivenByVariable applies a
+// hyperv_vm whose hard_disk_drive/network_adapter come from a single
+// object-typed variable through a null-conditional.
+func TestAcc_VM_hardDiskDriveAndNetworkAdapterDrivenByVariable(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
+	client := acctest.NewClient(t)
+
+	name := acctest.RandomName("vm-var-hdd-nic")
+	switchName := acctest.RandomName("var-hdd-nic-sw")
+	diskPath := toForwardSlash(joinHostPath(dir, name+".vhdx"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				Config: vmHardDiskAndNetworkAdapterDrivenByVariableConfig(name, diskPath, switchName),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("hard_disk_drive"),
+						knownvalue.SetSizeExact(1),
+					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("network_adapter"),
+						knownvalue.ListSizeExact(1),
+					),
+				},
+			},
+		},
+	})
+}
+
+func vmHardDiskAndNetworkAdapterDrivenByVariableConfig(vmName, diskPath, switchName string) string {
+	return fmt.Sprintf(`
+resource "hyperv_vhd" "root" {
+  path       = %q
+  vhd_type   = "dynamic"
+  size_bytes = 67108864
+}
+
+resource "hyperv_virtual_switch" "primary" {
+  name        = %q
+  switch_type = "Private"
+}
+
+variable "vm" {
+  type = object({
+    disk_path   = optional(string)
+    switch_name = optional(string)
+  })
+  default = {
+    disk_path   = %q
+    switch_name = %q
+  }
+}
+
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu        = { count = 1 }
+  memory     = { startup_bytes = %d }
+
+  dvd_drive  = []
+  boot_order = []
+
+  hard_disk_drive = var.vm.disk_path == null ? null : [
+    {
+      path                = var.vm.disk_path
+      controller_number   = 0
+      controller_location = 0
+    }
+  ]
+
+  network_adapter = var.vm.switch_name == null ? null : [
+    {
+      name        = "primary"
+      switch_name = var.vm.switch_name
+    }
+  ]
+
+  # disk_path/switch_name are plain strings, not resource references,
+  # so nothing else orders the VM after the VHD and switch.
+  depends_on = [hyperv_vhd.root, hyperv_virtual_switch.primary]
+}
+`, diskPath, switchName, diskPath, switchName, vmName, vmMinimumMemoryBytes)
+}
+
+// TestAcc_VM_checkpointAvhdxResolvesToBaseDisk takes a real checkpoint
+// mid-test, then relies on RefreshState's post-refresh plan to catch a
+// leaked .avhdx path in hard_disk_drive.
+func TestAcc_VM_checkpointAvhdxResolvesToBaseDisk(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
+	client := acctest.NewClient(t)
+
+	name := acctest.RandomName("vm-checkpoint")
+	diskPath := toForwardSlash(joinHostPath(dir, name+".vhdx"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				Config: vmWithHardDiskConfig(name, []hardDiskBlock{
+					{Path: diskPath, Number: 0, Location: 0, Source: "hyperv_vhd.root"},
+				}, []vhdBlock{
+					{Name: "root", Path: diskPath},
+				}),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("hard_disk_drive"),
+						knownvalue.SetSizeExact(1),
+					),
+				},
+			},
+			{
+				PreConfig: func() {
+					createVMCheckpoint(t, client, name)
+					t.Cleanup(func() { removeVMCheckpoints(t, client, name) })
+				},
+				RefreshState: true,
+			},
+		},
+	})
+}
+
+// createVMCheckpoint takes a real checkpoint via RunScript -- no
+// production client method exists for this.
+func createVMCheckpoint(t *testing.T, client *hyperv.Client, name string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	script := fmt.Sprintf(
+		`try { Checkpoint-VM -Name %q -ErrorAction Stop; 'ok' } catch { $_.Exception.Message }`,
+		name)
+	res, err := client.RunScript(ctx, script, nil)
+	if err != nil {
+		t.Fatalf("create checkpoint on %s: %v", name, err)
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); got != "ok" {
+		t.Fatalf("create checkpoint on %s: %s", name, got)
+	}
+}
+
+// removeVMCheckpoints merges name's checkpoints back into the base disk.
+func removeVMCheckpoints(t *testing.T, client *hyperv.Client, name string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	script := fmt.Sprintf(
+		`try { Get-VMSnapshot -VMName %q -ErrorAction Stop | Remove-VMSnapshot -ErrorAction Stop; 'ok' } catch { $_.Exception.Message }`,
+		name)
+	res, err := client.RunScript(ctx, script, nil)
+	if err != nil {
+		t.Logf("remove checkpoints on %s: %v", name, err)
+		return
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); got != "ok" {
+		t.Logf("remove checkpoints on %s: %s", name, got)
+	}
 }
