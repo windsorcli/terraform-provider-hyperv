@@ -166,7 +166,44 @@ deferred:
    or batch with other work first.
 4. **On push go-ahead**: push, then `gh pr checks --watch=0` snapshot
    to confirm CI is starting. Print the PR URL.
-5. **Summarize the session**: which findings were committed (with
+5. **Reply to and resolve every addressed review thread.** A commit
+   doesn't close the loop on GitHub — the thread stays open until
+   someone replies and marks it resolved. Do this for every finding
+   that came from a review comment, whether it was fixed or rejected;
+   a CI-only finding has no thread to close. For each one:
+   - Reply naming the fix, referencing the commit that landed it:
+     ```bash
+     gh api "repos/$REPO/pulls/$PR_NUM/comments" \
+         -f body="Fixed in <sha>: <one sentence on what changed>." \
+         -f commit_id="$(git rev-parse HEAD)" \
+         -f path="<file>" \
+         -F in_reply_to=<comment database id>
+     ```
+     For a rejected finding, reply with the reasoning instead of a fix
+     — same as the `confirm` step's disagreement, restated for the
+     reviewer.
+   - Resolve the thread (REST has no resolve endpoint — GraphQL only).
+     Get each thread's node id once, alongside its first comment's
+     database id, then resolve:
+     ```bash
+     gh api graphql -f query='
+     query {
+       repository(owner: "<owner>", name: "<repo>") {
+         pullRequest(number: <PR_NUM>) {
+           reviewThreads(first: 50) {
+             nodes { id isResolved comments(first: 1) { nodes { databaseId } } }
+           }
+         }
+       }
+     }' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id, isResolved, firstCommentId: .comments.nodes[0].databaseId}'
+
+     gh api graphql -f query='
+     mutation { resolveReviewThread(input: {threadId: "<thread node id>"}) { thread { isResolved } } }'
+     ```
+   - Batch all the replies and resolves here, after push — not one at
+     a time inside the per-finding loop, which is for code and commits,
+     not GitHub bookkeeping.
+6. **Summarize the session**: which findings were committed (with
    commit hashes), which were rejected/deferred, and any follow-ups
    that came up.
 
@@ -189,6 +226,10 @@ deferred:
   review intent.
 - **Don't generate the PR description or comments** — that's
   `create-pr`'s job. This skill works inside an existing PR.
+- **Don't leave review threads open after their finding is committed
+  (or rejected).** Reply and resolve at the end of the session, per
+  the "After the loop" step — a fix that never gets acknowledged on
+  the thread looks unaddressed to the reviewer and the author.
 
 ## Tone
 
