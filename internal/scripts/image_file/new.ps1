@@ -74,10 +74,11 @@ function Save-HypervHttpFile {
 }
 
 # Move-HypervImageFileIntoPlace renames $StagingPath to $DestinationPath.
-# Move-Item -Force isn't atomic, so two resources racing the same
-# destination can hit "already exists" on the loser even with identical
-# bytes. On that failure, adopt the destination if its hash matches
-# $StagingPath; otherwise re-throw.
+# Move-Item -Force can fail with "already exists" whenever the destination
+# is already populated -- a second resource pointed at the same path, a
+# recreate after keep_on_destroy, or a genuine concurrent write. On that
+# failure, adopt the destination if its hash matches $StagingPath (the
+# documented SHA-skip no-op); otherwise re-throw as a real conflict.
 function Move-HypervImageFileIntoPlace {
     [CmdletBinding()]
     param(

@@ -41,10 +41,12 @@ import (
 // there's exactly one ordering of NetNat writes per host.
 //
 // imageFileLocks serializes writes to a given destination_path (image
-// file and VHD copy methods). Two resources sharing a destination_path
-// otherwise race new.ps1's verify-then-rename and can hit "file already
-// exists" even with identical bytes. Keyed per-path so unrelated images
-// still write in parallel.
+// file and VHD copy methods), so two resources genuinely running in
+// parallel don't overlap inside new.ps1's verify-then-rename. new.ps1's
+// hash-match adoption (see Move-HypervImageFileIntoPlace) is the main
+// fix for a shared destination_path; this lock only covers true
+// concurrent applies. Keyed per-path so unrelated images still write
+// in parallel.
 type Client struct {
 	runner         connection.Runner
 	httpClient     *http.Client
