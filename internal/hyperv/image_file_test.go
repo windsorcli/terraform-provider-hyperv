@@ -1644,6 +1644,31 @@ func TestClient_RemoveImageFile_ForwardsForceTrueInStdin(t *testing.T) {
 	}
 }
 
+// Two resources sharing a destination_path can have Terraform destroy
+// both in parallel; a delete racing a sibling's delete on the same file
+// must never overlap inside RunScript, or the loser sees a sharing
+// violation indistinguishable from an antivirus lock.
+func TestClient_RemoveImageFile_SerializesSameDestinationPath(t *testing.T) {
+	t.Parallel()
+
+	runner := &concurrentDestRunner{}
+	c := NewClient(runner)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = c.RemoveImageFile(context.Background(), RemoveImageFileInput{Path: "C:\\images\\shared-base.vhdx"})
+		}()
+	}
+	wg.Wait()
+
+	if runner.maxInFlight > 1 {
+		t.Fatalf("maxInFlight = %d, want 1: concurrent RemoveImageFile calls for the same destination_path must serialize", runner.maxInFlight)
+	}
+}
+
 // TestClient_SweepImageFiles_DecodesRemovedList pins the wire contract:
 // sweep.ps1 emits {"removed":[...]} and the client returns the slice.
 // Mirrors TestClient_SweepNetNats_DecodesRemovedList in netnat_test.go.

@@ -41,13 +41,14 @@ import (
 // One RWMutex per Client is correct because NetNat is host-singleton:
 // there's exactly one ordering of NetNat writes per host.
 //
-// imageFileLocks serializes writes to a given destination_path (image
-// file and VHD copy methods), so two resources genuinely running in
-// parallel don't overlap inside new.ps1's verify-then-rename. new.ps1's
-// hash-match adoption (see Move-HypervImageFileIntoPlace) is the main
-// fix for a shared destination_path; this lock only covers true
-// concurrent applies. Keyed per-path so unrelated images still write
-// in parallel.
+// imageFileLocks serializes writes and deletes for a given destination_path
+// (image file and VHD copy/remove methods), so two resources genuinely
+// running in parallel don't overlap inside new.ps1's verify-then-rename
+// or remove.ps1's hash-check-then-delete. new.ps1's hash-match adoption
+// (see Move-HypervImageFileIntoPlace) is the main fix for a shared
+// destination_path on create; this lock covers true concurrent applies
+// on both create and destroy. Keyed per-path so unrelated images still
+// proceed in parallel.
 type Client struct {
 	runner         connection.Runner
 	httpClient     *http.Client

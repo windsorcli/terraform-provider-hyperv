@@ -873,7 +873,15 @@ func (c *Client) SweepImageFiles(ctx context.Context, parentDir, prefix string) 
 // Returns ErrContentDrift when ExpectedSha256 is set and no longer
 // matches the on-host file -- remove.ps1 refuses the delete rather than
 // removing content this resource no longer recognizes.
+//
+// Locked per destination_path for the same reason the write methods are:
+// two resources sharing a path can have Terraform destroy both in
+// parallel, and a delete racing a sibling's delete (or hash-check) on
+// the same file surfaces as a sharing violation indistinguishable from
+// an antivirus lock.
 func (c *Client) RemoveImageFile(ctx context.Context, in RemoveImageFileInput) error {
+	defer c.lockDestinationPath(in.Path)()
+
 	body, err := scripts.ImageFileScript("remove")
 	if err != nil {
 		return fmt.Errorf("load image_file/remove.ps1: %w", err)
