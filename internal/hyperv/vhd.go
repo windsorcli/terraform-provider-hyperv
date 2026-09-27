@@ -254,7 +254,14 @@ func (c *Client) ResizeVHD(ctx context.Context, path string, sizeBytes int64) (*
 // as success (already gone). The cmdlet errors loudly when the file is
 // attached to a running VM (open file handle); that surfaces as
 // ErrPSExecution rather than being swallowed.
+//
+// Locked per path against CopyHostFile: source_path-mode hyperv_vhd
+// creates through the same shared CopyHostFile as hyperv_image_file, so
+// a vhd and an image_file sharing a path need the same create/destroy
+// interlock CopyHostFile and RemoveImageFile already have.
 func (c *Client) RemoveVHD(ctx context.Context, path string) error {
+	defer c.lockDestinationPath(path)()
+
 	body, err := scripts.VHDScript("remove")
 	if err != nil {
 		return fmt.Errorf("load vhd/remove.ps1: %w", err)

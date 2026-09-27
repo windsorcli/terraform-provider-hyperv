@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -314,6 +315,39 @@ func TestClient_RemoveVHD_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	err := c.RemoveVHD(t.Context(), "C:\\vhds\\already-gone.vhdx")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// source_path-mode hyperv_vhd creates through the same shared
+// CopyHostFile as hyperv_image_file, so a vhd and an image_file sharing
+// a path need RemoveVHD and CopyHostFile to serialize against each
+// other too, not just against same-method calls.
+func TestClient_CopyHostFileAndRemoveVHD_SerializeSameDestinationPath(t *testing.T) {
+	t.Parallel()
+
+	runner := &concurrentDestRunner{}
+	c := NewClient(runner)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.CopyHostFile(context.Background(), CopyHostFileInput{
+				DestinationPath: "C:\\vhds\\shared-base.vhdx",
+				SourcePath:      "D:\\vhds\\source.vhdx",
+			})
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = c.RemoveVHD(context.Background(), "C:\\vhds\\shared-base.vhdx")
+		}()
+	}
+	wg.Wait()
+
+	if runner.maxInFlight > 1 {
+		t.Fatalf("maxInFlight = %d, want 1: concurrent CopyHostFile and RemoveVHD calls for the same destination_path must serialize", runner.maxInFlight)
 	}
 }
 

@@ -32,7 +32,7 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 |---|---|---|
 | `hyperv_virtual_switch` | Networking | External / Internal / Private / NAT switches; NIC team binding; management OS share toggle. NAT switches provision the underlying `NetNat` + host vNIC IP. |
 | `hyperv_nat_static_mapping` | Networking | TCP/UDP port forward (`Add-NetNatStaticMapping`) into a private/internal subnet, plus an optional inbound firewall allow rule. Functionally equivalent to `azurerm_lb_nat_rule` / `google_compute_forwarding_rule`. |
-| `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Four source modes: `url` (provider downloads + verifies SHA-256, with optional `gz`/`xz`/`zst`/`bz2` decompression), `local_path` (streams a runner-local file via the active backend), `literal_bytes` (base64 payload — pairs with `hyperv_iso_volume`), and `host_path` (attests the file already exists). |
+| `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Five source modes: `url` (provider downloads + verifies SHA-256, with optional `gz`/`xz`/`zst`/`bz2` decompression), `local_path` (streams a runner-local file via the active backend), `literal_bytes` (base64 payload — pairs with `hyperv_iso_volume`), `source_path` (host-side copy from an existing file), and `host_path` (attests the file already exists). |
 | `hyperv_vhd` | Storage | Fixed / dynamic / differencing VHD or VHDX. Resize supported for dynamic. |
 | `hyperv_vm` | Compute | Generation 1/2; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources). |
 
@@ -58,7 +58,7 @@ The following are either deferred to post-1.0 or under active design — track a
 - Generation 1 BIOS startup order (`Set-VMBios -StartupOrder`).
 - Trunk and isolation VLAN modes on inline NICs (access-mode VLANs are supported via `vlan_id`; static MAC addresses via `mac_address`).
 - Replication, live migration, SR-IOV, GPU partitioning, shielded VMs.
-- Additional `hyperv_image_file` source modes beyond the four shipped — e.g. a templated-content mode or a native answer-file synthesizer. The current `literal_bytes` mode paired with `hyperv_iso_volume` covers most cloud-init NoCloud / autounattend use cases without a new mode.
+- Additional `hyperv_image_file` source modes beyond the five shipped — e.g. a templated-content mode or a native answer-file synthesizer. The current `literal_bytes` mode paired with `hyperv_iso_volume` covers most cloud-init NoCloud / autounattend use cases without a new mode.
 
 ## Requirements
 

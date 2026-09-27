@@ -16,6 +16,7 @@ package vhd_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
@@ -306,6 +308,68 @@ func TestAcc_VHD_sourcePath(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAcc_VHD_sharedDestinationPathWithImageFile applies a hyperv_vhd and
+// a hyperv_image_file, both source_path-mode, at the same destination
+// path with no dependency between them, so create and destroy both run
+// concurrently under Terraform's default parallelism -- the scenario
+// RemoveVHD's lock exists for.
+func TestAcc_VHD_sharedDestinationPathWithImageFile(t *testing.T) {
+	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
+	client := acctest.NewClient(t)
+
+	sourcePath := joinHostPath(dir, acctest.RandomName("vhd-shared-src")+".vhdx")
+	destPath := toSlash(joinHostPath(dir, acctest.RandomName("vhd-shared-dest")+".vhdx"))
+
+	stageSourceVHD(t, client, sourcePath, vhdInitialSizeBytes)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := client.RemoveVHD(ctx, sourcePath); err != nil {
+			t.Logf("cleanup: remove source %s: %v", sourcePath, err)
+		}
+	})
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy: func(s *terraform.State) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := client.GetVHD(ctx, destPath); !errors.Is(err, hyperv.ErrNotFound) {
+				return fmt.Errorf("shared destination %s still exists after destroy (or unexpected error: %v)", destPath, err)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: vhdAndImageFileSharedDestinationConfig(toSlash(sourcePath), destPath),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("hyperv_vhd.a",
+						tfjsonpath.New("path"), knownvalue.StringExact(destPath)),
+					statecheck.ExpectKnownValue("hyperv_image_file.b",
+						tfjsonpath.New("destination_path"), knownvalue.StringExact(destPath)),
+				},
+			},
+		},
+	})
+}
+
+// vhdAndImageFileSharedDestinationConfig declares independent hyperv_vhd
+// and hyperv_image_file resources pointed at the same destination path.
+func vhdAndImageFileSharedDestinationConfig(sourcePath, destPath string) string {
+	return fmt.Sprintf(`
+resource "hyperv_vhd" "a" {
+  path        = %q
+  source_path = %q
+}
+
+resource "hyperv_image_file" "b" {
+  destination_path = %q
+  source_path       = %q
+}
+`, destPath, sourcePath, destPath, sourcePath)
 }
 
 // TestAcc_VHD_sourcePathDeferred covers the case where the source is
