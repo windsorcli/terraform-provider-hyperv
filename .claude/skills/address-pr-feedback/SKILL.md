@@ -187,18 +187,20 @@ deferred:
      database id, then resolve:
      ```bash
      gh api graphql -f query='
-     query {
-       repository(owner: "<owner>", name: "<repo>") {
-         pullRequest(number: <PR_NUM>) {
+     query($owner: String!, $repo: String!, $num: Int!) {
+       repository(owner: $owner, name: $repo) {
+         pullRequest(number: $num) {
            reviewThreads(first: 50) {
              nodes { id isResolved comments(first: 1) { nodes { databaseId } } }
            }
          }
        }
-     }' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id, isResolved, firstCommentId: .comments.nodes[0].databaseId}'
+     }' -F owner="${REPO%/*}" -F repo="${REPO#*/}" -F num="$PR_NUM" \
+         --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {id, isResolved, firstCommentId: .comments.nodes[0].databaseId}'
 
      gh api graphql -f query='
-     mutation { resolveReviewThread(input: {threadId: "<thread node id>"}) { thread { isResolved } } }'
+     mutation($tid: ID!) { resolveReviewThread(input: {threadId: $tid}) { thread { isResolved } } }' \
+         -F tid="<thread node id>"
      ```
    - Batch all the replies and resolves here, after push — not one at
      a time inside the per-finding loop, which is for code and commits,
