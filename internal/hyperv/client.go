@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -55,10 +56,13 @@ type Client struct {
 }
 
 // lockDestinationPath returns an unlock func for destinationPath's lock.
-// Call as: defer c.lockDestinationPath(path)()
+// Call as: defer c.lockDestinationPath(path)().
 func (c *Client) lockDestinationPath(destinationPath string) func() {
 	v, _ := c.imageFileLocks.LoadOrStore(destinationPath, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		panic(fmt.Sprintf("imageFileLocks: stored %T for %q, want *sync.Mutex", v, destinationPath))
+	}
 	mu.Lock()
 	return mu.Unlock
 }
