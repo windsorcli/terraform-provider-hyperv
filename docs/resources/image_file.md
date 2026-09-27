@@ -198,6 +198,8 @@ Container archives (`tar`, `tar.gz`, `zip`) are deliberately unsupported -- they
 
 Import is supported using the following syntax:
 
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
 ```shell
 # Import an existing file by its absolute path on the Hyper-V host. The
 # resource lands in host_path-mode (no `url` block) -- importing inherently

@@ -438,6 +438,8 @@ No `UseStateForUnknown` plan modifier: a plan that changes `state.desired` would
 
 Import is supported using the following syntax:
 
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
 ```shell
 # Import an existing VM by name. VM names are unique per host, so the
 # name alone is sufficient as the import identifier. Read populates

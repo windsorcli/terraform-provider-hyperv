@@ -135,6 +135,8 @@ This tracks the *source*, not the disk at `path`. A copied boot disk diverges fr
 
 Import is supported using the following syntax:
 
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
 ```shell
 # Import an existing VHD/VHDX by its absolute path on the Hyper-V host.
 # Read populates vhd_type, size_bytes, parent_path (if differencing), and
