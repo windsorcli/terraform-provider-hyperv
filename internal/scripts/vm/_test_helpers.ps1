@@ -124,6 +124,13 @@ function Get-VMHardDiskDrive {
     )
 }
 
+function Get-VHD {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] [string] $Path
+    )
+}
+
 function Add-VMHardDiskDrive {
     [CmdletBinding()]
     param(
@@ -305,6 +312,9 @@ function New-HypervVMFirmwareSample {
 #   'HardDiskDrive'    -> emits a Device with ControllerType / Number / Location
 #   'DvdDrive'         -> ditto
 #   'VMNetworkAdapter' -> emits a Device with Name
+#   'None'             -> emits a $null Device, as Hyper-V returns for
+#                         File and Unknown firmware entries; requires
+#                         an explicit -BootType
 #
 # The Device's CLR type name is set via PSObject.TypeNames.Insert
 # so the script's $entry.Device.GetType().Name pseudo-test matches
@@ -315,13 +325,25 @@ function New-HypervVMBootOrderEntrySample {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('HardDiskDrive', 'DvdDrive', 'VMNetworkAdapter')]
+        [ValidateSet('HardDiskDrive', 'DvdDrive', 'VMNetworkAdapter', 'None')]
         [string] $DeviceType,
+        [string] $BootType           = 'Drive',
         [string] $ControllerType     = 'SCSI',
         [int]    $ControllerNumber   = 0,
         [int]    $ControllerLocation = 0,
         [string] $Name               = 'primary'
     )
+    if ($DeviceType -eq 'None') {
+        # Hyper-V pairs a null Device with File or Unknown, never the
+        # 'Drive' default -- make the caller name which one.
+        if (-not $PSBoundParameters.ContainsKey('BootType')) {
+            throw "-DeviceType 'None' requires an explicit -BootType (File or Unknown)."
+        }
+        return [pscustomobject]@{
+            BootType = $BootType
+            Device   = $null
+        }
+    }
     $device = switch ($DeviceType) {
         'HardDiskDrive' {
             New-Object psobject -Property @{
@@ -351,7 +373,7 @@ function New-HypervVMBootOrderEntrySample {
     # so we add a ScriptMethod that shadows it.
     $device | Add-Member -MemberType ScriptMethod -Name GetType -Force -Value ([scriptblock]::Create("[pscustomobject]@{ Name = '$DeviceType' }"))
     [pscustomobject]@{
-        BootType = 'Drive'
+        BootType = $BootType
         Device   = $device
     }
 }
@@ -373,6 +395,23 @@ function New-HypervVMHardDiskDriveSample {
         ControllerType     = $ControllerType
         ControllerNumber   = $ControllerNumber
         ControllerLocation = $ControllerLocation
+    }
+}
+
+# New-HypervVHDSample builds a Get-VHD-shaped object for use in Mock
+# blocks. Defaults model a base (non-differencing) VHDX; per-test
+# overrides cover the checkpoint differencing-disk shape.
+function New-HypervVHDSample {
+    [CmdletBinding()]
+    param(
+        [string] $Path       = 'C:\hyperv\vhds\sample.vhdx',
+        [string] $VhdType    = 'Dynamic',
+        [string] $ParentPath = ''
+    )
+    [pscustomobject]@{
+        Path       = $Path
+        VhdType    = $VhdType
+        ParentPath = $ParentPath
     }
 }
 

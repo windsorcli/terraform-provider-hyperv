@@ -59,7 +59,7 @@ function Invoke-HypervImageFileSweep {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Invoke-HypervImageFileSweep -ParentDir $params.parent_dir -NamePrefix $params.name_prefix
     }
     catch {

@@ -87,3 +87,54 @@ resource "hyperv_vm" "vms" {
 		},
 	})
 }
+
+// TestValidate_HardDiskDriveAndNetworkAdapterDrivenByVariable is the
+// hard_disk_drive/network_adapter analog of
+// TestValidate_DvdDriveAndBootOrderDrivenByVariable.
+func TestValidate_HardDiskDriveAndNetworkAdapterDrivenByVariable(t *testing.T) {
+	t.Parallel()
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+variable "vms" {
+  type = map(object({
+    disk_path   = optional(string)
+    switch_name = optional(string)
+  }))
+  default = {}
+}
+
+resource "hyperv_vm" "vms" {
+  for_each   = var.vms
+  name       = each.key
+  generation = 2
+  cpu        = { count = 1 }
+  memory     = { startup_bytes = 1073741824 }
+
+  dvd_drive  = []
+  boot_order = []
+
+  hard_disk_drive = each.value.disk_path == null ? null : [
+    {
+      path                = each.value.disk_path
+      controller_number   = 0
+      controller_location = 0
+    }
+  ]
+
+  network_adapter = each.value.switch_name == null ? null : [
+    {
+      name        = "primary"
+      switch_name = each.value.switch_name
+    }
+  ]
+}
+`,
+				PlanOnly: true,
+			},
+		},
+	})
+}

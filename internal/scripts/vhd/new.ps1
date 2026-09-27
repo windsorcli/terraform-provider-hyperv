@@ -168,7 +168,7 @@ function Invoke-HypervVHDNew {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Invoke-HypervVHDNew -Params $params
     }
     catch {

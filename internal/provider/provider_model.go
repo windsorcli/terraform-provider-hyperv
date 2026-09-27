@@ -42,11 +42,12 @@ type SSHConfig struct {
 // WinRMConfig configures the WinRM backend. Schema is defined now to lock
 // the attribute names per §13; the backend itself ships in M3.
 type WinRMConfig struct {
-	UseHTTPS types.Bool           `tfsdk:"use_https"`
-	Insecure types.Bool           `tfsdk:"insecure"`
-	Auth     types.String         `tfsdk:"auth"`
-	CACert   types.String         `tfsdk:"cacert"`
-	Kerberos *WinRMKerberosConfig `tfsdk:"kerberos"`
+	UseHTTPS  types.Bool           `tfsdk:"use_https"`
+	Insecure  types.Bool           `tfsdk:"insecure"`
+	Auth      types.String         `tfsdk:"auth"`
+	CACert    types.String         `tfsdk:"cacert"`
+	MaxShells types.Int64          `tfsdk:"max_shells"`
+	Kerberos  *WinRMKerberosConfig `tfsdk:"kerberos"`
 }
 
 // WinRMKerberosConfig configures the WinRM Kerberos auth path. Only

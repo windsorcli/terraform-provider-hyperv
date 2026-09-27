@@ -20,7 +20,8 @@ resource "hyperv_vm" "node01" {
   ]
 
   # Attach an existing VHDX. In real configs the path would typically
-  # reference a hyperv_vhd resource's path attribute.
+  # reference a hyperv_vhd resource's path, or a hyperv_image_file's
+  # destination_path when the disk is a copy of a vendor image.
   hard_disk_drive = [
     { path = "C:/hyperv/vhds/node01-root.vhdx", controller_number = 0, controller_location = 0 },
   ]

@@ -35,6 +35,29 @@ resource "hyperv_image_file" "autounattend_iso" {
   local_path       = "${path.module}/dist/autounattend.iso"
 }
 
+# source_path-mode -- the provider copies a file the host already holds
+# to a second path on the host. Nothing crosses the runner-to-host link,
+# so cloning a multi-GiB image runs at host disk speed.
+#
+# Unlike a differencing hyperv_vhd, the copy has no lasting tie to its
+# source, so refreshing the upstream image in place is safe. The source
+# is hashed at plan time; a replacement surfaces as a `sha256` diff and
+# re-copies on the next apply.
+resource "hyperv_image_file" "fcos_upstream" {
+  destination_path = "C:/hyperv/images/fcos-stable.vhdx"
+  url = {
+    url         = "https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/42.20250705.3.0/x86_64/fedora-coreos-42.20250705.3.0-hyperv.x86_64.vhdx.xz"
+    checksum    = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    compression = "xz"
+  }
+  keep_on_destroy = true
+}
+
+resource "hyperv_image_file" "controlplane_1_boot" {
+  destination_path = "C:/hyperv/vms/controlplane-1/boot.vhdx"
+  source_path      = hyperv_image_file.fcos_upstream.destination_path
+}
+
 # host_path-mode -- the file is already on the Hyper-V host (placed
 # out-of-band, e.g. by an admin or a separate provisioning tool). The
 # provider verifies its presence and tracks the SHA-256 for drift, but

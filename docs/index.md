@@ -94,6 +94,7 @@ Optional:
 `password` and `ccache_path` are mutually exclusive (a config validator rejects configs that set both, or neither, when `auth = "kerberos"`).
 
 `host` must be an FQDN (e.g. `hv01.example.com`), not a bare IP -- the SPN match keys on hostname. (see [below for nested schema](#nestedatt--winrm--kerberos))
+- `max_shells` (Number) Maximum concurrent WinRM shells. Windows' default `MaxShellsPerUser` is 5; Terraform's default `-parallelism=10` can exceed it and trigger HTTP 400 errors. Default: `3`. Falls back to `HYPERV_WINRM_MAX_SHELLS`.
 - `use_https` (Boolean) Use HTTPS (port 5986). Default: `true`. Setting `false` requires the host's WSMan service to have `AllowUnencrypted = $true` (strongly discouraged). Falls back to `HYPERV_WINRM_USE_HTTPS`.
 
 <a id="nestedatt--winrm--kerberos"></a>

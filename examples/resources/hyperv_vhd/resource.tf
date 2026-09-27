@@ -33,3 +33,23 @@ resource "hyperv_vhd" "vm01_root" {
   vhd_type    = "differencing"
   parent_path = hyperv_image_file.ubuntu_parent.destination_path
 }
+
+# source_path-mode -- copy an existing disk instead of creating one, then
+# grow the copy. Nothing crosses the runner-to-host link; the copy runs at
+# host disk speed.
+#
+# Prefer this over a differencing disk when the upstream image is refreshed
+# on a schedule: a differencing child is bound to its parent for life, so
+# the parent can never be replaced in place. A copy has no such tie. The
+# source is hashed at plan time, so a refreshed image surfaces as a
+# source_sha256 diff and re-copies -- which overwrites the disk, discarding
+# whatever the guest wrote. That is the intended upgrade path for immutable
+# OS images and the wrong tool for a disk holding state you care about.
+#
+# vhd_type, parent_path, and block_size_bytes are all inherited from the
+# source and rejected if supplied; size_bytes is the exception.
+resource "hyperv_vhd" "controlplane_1_boot" {
+  path        = "C:/hyperv/vhds/controlplane-1-boot.vhdx"
+  source_path = hyperv_image_file.ubuntu_parent.destination_path
+  size_bytes  = 21474836480 # 20 GiB -- grow past the image's shipped size
+}

@@ -48,7 +48,7 @@ function Add-HypervVMHardDiskDrive {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Add-HypervVMHardDiskDrive `
             -Name               $params.name `
             -ControllerType     $params.controller_type `

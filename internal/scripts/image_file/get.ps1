@@ -45,7 +45,7 @@ function Get-HypervImageFile {
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $params = Read-HypervStdinParams
+        $params = Read-HypervStdinPayload
         Get-HypervImageFile -Path $params.path
     }
     catch {

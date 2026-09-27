@@ -57,23 +57,15 @@ import (
 // ordering matches canonical state on subsequent applies) with a
 // simpler decode.
 type Model struct {
-	ID              types.String          `tfsdk:"id"`
-	Name            types.String          `tfsdk:"name"`
-	Generation      types.Int64           `tfsdk:"generation"`
-	CPU             *CPUModel             `tfsdk:"cpu"`
-	Memory          *MemoryModel          `tfsdk:"memory"`
-	HardDiskDrives  []HardDiskDriveModel  `tfsdk:"hard_disk_drive"`
-	NetworkAdapters []NetworkAdapterModel `tfsdk:"network_adapter"`
-	// DvdDrives and BootOrder are types.List rather than []Struct so the
-	// framework can represent unknown values cleanly. The framework's
-	// reflect path can't fit "the whole list is unknown" into a Go slice
-	// (no representation for it), and emits "Value Conversion Error /
-	// Suggested Type: basetypes.ListValue" when a config drives the
-	// attribute from a for_each variable that hasn't materialized at
-	// validate time. Same fix shape PR #70 applied to URLConfig on
-	// hyperv_image_file. Helpers below give resource code typed access
-	// to the underlying []DvdDriveModel / []BootOrderEntryModel slice
-	// when the value is known.
+	ID         types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
+	Generation types.Int64  `tfsdk:"generation"`
+	CPU        *CPUModel    `tfsdk:"cpu"`
+	Memory     *MemoryModel `tfsdk:"memory"`
+	// types.List, not []Struct, so an unknown plan value (e.g. a
+	// for_each variable not yet materialized) decodes cleanly.
+	HardDiskDrives     types.List   `tfsdk:"hard_disk_drive"`
+	NetworkAdapters    types.List   `tfsdk:"network_adapter"`
 	DvdDrives          types.List   `tfsdk:"dvd_drive"`
 	BootOrder          types.List   `tfsdk:"boot_order"`
 	SecureBoot         types.Bool   `tfsdk:"secure_boot"`
@@ -127,6 +119,35 @@ type HardDiskDriveModel struct {
 	ControllerLocation types.Int64   `tfsdk:"controller_location"`
 }
 
+// HardDiskDriveAttrTypes mirrors HardDiskDriveModel's tfsdk tags.
+var HardDiskDriveAttrTypes = map[string]attr.Type{
+	"path":                pathtype.Type,
+	"controller_type":     types.StringType,
+	"controller_number":   types.Int64Type,
+	"controller_location": types.Int64Type,
+}
+
+// HardDiskDriveListElementType is the Object type hard_disk_drive elements use.
+var HardDiskDriveListElementType = types.ObjectType{AttrTypes: HardDiskDriveAttrTypes}
+
+// HardDiskDriveModels decodes m.HardDiskDrives, or nil if null/unknown.
+func (m *Model) HardDiskDriveModels(ctx context.Context) ([]HardDiskDriveModel, diag.Diagnostics) {
+	if m.HardDiskDrives.IsNull() || m.HardDiskDrives.IsUnknown() {
+		return nil, nil
+	}
+	out := make([]HardDiskDriveModel, 0, len(m.HardDiskDrives.Elements()))
+	diags := m.HardDiskDrives.ElementsAs(ctx, &out, false)
+	return out, diags
+}
+
+// HardDiskDriveListFromSlice builds a types.List from a slice; nil -> null, empty -> empty.
+func HardDiskDriveListFromSlice(ctx context.Context, slice []HardDiskDriveModel) (types.List, diag.Diagnostics) {
+	if slice == nil {
+		return types.ListNull(HardDiskDriveListElementType), nil
+	}
+	return types.ListValueFrom(ctx, HardDiskDriveListElementType, slice)
+}
+
 // NetworkAdapterModel is one element of the `network_adapter` list on
 // hyperv_vm. Display Name is the slot key for diff/reconciliation
 // (Hyper-V allows duplicate-named NICs at the cmdlet level, but the
@@ -164,6 +185,36 @@ type NetworkAdapterModel struct {
 	IPAddresses types.List   `tfsdk:"ip_addresses"`
 	MacAddress  mactype.MAC  `tfsdk:"mac_address"`
 	VlanID      types.Int64  `tfsdk:"vlan_id"`
+}
+
+// NetworkAdapterAttrTypes mirrors NetworkAdapterModel's tfsdk tags.
+var NetworkAdapterAttrTypes = map[string]attr.Type{
+	"name":         types.StringType,
+	"switch_name":  types.StringType,
+	"ip_addresses": types.ListType{ElemType: types.StringType},
+	"mac_address":  mactype.Type,
+	"vlan_id":      types.Int64Type,
+}
+
+// NetworkAdapterListElementType is the Object type network_adapter elements use.
+var NetworkAdapterListElementType = types.ObjectType{AttrTypes: NetworkAdapterAttrTypes}
+
+// NetworkAdapterModels decodes m.NetworkAdapters, or nil if null/unknown.
+func (m *Model) NetworkAdapterModels(ctx context.Context) ([]NetworkAdapterModel, diag.Diagnostics) {
+	if m.NetworkAdapters.IsNull() || m.NetworkAdapters.IsUnknown() {
+		return nil, nil
+	}
+	out := make([]NetworkAdapterModel, 0, len(m.NetworkAdapters.Elements()))
+	diags := m.NetworkAdapters.ElementsAs(ctx, &out, false)
+	return out, diags
+}
+
+// NetworkAdapterListFromSlice builds a types.List from a slice; nil -> null, empty -> empty.
+func NetworkAdapterListFromSlice(ctx context.Context, slice []NetworkAdapterModel) (types.List, diag.Diagnostics) {
+	if slice == nil {
+		return types.ListNull(NetworkAdapterListElementType), nil
+	}
+	return types.ListValueFrom(ctx, NetworkAdapterListElementType, slice)
 }
 
 // DvdDriveModel is one element of the `dvd_drive` list on hyperv_vm.

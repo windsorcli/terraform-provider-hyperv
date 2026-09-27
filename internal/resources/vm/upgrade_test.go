@@ -68,15 +68,16 @@ func TestUpgradeV0ToV1(t *testing.T) {
 
 	// New inline lists initialized empty (known, not null) so the
 	// v1 state-shape constraint holds until the next refresh.
-	if got.HardDiskDrives == nil || len(got.HardDiskDrives) != 0 {
-		t.Errorf("HardDiskDrives: got %+v, want empty []HardDiskDriveModel{}", got.HardDiskDrives)
+	// HardDiskDrives, NetworkAdapters, DvdDrives, and BootOrder are all
+	// types.List on the latest schema. Upgraders return a known empty
+	// list so the post-upgrade state shape matches the schema's
+	// Default empty-list value.
+	if got.HardDiskDrives.IsNull() || got.HardDiskDrives.IsUnknown() || len(got.HardDiskDrives.Elements()) != 0 {
+		t.Errorf("HardDiskDrives: got %+v, want known empty list", got.HardDiskDrives)
 	}
-	if got.NetworkAdapters == nil || len(got.NetworkAdapters) != 0 {
-		t.Errorf("NetworkAdapters: got %+v, want empty", got.NetworkAdapters)
+	if got.NetworkAdapters.IsNull() || got.NetworkAdapters.IsUnknown() || len(got.NetworkAdapters.Elements()) != 0 {
+		t.Errorf("NetworkAdapters: got %+v, want known empty list", got.NetworkAdapters)
 	}
-	// DvdDrives and BootOrder are types.List on the latest schema.
-	// Upgraders return a known empty list so the post-upgrade state
-	// shape matches the schema's Default empty-list value.
 	if got.DvdDrives.IsNull() || got.DvdDrives.IsUnknown() || len(got.DvdDrives.Elements()) != 0 {
 		t.Errorf("DvdDrives: got %+v, want known empty list", got.DvdDrives)
 	}
@@ -315,10 +316,14 @@ func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 
 	got := upgradeV3ToV5(t.Context(), prior)
 
-	if len(got.NetworkAdapters) != 2 {
-		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
+	nics, nicDiags := got.NetworkAdapterModels(t.Context())
+	if nicDiags.HasError() {
+		t.Fatalf("NetworkAdapterModels: %v", nicDiags)
 	}
-	for i, n := range got.NetworkAdapters {
+	if len(nics) != 2 {
+		t.Fatalf("NetworkAdapters len = %d, want 2", len(nics))
+	}
+	for i, n := range nics {
 		if n.IPAddresses.IsNull() {
 			t.Errorf("NIC[%d].IPAddresses is null; want empty list (the schema marks it Computed)", i)
 		}
@@ -345,11 +350,11 @@ func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 		}
 	}
 	// Pre-existing NIC fields carry through unchanged.
-	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
-		t.Errorf("NIC[0].Name: got %q, want primary", got.NetworkAdapters[0].Name.ValueString())
+	if nics[0].Name.ValueString() != "primary" {
+		t.Errorf("NIC[0].Name: got %q, want primary", nics[0].Name.ValueString())
 	}
-	if got.NetworkAdapters[1].SwitchName.ValueString() != "mgmt" {
-		t.Errorf("NIC[1].SwitchName: got %q, want mgmt", got.NetworkAdapters[1].SwitchName.ValueString())
+	if nics[1].SwitchName.ValueString() != "mgmt" {
+		t.Errorf("NIC[1].SwitchName: got %q, want mgmt", nics[1].SwitchName.ValueString())
 	}
 }
 
@@ -399,10 +404,14 @@ func TestUpgradeV4ToV5_PopulatesNullMacAndVlan(t *testing.T) {
 
 	got := upgradeV4ToV5(t.Context(), prior)
 
-	if len(got.NetworkAdapters) != 2 {
-		t.Fatalf("NetworkAdapters len = %d, want 2", len(got.NetworkAdapters))
+	nics, nicDiags := got.NetworkAdapterModels(t.Context())
+	if nicDiags.HasError() {
+		t.Fatalf("NetworkAdapterModels: %v", nicDiags)
 	}
-	for i, n := range got.NetworkAdapters {
+	if len(nics) != 2 {
+		t.Fatalf("NetworkAdapters len = %d, want 2", len(nics))
+	}
+	for i, n := range nics {
 		if !n.MacAddress.IsNull() {
 			t.Errorf("NIC[%d].MacAddress = %+v, want null (next refresh fills from host)",
 				i, n.MacAddress)
@@ -414,15 +423,15 @@ func TestUpgradeV4ToV5_PopulatesNullMacAndVlan(t *testing.T) {
 	}
 	// IPAddresses carries through unchanged: v4 state already had
 	// the field, so v5 just preserves the values.
-	if got, want := len(got.NetworkAdapters[0].IPAddresses.Elements()), 2; got != want {
+	if got, want := len(nics[0].IPAddresses.Elements()), 2; got != want {
 		t.Errorf("NIC[0].IPAddresses len = %d, want %d (carries through from v4)", got, want)
 	}
-	if got, want := len(got.NetworkAdapters[1].IPAddresses.Elements()), 0; got != want {
+	if got, want := len(nics[1].IPAddresses.Elements()), 0; got != want {
 		t.Errorf("NIC[1].IPAddresses len = %d, want %d (empty list carries through)", got, want)
 	}
 	// Pre-existing NIC fields carry through unchanged.
-	if got.NetworkAdapters[0].Name.ValueString() != "primary" {
-		t.Errorf("NIC[0].Name: got %q, want primary", got.NetworkAdapters[0].Name.ValueString())
+	if nics[0].Name.ValueString() != "primary" {
+		t.Errorf("NIC[0].Name: got %q, want primary", nics[0].Name.ValueString())
 	}
 }
 

@@ -358,6 +358,16 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		return nil
 	}
 
+	maxShells, err := resolveInt(winrmAttrs.MaxShells, "HYPERV_WINRM_MAX_SHELLS", 0)
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("winrm").AtName("max_shells"),
+			"Invalid WinRM max_shells",
+			err.Error(),
+		)
+		return nil
+	}
+
 	// []byte(string) allocates a new copy of the bytes; the source
 	// string (resolveString's return) remains in the framework's
 	// reflection layer until GC. Zeroing inside the connection layer
@@ -377,6 +387,7 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		KrbConfigPath:  krbConfigPath,
 		KrbCCachePath:  krbCCachePath,
 		CommandTimeout: commandTimeout,
+		MaxShells:      maxShells,
 	})
 	if err != nil {
 		diags.AddError(

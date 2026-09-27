@@ -66,6 +66,7 @@ func TestResource_Schema(t *testing.T) {
 		"url",
 		"local_path",
 		"content_base64",
+		"source_path",
 		"replace_while_mounted",
 		"sha256",
 		"size_bytes",
@@ -348,7 +349,7 @@ func TestModelFromImageFile_PreservesURLBlock(t *testing.T) {
 		t.Fatalf("URLObjectFromConfig: %v", diags)
 	}
 
-	got := modelFromImageFile(f, urlObj, pathtype.NewPathNull(), types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolNull())
+	got := modelFromImageFile(f, Model{URL: urlObj})
 
 	if got.ID.ValueString() != f.Path {
 		t.Errorf("ID = %q, want %q", got.ID.ValueString(), f.Path)
@@ -383,7 +384,7 @@ func TestModelFromImageFile_HostPathModePreservesNilURL(t *testing.T) {
 		Sha256:    "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathNull(), types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolNull())
+	got := modelFromImageFile(f, Model{URL: types.ObjectNull(URLAttrTypes)})
 
 	if !got.URL.IsNull() {
 		t.Errorf("URL = %+v, want null Object (host_path mode)", got.URL)
@@ -408,7 +409,7 @@ func TestModelFromImageFile_PreservesLocalPath(t *testing.T) {
 	}
 	localPath := pathtype.NewPathValue("/Users/me/dist/foo.iso")
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), localPath, types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolNull())
+	got := modelFromImageFile(f, Model{URL: types.ObjectNull(URLAttrTypes), LocalPath: localPath})
 
 	if !got.URL.IsNull() {
 		t.Errorf("URL = %+v, want null Object (local_path mode)", got.URL)
@@ -434,7 +435,11 @@ func TestModelFromImageFile_PreservesForceDestroy(t *testing.T) {
 		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	}
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathValue("/Users/me/dist/seed.iso"), types.StringNull(), types.BoolNull(), types.BoolNull(), types.BoolValue(true))
+	got := modelFromImageFile(f, Model{
+		URL:          types.ObjectNull(URLAttrTypes),
+		LocalPath:    pathtype.NewPathValue("/Users/me/dist/seed.iso"),
+		ForceDestroy: types.BoolValue(true),
+	})
 
 	if got.ForceDestroy.IsNull() {
 		t.Fatal("ForceDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
@@ -461,7 +466,11 @@ func TestModelFromImageFile_PreservesKeepOnDestroy(t *testing.T) {
 		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	}
 
-	got := modelFromImageFile(f, types.ObjectNull(URLAttrTypes), pathtype.NewPathValue("/Users/me/dist/cached.iso"), types.StringNull(), types.BoolNull(), types.BoolValue(true), types.BoolNull())
+	got := modelFromImageFile(f, Model{
+		URL:           types.ObjectNull(URLAttrTypes),
+		LocalPath:     pathtype.NewPathValue("/Users/me/dist/cached.iso"),
+		KeepOnDestroy: types.BoolValue(true),
+	})
 
 	if got.KeepOnDestroy.IsNull() {
 		t.Fatal("KeepOnDestroy = null; caller-supplied value must be preserved (Delete reads ValueBool() on this)")
@@ -586,10 +595,10 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 }
 
 // TestSourceModeExclusivityValidator covers the config shapes the
-// validator must distinguish across the three mutually-exclusive
-// placement-mode discriminators (url, local_path, content_base64).
-// Each pairwise conflict and the all-three-set case must reject;
-// any single-set or all-unset case must allow.
+// validator must distinguish across the four mutually-exclusive
+// placement-mode discriminators (url, local_path, content_base64,
+// source_path). Each pairwise conflict and the all-set case must
+// reject; any single-set or all-unset case must allow.
 func TestSourceModeExclusivityValidator(t *testing.T) {
 	t.Parallel()
 
@@ -683,6 +692,62 @@ func TestSourceModeExclusivityValidator(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name: "only source_path set allows (source_path mode)",
+			model: Model{
+				URL:        types.ObjectNull(URLAttrTypes),
+				LocalPath:  pathtype.NewPathNull(),
+				SourcePath: pathtype.NewPathValue("D:/images/fcos.vhdx"),
+			},
+			wantError: false,
+		},
+		{
+			name: "url + source_path rejects",
+			model: Model{
+				URL:        mustURLObject(t),
+				LocalPath:  pathtype.NewPathNull(),
+				SourcePath: pathtype.NewPathValue("D:/images/fcos.vhdx"),
+			},
+			wantError: true,
+		},
+		{
+			name: "local_path + source_path rejects",
+			model: Model{
+				URL:        types.ObjectNull(URLAttrTypes),
+				LocalPath:  pathtype.NewPathValue("/tmp/foo.iso"),
+				SourcePath: pathtype.NewPathValue("D:/images/fcos.vhdx"),
+			},
+			wantError: true,
+		},
+		{
+			name: "content_base64 + source_path rejects",
+			model: Model{
+				URL:           types.ObjectNull(URLAttrTypes),
+				LocalPath:     pathtype.NewPathNull(),
+				ContentBase64: types.StringValue("Zm9v"),
+				SourcePath:    pathtype.NewPathValue("D:/images/fcos.vhdx"),
+			},
+			wantError: true,
+		},
+		{
+			name: "all four set rejects",
+			model: Model{
+				URL:           mustURLObject(t),
+				LocalPath:     pathtype.NewPathValue("/tmp/foo.iso"),
+				ContentBase64: types.StringValue("Zm9v"),
+				SourcePath:    pathtype.NewPathValue("D:/images/fcos.vhdx"),
+			},
+			wantError: true,
+		},
+		{
+			name: "unknown source_path treated as unset (deferred dependency)",
+			model: Model{
+				URL:        mustURLObject(t),
+				LocalPath:  pathtype.NewPathNull(),
+				SourcePath: pathtype.NewPathUnknown(),
+			},
+			wantError: false,
+		},
+		{
 			name: "unknown content_base64 treated as unset (deferred dependency)",
 			model: Model{
 				URL:           types.ObjectNull(URLAttrTypes),
@@ -695,7 +760,7 @@ func TestSourceModeExclusivityValidator(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := sourceModeExclusivityValidator{}.validate(tc.model)
+			got := sourceModeExclusivityValidator{}.validate(t.Context(), tc.model)
 			if got.HasError() != tc.wantError {
 				t.Errorf("validate(...).HasError() = %v, want %v\nfull diags: %v",
 					got.HasError(), tc.wantError, got)
@@ -709,5 +774,135 @@ func TestSourceModeExclusivityValidator(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Schema test: source_path is present and carries RequiresReplace. Same
+// identity-vs-content split local_path has -- pointing at a different
+// source file is a different resource, while the same source file with
+// different bytes is an in-place re-copy driven by the sha256 diff.
+func TestResource_Schema_SourcePathRequiresReplace(t *testing.T) {
+	t.Parallel()
+
+	r := New()
+	resp := &resource.SchemaResponse{}
+	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
+
+	sp, ok := resp.Schema.Attributes["source_path"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("source_path is not a StringAttribute (got %T)", resp.Schema.Attributes["source_path"])
+	}
+	if !sp.Optional {
+		t.Error(`"source_path" must be Optional`)
+	}
+	if sp.CustomType != pathtype.Type {
+		t.Errorf("source_path CustomType = %v, want pathtype.Type (host paths need slash/case folding)", sp.CustomType)
+	}
+	if !hasPlanModifier(sp.PlanModifiers, "RequiresReplace") {
+		t.Error(`"source_path" must carry RequiresReplace`)
+	}
+}
+
+// A source_path equal to destination_path would stage a copy of the file
+// next to itself and rename it back over the original -- a no-op that
+// rewrites the source, and a data-loss hazard if the copy fails partway.
+// The comparison is semantic because Windows treats the two spellings
+// below as one file even though the strings differ.
+func TestSourceModeExclusivityValidator_RejectsSourceEqualToDestination(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		source    string
+		dest      string
+		wantError bool
+	}{
+		{
+			name:      "identical strings reject",
+			source:    "C:/images/fcos.vhdx",
+			dest:      "C:/images/fcos.vhdx",
+			wantError: true,
+		},
+		{
+			name:      "slash and case variants reject (same file on Windows)",
+			source:    "C:/images/fcos.vhdx",
+			dest:      `C:\Images\FCOS.vhdx`,
+			wantError: true,
+		},
+		{
+			name:      "different files allow",
+			source:    "D:/images/fcos.vhdx",
+			dest:      "C:/vms/cp1/boot.vhdx",
+			wantError: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sourceModeExclusivityValidator{}.validate(t.Context(), Model{
+				URL:             types.ObjectNull(URLAttrTypes),
+				LocalPath:       pathtype.NewPathNull(),
+				SourcePath:      pathtype.NewPathValue(tc.source),
+				DestinationPath: pathtype.NewPathValue(tc.dest),
+			})
+			if got.HasError() != tc.wantError {
+				t.Fatalf("validate(...).HasError() = %v, want %v\nfull diags: %v", got.HasError(), tc.wantError, got)
+			}
+			if tc.wantError && !strings.Contains(got[0].Summary(), "must differ") {
+				t.Errorf("diag summary = %q, want substring 'must differ'", got[0].Summary())
+			}
+		})
+	}
+}
+
+// An unknown destination_path (driven from a not-yet-applied dependency)
+// must not trip the same-file check -- there is nothing to compare yet,
+// and rejecting would break a legitimate deferred config.
+func TestSourceModeExclusivityValidator_UnknownDestinationSkipsSameFileCheck(t *testing.T) {
+	t.Parallel()
+
+	got := sourceModeExclusivityValidator{}.validate(t.Context(), Model{
+		URL:             types.ObjectNull(URLAttrTypes),
+		LocalPath:       pathtype.NewPathNull(),
+		SourcePath:      pathtype.NewPathValue("D:/images/fcos.vhdx"),
+		DestinationPath: pathtype.NewPathUnknown(),
+	})
+	if got.HasError() {
+		t.Errorf("validate(...) = %v, want no error for unknown destination_path", got)
+	}
+}
+
+// TestModelFromImageFile_PreservesSourcePath round-trips the user-supplied
+// source_path through Read. Delete keys on this field to decide whether the
+// provider placed the file (and so must remove it on destroy) or the user
+// attested it -- a dropped value silently downgrades the resource to
+// host_path mode and leaks the copy on every destroy.
+func TestModelFromImageFile_PreservesSourcePath(t *testing.T) {
+	t.Parallel()
+
+	f := &hyperv.ImageFile{
+		Path:      "C:\\vms\\cp1\\boot.vhdx",
+		SizeBytes: 5368709120,
+		Sha256:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+	}
+
+	got := modelFromImageFile(f, Model{
+		URL:        types.ObjectNull(URLAttrTypes),
+		LocalPath:  pathtype.NewPathNull(),
+		SourcePath: pathtype.NewPathValue("D:/images/fcos.vhdx"),
+	})
+
+	if got.SourcePath.IsNull() {
+		t.Fatal("SourcePath = null; caller-supplied value must be preserved (Delete keys on it to gate the host-side remove)")
+	}
+	if got.SourcePath.ValueString() != "D:/images/fcos.vhdx" {
+		t.Errorf("SourcePath = %q, want %q", got.SourcePath.ValueString(), "D:/images/fcos.vhdx")
+	}
+	if !got.URL.IsNull() {
+		t.Errorf("URL = %+v, want null Object (source_path mode)", got.URL)
+	}
+	if !got.LocalPath.IsNull() {
+		t.Errorf("LocalPath = %v, want null (source_path mode)", got.LocalPath)
 	}
 }

@@ -47,7 +47,8 @@ resource "hyperv_vm" "node01" {
   ]
 
   # Attach an existing VHDX. In real configs the path would typically
-  # reference a hyperv_vhd resource's path attribute.
+  # reference a hyperv_vhd resource's path, or a hyperv_image_file's
+  # destination_path when the disk is a copy of a vendor image.
   hard_disk_drive = [
     { path = "C:/hyperv/vhds/node01-root.vhdx", controller_number = 0, controller_location = 0 },
   ]
@@ -373,7 +374,7 @@ Required:
 
 - `controller_location` (Number) Slot position within the controller (0-based). Required for the same reason as `controller_number`.
 - `controller_number` (Number) Controller index within the bus (0-based). Required: the slot tuple identifies the attachment, and auto-assignment isn't supported in this slice.
-- `path` (String) Absolute path on the host of the VHD/VHDX to attach. Forward and back slashes are accepted equivalently; case is folded for comparison per Windows file-system semantics.
+- `path` (String) Absolute path on the host of the VHD/VHDX to attach. Forward and back slashes are accepted equivalently; case is folded for comparison per Windows file-system semantics. While the VM has a checkpoint, this still reads back as the configured base disk rather than the checkpoint's differencing disk.
 
 Optional:
 
@@ -436,6 +437,8 @@ No `UseStateForUnknown` plan modifier: a plan that changes `state.desired` would
 ## Import
 
 Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
 # Import an existing VM by name. VM names are unique per host, so the

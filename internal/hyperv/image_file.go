@@ -27,6 +27,16 @@ import (
 // RemoveResource), or ErrUnauthorized for permission errors. SHA-256 is
 // recomputed on every call as intentional drift detection.
 func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultReadTimeout)
+	defer cancel()
+	return c.StatImageFile(ctx, path)
+}
+
+// StatImageFile reads the same shape as GetImageFile but bounds the call
+// by the caller's context instead of the 60s defaultReadTimeout. Exists
+// for the source_path plan-time hash, where Get-FileHash over a multi-GiB
+// vhdx routinely outruns that cap. Callers must supply their own deadline.
+func (c *Client) StatImageFile(ctx context.Context, path string) (*ImageFile, error) {
 	body, err := scripts.ImageFileScript("get")
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/get.ps1: %w", err)
@@ -39,7 +49,7 @@ func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, err
 	}
 
 	var f ImageFile
-	if err := c.runReadScript(ctx, string(body), stdin, &f); err != nil {
+	if err := c.runScript(ctx, string(body), stdin, &f); err != nil {
 		return nil, err
 	}
 	return &f, nil
@@ -712,6 +722,41 @@ func pickStagingPath(destinationPath string) (string, error) {
 		return "", err
 	}
 	return destinationPath + ".part-" + hex.EncodeToString(suffix[:]), nil
+}
+
+// CopyHostFile copies a file the host already holds at in.SourcePath into
+// in.DestinationPath, staging through a sibling .part and atomic-renaming.
+// Nothing crosses Connection.StreamFile -- both endpoints are host-local,
+// so multi-GiB clones run at host disk speed rather than WinRM speed.
+//
+// Shared by hyperv_image_file's source_path mode and hyperv_vhd's, which
+// is why the name is file-generic: the host script neither knows nor cares
+// whether the bytes are a VHDX or an ISO.
+//
+// Returns ErrChecksumMismatch when the copy doesn't hash to
+// in.ExpectedSha256 (the source changed between plan and apply), or
+// ErrNotFound when the source is absent at apply time.
+func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*ImageFile, error) {
+	body, err := scripts.ImageFileScript("new")
+	if err != nil {
+		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
+	}
+	// Same embed-the-public-input + add-discriminator pattern as the other
+	// constructors: source_mode is set here, where the method choice and
+	// the discriminator are guaranteed to agree.
+	stdin, err := json.Marshal(struct {
+		CopyHostFileInput
+		SourceMode string `json:"source_mode"`
+	}{CopyHostFileInput: in, SourceMode: "source_path"})
+	if err != nil {
+		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
+	}
+
+	var f ImageFile
+	if err := c.runScript(ctx, string(body), stdin, &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
 }
 
 // NewImageFileFromHostPath verifies a file the user attests already exists

@@ -626,8 +626,8 @@ func upgradeV4ToV5(ctx context.Context, prior priorModelV4) Model {
 		Generation:      prior.Generation,
 		CPU:             prior.CPU,
 		Memory:          prior.Memory,
-		HardDiskDrives:  prior.HardDiskDrives,
-		NetworkAdapters: expandPriorNICsV4(prior.NetworkAdapters),
+		HardDiskDrives:  mustHardDiskDriveListFromPrior(ctx, prior.HardDiskDrives),
+		NetworkAdapters: mustNetworkAdapterListFromPrior(ctx, expandPriorNICsV4(prior.NetworkAdapters)),
 		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
 		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
@@ -636,6 +636,26 @@ func upgradeV4ToV5(ctx context.Context, prior priorModelV4) Model {
 		IPAddresses:     prior.IPAddresses,
 		Path:            prior.Path,
 	}
+}
+
+// mustHardDiskDriveListFromPrior wraps HardDiskDriveListFromSlice for
+// the upgrade path, mirroring mustDvdDriveListFromPrior.
+func mustHardDiskDriveListFromPrior(ctx context.Context, prior []HardDiskDriveModel) types.List {
+	list, diags := HardDiskDriveListFromSlice(ctx, prior)
+	if diags.HasError() {
+		panic(fmt.Sprintf("HardDiskDriveListFromSlice (upgrade): %v", diags))
+	}
+	return list
+}
+
+// mustNetworkAdapterListFromPrior is the NetworkAdapter twin of
+// mustHardDiskDriveListFromPrior.
+func mustNetworkAdapterListFromPrior(ctx context.Context, prior []NetworkAdapterModel) types.List {
+	list, diags := NetworkAdapterListFromSlice(ctx, prior)
+	if diags.HasError() {
+		panic(fmt.Sprintf("NetworkAdapterListFromSlice (upgrade): %v", diags))
+	}
+	return list
 }
 
 // mustDvdDriveListFromPrior wraps DvdDriveListFromSlice for the
@@ -673,8 +693,8 @@ func upgradeV3ToV5(ctx context.Context, prior priorModelV3) Model {
 		Generation:      prior.Generation,
 		CPU:             prior.CPU,
 		Memory:          prior.Memory,
-		HardDiskDrives:  prior.HardDiskDrives,
-		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
+		HardDiskDrives:  mustHardDiskDriveListFromPrior(ctx, prior.HardDiskDrives),
+		NetworkAdapters: mustNetworkAdapterListFromPrior(ctx, expandPriorNICs(prior.NetworkAdapters)),
 		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
 		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
@@ -709,8 +729,8 @@ func upgradeV1ToV2(ctx context.Context, prior priorModelV1) Model {
 		Generation:      prior.Generation,
 		CPU:             prior.CPU,
 		Memory:          expandPriorMemoryV1V2(prior.Memory),
-		HardDiskDrives:  prior.HardDiskDrives,
-		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
+		HardDiskDrives:  mustHardDiskDriveListFromPrior(ctx, prior.HardDiskDrives),
+		NetworkAdapters: mustNetworkAdapterListFromPrior(ctx, expandPriorNICs(prior.NetworkAdapters)),
 		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
 		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
@@ -786,8 +806,8 @@ func upgradeV2ToV3(ctx context.Context, prior priorModelV2) Model {
 		Generation:      prior.Generation,
 		CPU:             prior.CPU,
 		Memory:          expandPriorMemoryV1V2(prior.Memory),
-		HardDiskDrives:  prior.HardDiskDrives,
-		NetworkAdapters: expandPriorNICs(prior.NetworkAdapters),
+		HardDiskDrives:  mustHardDiskDriveListFromPrior(ctx, prior.HardDiskDrives),
+		NetworkAdapters: mustNetworkAdapterListFromPrior(ctx, expandPriorNICs(prior.NetworkAdapters)),
 		DvdDrives:       mustDvdDriveListFromPrior(ctx, prior.DvdDrives),
 		BootOrder:       mustBootOrderListFromPrior(ctx, prior.BootOrder),
 		SecureBoot:      prior.SecureBoot,
@@ -817,8 +837,8 @@ func upgradeV0ToV1(_ context.Context, prior priorModelV0) Model {
 		// refresh fills them from the host; until then, empty (known)
 		// lists keep the post-upgrade state shape valid against the
 		// v1 schema.
-		HardDiskDrives:  []HardDiskDriveModel{},
-		NetworkAdapters: []NetworkAdapterModel{},
+		HardDiskDrives:  types.ListValueMust(HardDiskDriveListElementType, []attr.Value{}),
+		NetworkAdapters: types.ListValueMust(NetworkAdapterListElementType, []attr.Value{}),
 		DvdDrives:       types.ListValueMust(DvdDriveListElementType, []attr.Value{}),
 		BootOrder:       types.ListValueMust(BootOrderEntryListElementType, []attr.Value{}),
 		IPAddresses:     types.ListNull(types.StringType),
