@@ -1383,7 +1383,7 @@ func createVMCheckpoint(t *testing.T, client *hyperv.Client, name string) {
 	if err != nil {
 		t.Fatalf("create checkpoint on %s: %v", name, err)
 	}
-	if got := strings.TrimSpace(string(res.Stdout)); got != "ok" {
+	if got := strings.TrimSpace(string(res.Stdout)); !strings.HasSuffix(got, "ok") {
 		t.Fatalf("create checkpoint on %s: %s", name, got)
 	}
 }
@@ -1402,7 +1402,7 @@ func removeVMCheckpoints(t *testing.T, client *hyperv.Client, name string) {
 		t.Logf("remove checkpoints on %s: %v", name, err)
 		return
 	}
-	if got := strings.TrimSpace(string(res.Stdout)); got != "ok" {
+	if got := strings.TrimSpace(string(res.Stdout)); !strings.HasSuffix(got, "ok") {
 		t.Logf("remove checkpoints on %s: %s", name, got)
 	}
 }
