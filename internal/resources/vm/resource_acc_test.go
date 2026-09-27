@@ -1333,6 +1333,11 @@ func TestAcc_VM_checkpointAvhdxResolvesToBaseDisk(t *testing.T) {
 
 	name := acctest.RandomName("vm-checkpoint")
 	diskPath := toForwardSlash(joinHostPath(dir, name+".vhdx"))
+	hdConfig := vmWithHardDiskConfig(name, []hardDiskBlock{
+		{Path: diskPath, Number: 0, Location: 0, Source: "hyperv_vhd.root"},
+	}, []vhdBlock{
+		{Name: "root", Path: diskPath},
+	})
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
@@ -1340,11 +1345,7 @@ func TestAcc_VM_checkpointAvhdxResolvesToBaseDisk(t *testing.T) {
 		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
 		Steps: []resource.TestStep{
 			{
-				Config: vmWithHardDiskConfig(name, []hardDiskBlock{
-					{Path: diskPath, Number: 0, Location: 0, Source: "hyperv_vhd.root"},
-				}, []vhdBlock{
-					{Name: "root", Path: diskPath},
-				}),
+				Config: hdConfig,
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
@@ -1354,11 +1355,15 @@ func TestAcc_VM_checkpointAvhdxResolvesToBaseDisk(t *testing.T) {
 				},
 			},
 			{
-				PreConfig: func() {
-					createVMCheckpoint(t, client, name)
-					t.Cleanup(func() { removeVMCheckpoints(t, client, name) })
-				},
+				PreConfig:    func() { createVMCheckpoint(t, client, name) },
 				RefreshState: true,
+			},
+			{
+				// Merge the checkpoint back before resource.Test's own
+				// final destroy runs -- t.Cleanup fires only after this
+				// call returns, by which point the VM is already gone.
+				PreConfig: func() { removeVMCheckpoints(t, client, name) },
+				Config:    hdConfig,
 			},
 		},
 	})
