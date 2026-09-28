@@ -1,25 +1,21 @@
-# Dynamic VHDX -- sparse, expands on demand. The default for most VM disks.
-# Initial on-disk size is ~4 MiB regardless of the declared size_bytes.
+# Dynamic VHDX: sparse, expands on demand. The default for most VM disks.
 resource "hyperv_vhd" "system_disk" {
   path       = "C:/hyperv/vhds/my-vm-system.vhdx"
   vhd_type   = "dynamic"
   size_bytes = 53687091200 # 50 GiB
 }
 
-# Fixed VHDX -- pre-allocated to size_bytes on disk. Slower to create but
-# avoids on-write block allocation; useful for workloads sensitive to disk
-# latency or where you want guaranteed capacity reservation.
+# Fixed VHDX: pre-allocated to size_bytes on disk. Slower to create, but avoids
+# on-write block allocation.
 resource "hyperv_vhd" "data_disk" {
   path             = "C:/hyperv/vhds/my-vm-data.vhdx"
   vhd_type         = "fixed"
   size_bytes       = 10737418240 # 10 GiB
-  block_size_bytes = 33554432    # 32 MiB; explicit override of the VHDX default
+  block_size_bytes = 33554432    # 32 MiB
 }
 
-# Differencing VHDX -- read-only parent + writable child. Pair with
-# hyperv_image_file to fetch a cloud-image VHDX once and stamp out
-# per-VM children that share the parent's blocks. size_bytes and
-# block_size_bytes are inherited from the parent and rejected if supplied.
+# Differencing VHDX: read-only parent plus writable child. Pair with
+# hyperv_image_file to fetch a cloud image once and stamp out per-VM children.
 resource "hyperv_image_file" "ubuntu_parent" {
   destination_path = "C:/hyperv/images/ubuntu-22.04.vhdx"
   url = {
@@ -34,22 +30,12 @@ resource "hyperv_vhd" "vm01_root" {
   parent_path = hyperv_image_file.ubuntu_parent.destination_path
 }
 
-# source_path-mode -- copy an existing disk instead of creating one, then
-# grow the copy. Nothing crosses the runner-to-host link; the copy runs at
-# host disk speed.
-#
-# Prefer this over a differencing disk when the upstream image is refreshed
-# on a schedule: a differencing child is bound to its parent for life, so
-# the parent can never be replaced in place. A copy has no such tie. The
-# source is hashed at plan time, so a refreshed image surfaces as a
-# source_sha256 diff and re-copies -- which overwrites the disk, discarding
-# whatever the guest wrote. That is the intended upgrade path for immutable
-# OS images and the wrong tool for a disk holding state you care about.
-#
-# vhd_type, parent_path, and block_size_bytes are all inherited from the
-# source and rejected if supplied; size_bytes is the exception.
+# source_path mode: copy an existing disk instead of creating one, then grow
+# the copy. Prefer this over differencing when the upstream image is
+# refreshed on a schedule, since a differencing child is bound to its parent
+# for life.
 resource "hyperv_vhd" "controlplane_1_boot" {
   path        = "C:/hyperv/vhds/controlplane-1-boot.vhdx"
   source_path = hyperv_image_file.ubuntu_parent.destination_path
-  size_bytes  = 21474836480 # 20 GiB -- grow past the image's shipped size
+  size_bytes  = 21474836480 # 20 GiB, growing past the image's shipped size
 }

@@ -3,18 +3,15 @@
 page_title: "hyperv_nat_static_mapping Resource - hyperv"
 subcategory: ""
 description: |-
-  Requirements: Local Administrators on the target host. Empirically verified on Windows Server 2022 (build 10.0.20348): both Add-NetNatStaticMapping https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping and New-NetFirewallRule https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule return "Access denied" when invoked by a user in Hyper-V Administrators alone. Microsoft's cmdlet reference pages do not document a privilege requirement; the floor here is tested rather than cited.
-  Manages a single static NAT port forward (TCP or UDP) plus an optional inbound firewall allow rule. Targets an existing NetNat instance by name -- typically created via hyperv_virtual_switch with switch_type = "NAT", but any pre-existing NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.
-  Functionally equivalent to azurerm_lb_nat_rule and google_compute_forwarding_rule: turns the Hyper-V host into a port-forwarder for VMs on a private internal network.
+  Requirements: Local Administrators on the target host. Both Add-NetNatStaticMapping https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping and New-NetFirewallRule https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule return "Access denied" for a user in Hyper-V Administrators alone, as verified on Windows Server 2022 (build 10.0.20348); Microsoft's cmdlet reference pages don't document a privilege requirement, so this floor is tested rather than cited.
+  Manages a single static NAT port forward, TCP or UDP, plus an optional inbound firewall allow rule; functionally equivalent to azurerm_lb_nat_rule or google_compute_forwarding_rule. Targets an existing NetNat instance by name, typically created through hyperv_virtual_switch with switch_type = "NAT", but any pre-existing NetNat, created out-of-band, through Hyper-V Manager, or through DSC, is also accepted.
 ---
 
 # hyperv_nat_static_mapping (Resource)
 
-**Requirements:** **Local Administrators** on the target host. Empirically verified on Windows Server 2022 (build 10.0.20348): both [`Add-NetNatStaticMapping`](https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping) and [`New-NetFirewallRule`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule) return "Access denied" when invoked by a user in `Hyper-V Administrators` alone. Microsoft's cmdlet reference pages do not document a privilege requirement; the floor here is tested rather than cited.
+**Requirements:** **Local Administrators** on the target host. Both [`Add-NetNatStaticMapping`](https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping) and [`New-NetFirewallRule`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule) return "Access denied" for a user in `Hyper-V Administrators` alone, as verified on Windows Server 2022 (build 10.0.20348); Microsoft's cmdlet reference pages don't document a privilege requirement, so this floor is tested rather than cited.
 
-Manages a single static NAT port forward (TCP or UDP) plus an optional inbound firewall allow rule. Targets an existing `NetNat` instance by name -- typically created via `hyperv_virtual_switch` with `switch_type = "NAT"`, but any pre-existing NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.
-
-Functionally equivalent to `azurerm_lb_nat_rule` and `google_compute_forwarding_rule`: turns the Hyper-V host into a port-forwarder for VMs on a private internal network.
+Manages a single static NAT port forward, TCP or UDP, plus an optional inbound firewall allow rule; functionally equivalent to `azurerm_lb_nat_rule` or `google_compute_forwarding_rule`. Targets an existing `NetNat` instance by name, typically created through `hyperv_virtual_switch` with `switch_type = "NAT"`, but any pre-existing NetNat, created out-of-band, through Hyper-V Manager, or through DSC, is also accepted.
 
 
 
@@ -23,17 +20,17 @@ Functionally equivalent to `azurerm_lb_nat_rule` and `google_compute_forwarding_
 
 ### Required
 
-- `external_port` (Number) Bench-side listen port (1..65535). **Forces replacement** -- the port is part of the mapping's identity tuple.
+- `external_port` (Number) Host-side listen port, 1 to 65535. Changing this forces a new resource, since the port is part of the mapping's identity.
 - `internal_ip` (String) Internal IPv4 address of the VM serving the forwarded port. Must be inside the parent NetNat's `internal_address_prefix`. Mutable in place: changing this re-rolls the static mapping (Remove + Add) but the resource ID stays stable.
 - `internal_port` (Number) Internal port on the VM serving the forwarded traffic (1..65535). Mutable in place via the same Remove + Add path as `internal_ip`.
-- `nat_name` (String) Name of the `NetNat` instance to bind this mapping to. Must already exist on the host -- typically `hyperv_virtual_switch.<x>.nat_name` for a NAT switch managed by this provider, but any out-of-band NetNat is fine. **Forces replacement** -- a different NetNat is a different mapping.
+- `nat_name` (String) Name of the `NetNat` instance to bind this mapping to. Must already exist on the host, typically `hyperv_virtual_switch.<x>.nat_name` for a NAT switch managed by this provider, though any out-of-band NetNat works too. Changing this forces a new resource; a different NetNat is a different mapping.
 
 ### Optional
 
-- `address_family` (String) Address family. Currently only `ipv4` is supported; the attribute is reserved for future IPv6 support. Defaults to `ipv4`. **Forces replacement**.
-- `external_ip` (String) Bench-side listen IPv4 address. Defaults to `0.0.0.0` (any). Set to a specific host IP to scope the mapping to a single NIC. **Forces replacement**.
-- `firewall_rule` (Attributes) Optional inbound firewall allow rule paired with the static mapping. Defaults to `{ enabled = true, profile = "Any" }` with `name` derived as `hyperv-pf-<protocol>-<external_port>`. Set `enabled = false` to skip the firewall call entirely (the mapping still lands; the OS firewall just won't open the listen port). (see [below for nested schema](#nestedatt--firewall_rule))
-- `protocol` (String) Transport protocol. One of `tcp` or `udp` (case-insensitive on the wire; canonical lowercase here). ICMP and SCTP are out of scope. Defaults to `tcp`. **Forces replacement** -- protocol is part of the mapping's identity tuple.
+- `address_family` (String) Address family. Only `ipv4` is currently supported. Defaults to `ipv4`. Changing this forces a new resource.
+- `external_ip` (String) Host-side listen IPv4 address. Defaults to `0.0.0.0` for any address; set a specific host IP to scope the mapping to a single NIC. Changing this forces a new resource.
+- `firewall_rule` (Attributes) Optional inbound firewall allow rule paired with the static mapping. Defaults to `{ enabled = true, profile = "Any" }` with `name` derived as `hyperv-pf-<protocol>-<external_port>`. Set `enabled = false` to skip the firewall call entirely; the mapping still lands, but the OS firewall won't open the listen port. (see [below for nested schema](#nestedatt--firewall_rule))
+- `protocol` (String) Transport protocol: `tcp` or `udp`. ICMP and SCTP are not supported. Defaults to `tcp`. Changing this forces a new resource, since protocol is part of the mapping's identity.
 
 ### Read-Only
 
@@ -44,6 +41,6 @@ Functionally equivalent to `azurerm_lb_nat_rule` and `google_compute_forwarding_
 
 Optional:
 
-- `enabled` (Boolean) Whether to manage a `NetFirewallRule` alongside the static mapping. Defaults to `true`. Setting `false` skips firewall management entirely -- the mapping lands but the listen port stays blocked unless another rule already opens it.
-- `name` (String) Firewall rule `DisplayName`. Defaults to `hyperv-pf-<protocol>-<external_port>` (computed in the resource layer; not a static schema default). **Forces replacement** -- a `NetFirewallRule` rename is recreate.
-- `profile` (String) Firewall profile. One of `Any`, `Domain`, `Private`, or `Public` (single value only in v1; comma-joined combinations are deferred). Defaults to `Any`.
+- `enabled` (Boolean) Whether to manage a `NetFirewallRule` alongside the static mapping. Defaults to `true`. Setting `false` skips firewall management entirely; the mapping lands, but the listen port stays blocked unless another rule already opens it.
+- `name` (String) Firewall rule `DisplayName`. Defaults to `hyperv-pf-<protocol>-<external_port>`. Changing this forces a new resource; renaming a `NetFirewallRule` means recreating it.
+- `profile` (String) Firewall profile: `Any`, `Domain`, `Private`, or `Public`. Only a single value is supported. Defaults to `Any`.

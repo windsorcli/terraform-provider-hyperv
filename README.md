@@ -16,7 +16,7 @@ Manage the lifecycle of Microsoft Hyper-V virtual machines, switches, disks, and
 - **Built on [`terraform-plugin-framework`](https://developer.hashicorp.com/terraform/plugin/framework).** Strict typed schemas, plan modifiers, validators, custom semantic-equality types, and Terraform protocol v6.
 - **Embedded PowerShell with a JSON contract.** Each operation ships an embedded `.ps1` through the chosen transport and round-trips JSON via stdin/stdout. Scripts are independently testable with [Pester](https://pester.dev/).
 
-## Requirements
+## Host privilege requirements
 
 The connecting identity needs the privilege appropriate to each resource. The matrix below was verified empirically on **Windows Server 2022** (build 10.0.20348).
 
@@ -243,7 +243,7 @@ To attach a debugger, build with `task build` and run the provider with `-debug`
 
 ## Contributing
 
-Contributions are welcome. For non-trivial changes — new resources, schema changes, new backends — please open an issue first to align on design before writing code. Bug fixes and documentation improvements can go straight to a PR.
+Contributions are welcome. For non-trivial changes — new resources, schema changes, new backends — please open an issue first to agree on a design before writing code. Bug fixes and documentation improvements can go straight to a PR.
 
 The repository follows strict TDD: PowerShell scripts get Pester tests first to lock the JSON contract, then Go unit tests with a fake runner, then resource schema tests, then acceptance tests, then implementation.
 

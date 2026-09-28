@@ -33,19 +33,18 @@ import (
 // lint:allow-long-comment
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		MarkdownDescription: "**Requirements:** **Local Administrators** on the target host. " +
-			"Empirically verified on Windows Server 2022 (build 10.0.20348): both " +
+		MarkdownDescription: "**Requirements:** **Local Administrators** on the target host. Both " +
 			"[`Add-NetNatStaticMapping`](https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping) " +
 			"and [`New-NetFirewallRule`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule) " +
-			"return \"Access denied\" when invoked by a user in `Hyper-V Administrators` alone. " +
-			"Microsoft's cmdlet reference pages do not document a privilege requirement; the floor " +
-			"here is tested rather than cited.\n\n" +
-			"Manages a single static NAT port forward (TCP or UDP) plus an optional " +
-			"inbound firewall allow rule. Targets an existing `NetNat` instance by name -- typically " +
-			"created via `hyperv_virtual_switch` with `switch_type = \"NAT\"`, but any pre-existing " +
-			"NetNat (out-of-band, Hyper-V Manager, DSC) is also accepted.\n\n" +
-			"Functionally equivalent to `azurerm_lb_nat_rule` and `google_compute_forwarding_rule`: " +
-			"turns the Hyper-V host into a port-forwarder for VMs on a private internal network.",
+			"return \"Access denied\" for a user in `Hyper-V Administrators` alone, as verified on " +
+			"Windows Server 2022 (build 10.0.20348); Microsoft's cmdlet reference pages don't " +
+			"document a privilege requirement, so this floor is tested rather than cited.\n\n" +
+			"Manages a single static NAT port forward, TCP or UDP, plus an " +
+			"optional inbound firewall allow rule; functionally equivalent to `azurerm_lb_nat_rule` " +
+			"or `google_compute_forwarding_rule`. Targets an existing `NetNat` instance by name, " +
+			"typically created through `hyperv_virtual_switch` with `switch_type = \"NAT\"`, but " +
+			"any pre-existing NetNat, created out-of-band, through Hyper-V Manager, or through " +
+			"DSC, is also accepted.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -60,9 +59,9 @@ func resourceSchema() schema.Schema {
 			"nat_name": schema.StringAttribute{
 				Required: true,
 				MarkdownDescription: "Name of the `NetNat` instance to bind this mapping to. Must already " +
-					"exist on the host -- typically `hyperv_virtual_switch.<x>.nat_name` for a NAT " +
-					"switch managed by this provider, but any out-of-band NetNat is fine. **Forces " +
-					"replacement** -- a different NetNat is a different mapping.",
+					"exist on the host, typically `hyperv_virtual_switch.<x>.nat_name` for a NAT " +
+					"switch managed by this provider, though any out-of-band NetNat works too. " +
+					"Changing this forces a new resource; a different NetNat is a different mapping.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -70,9 +69,9 @@ func resourceSchema() schema.Schema {
 			"protocol": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Transport protocol. One of `tcp` or `udp` (case-insensitive on the " +
-					"wire; canonical lowercase here). ICMP and SCTP are out of scope. Defaults to `tcp`. " +
-					"**Forces replacement** -- protocol is part of the mapping's identity tuple.",
+				MarkdownDescription: "Transport protocol: `tcp` or `udp`. ICMP and SCTP are not " +
+					"supported. Defaults to `tcp`. Changing this forces a new resource, since " +
+					"protocol is part of the mapping's identity.",
 				Default: stringdefault.StaticString("tcp"),
 				Validators: []validator.String{
 					stringvalidator.OneOf("tcp", "udp"),
@@ -84,8 +83,8 @@ func resourceSchema() schema.Schema {
 			"address_family": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Address family. Currently only `ipv4` is supported; the attribute is " +
-					"reserved for future IPv6 support. Defaults to `ipv4`. **Forces replacement**.",
+				MarkdownDescription: "Address family. Only `ipv4` is currently supported. Defaults to " +
+					"`ipv4`. Changing this forces a new resource.",
 				Default: stringdefault.StaticString("ipv4"),
 				Validators: []validator.String{
 					stringvalidator.OneOf("ipv4"),
@@ -97,8 +96,9 @@ func resourceSchema() schema.Schema {
 			"external_ip": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Bench-side listen IPv4 address. Defaults to `0.0.0.0` (any). Set to " +
-					"a specific host IP to scope the mapping to a single NIC. **Forces replacement**.",
+				MarkdownDescription: "Host-side listen IPv4 address. Defaults to `0.0.0.0` for any " +
+					"address; set a specific host IP to scope the mapping to a single NIC. " +
+					"Changing this forces a new resource.",
 				Default: stringdefault.StaticString("0.0.0.0"),
 				Validators: []validator.String{
 					ipv4Validator{},
@@ -109,8 +109,8 @@ func resourceSchema() schema.Schema {
 			},
 			"external_port": schema.Int64Attribute{
 				Required: true,
-				MarkdownDescription: "Bench-side listen port (1..65535). **Forces replacement** -- the " +
-					"port is part of the mapping's identity tuple.",
+				MarkdownDescription: "Host-side listen port, 1 to 65535. Changing this forces a new " +
+					"resource, since the port is part of the mapping's identity.",
 				Validators: []validator.Int64{
 					int64validator.Between(1, 65535),
 				},
@@ -138,11 +138,11 @@ func resourceSchema() schema.Schema {
 			"firewall_rule": schema.SingleNestedAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Optional inbound firewall allow rule paired with the static mapping. " +
-					"Defaults to `{ enabled = true, profile = \"Any\" }` with `name` derived as " +
-					"`hyperv-pf-<protocol>-<external_port>`. Set `enabled = false` to skip the firewall " +
-					"call entirely (the mapping still lands; the OS firewall just won't open the " +
-					"listen port).",
+				MarkdownDescription: "Optional inbound firewall allow rule paired with the static " +
+					"mapping. Defaults to `{ enabled = true, profile = \"Any\" }` with `name` " +
+					"derived as `hyperv-pf-<protocol>-<external_port>`. Set `enabled = false` to " +
+					"skip the firewall call entirely; the mapping still lands, but the OS " +
+					"firewall won't open the listen port.",
 				PlanModifiers: []planmodifier.Object{
 					objectplanmodifier.UseStateForUnknown(),
 				},
@@ -152,7 +152,7 @@ func resourceSchema() schema.Schema {
 						Computed: true,
 						MarkdownDescription: "Whether to manage a `NetFirewallRule` alongside the static " +
 							"mapping. Defaults to `true`. Setting `false` skips firewall management " +
-							"entirely -- the mapping lands but the listen port stays blocked unless " +
+							"entirely; the mapping lands, but the listen port stays blocked unless " +
 							"another rule already opens it.",
 						Default: booldefault.StaticBool(true),
 					},
@@ -160,9 +160,8 @@ func resourceSchema() schema.Schema {
 						Optional: true,
 						Computed: true,
 						MarkdownDescription: "Firewall rule `DisplayName`. Defaults to " +
-							"`hyperv-pf-<protocol>-<external_port>` (computed in the resource layer; not a " +
-							"static schema default). **Forces replacement** -- a `NetFirewallRule` rename " +
-							"is recreate.",
+							"`hyperv-pf-<protocol>-<external_port>`. Changing this forces a new " +
+							"resource; renaming a `NetFirewallRule` means recreating it.",
 						PlanModifiers: []planmodifier.String{
 							stringplanmodifier.RequiresReplace(),
 							stringplanmodifier.UseStateForUnknown(),
@@ -171,9 +170,8 @@ func resourceSchema() schema.Schema {
 					"profile": schema.StringAttribute{
 						Optional: true,
 						Computed: true,
-						MarkdownDescription: "Firewall profile. One of `Any`, `Domain`, `Private`, or " +
-							"`Public` (single value only in v1; comma-joined combinations are deferred). " +
-							"Defaults to `Any`.",
+						MarkdownDescription: "Firewall profile: `Any`, `Domain`, `Private`, or `Public`. " +
+							"Only a single value is supported. Defaults to `Any`.",
 						Default: stringdefault.StaticString("Any"),
 						Validators: []validator.String{
 							stringvalidator.OneOf("Any", "Domain", "Private", "Public"),

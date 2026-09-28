@@ -35,10 +35,10 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
-			"the target host (or read access to `Get-VMHost` via a JEA endpoint).\n\n" +
-			"Information about the Hyper-V host. Useful in `for_each` patterns and for " +
-			"capability detection (e.g. branching on `logical_processor_count` or `memory_capacity_bytes`).",
+		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** " +
+			"group on the target host, or read access to `Get-VMHost` through a JEA endpoint.\n\n" +
+			"Information about the Hyper-V host, useful in `for_each` patterns and for capability " +
+			"detection, such as branching on `logical_processor_count` or `memory_capacity_bytes`.",
 		Attributes: map[string]schema.Attribute{
 			"computer_name": schema.StringAttribute{
 				Computed:            true,

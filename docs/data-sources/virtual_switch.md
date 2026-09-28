@@ -3,18 +3,18 @@
 page_title: "hyperv_virtual_switch Data Source - hyperv"
 subcategory: ""
 description: |-
-  Requirements: Membership in the Hyper-V Administrators group on the target host (or read access to Get-VMSwitch via a JEA endpoint). Reading NAT-typed switches additionally requires read access to Get-NetNat, which is in the host network stack — local Administrators is the safest floor when nat_name is set.
-  Reads metadata for an existing Hyper-V virtual switch by name. Useful when the switch was created out-of-band (Hyper-V Manager, DSC, manual New-VMSwitch) and a Terraform resource needs to reference it as a dependency.
-  NAT switches require nat_name to read with switch_type = "NAT" and the joined nat_* fields populated; without it, NAT switches return as their underlying Internal type with empty NAT fields.
+  Requirements: Membership in the Hyper-V Administrators group on the target host, or read access to Get-VMSwitch through a JEA endpoint. Reading a NAT-typed switch also requires read access to Get-NetNat, which is in the host network stack; local Administrators is the safest floor when nat_name is set.
+  Reads metadata for an existing Hyper-V virtual switch by name. Useful when the switch was created out-of-band, through Hyper-V Manager, DSC, or a manual New-VMSwitch, and a Terraform resource needs to reference it as a dependency.
+  ~> Note: A NAT-typed switch reads with switch_type = "NAT" and the nat_* fields populated only when nat_name is set; otherwise it returns as its underlying Internal type with those fields empty.
 ---
 
 # hyperv_virtual_switch (Data Source)
 
-**Requirements:** Membership in the **Hyper-V Administrators** group on the target host (or read access to `Get-VMSwitch` via a JEA endpoint). Reading NAT-typed switches additionally requires read access to `Get-NetNat`, which is in the host network stack — local Administrators is the safest floor when `nat_name` is set.
+**Requirements:** Membership in the **Hyper-V Administrators** group on the target host, or read access to `Get-VMSwitch` through a JEA endpoint. Reading a NAT-typed switch also requires read access to `Get-NetNat`, which is in the host network stack; local Administrators is the safest floor when `nat_name` is set.
 
-Reads metadata for an existing Hyper-V virtual switch by name. Useful when the switch was created out-of-band (Hyper-V Manager, DSC, manual `New-VMSwitch`) and a Terraform resource needs to reference it as a dependency.
+Reads metadata for an existing Hyper-V virtual switch by name. Useful when the switch was created out-of-band, through Hyper-V Manager, DSC, or a manual `New-VMSwitch`, and a Terraform resource needs to reference it as a dependency.
 
-**NAT switches** require `nat_name` to read with `switch_type = "NAT"` and the joined `nat_*` fields populated; without it, NAT switches return as their underlying `Internal` type with empty NAT fields.
+~> **Note:** A NAT-typed switch reads with `switch_type = "NAT"` and the `nat_*` fields populated only when `nat_name` is set; otherwise it returns as its underlying `Internal` type with those fields empty.
 
 ## Example Usage
 

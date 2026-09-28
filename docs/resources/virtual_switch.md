@@ -3,26 +3,26 @@
 page_title: "hyperv_virtual_switch Resource - hyperv"
 subcategory: ""
 description: |-
-  Requirements: depend on switch_type. Empirically verified on Windows Server 2022 (build 10.0.20348):
-  Private, Internal — Hyper-V Administrators is sufficient. New-VMSwitch succeeds for both types under a user in Hyper-V Administrators alone (not in local Administrators).NAT — local Administrators is required. The underlying New-NetNat returns "Access denied" for Hyper-V Administrators alone.External — local Administrators is the recommended floor; not directly tested (binding a physical NIC under a low-privilege identity risks disrupting the management plane).
-  WinRM-backend note: the connecting identity also needs Administrators or Remote Management Users membership for WinRM endpoint access — Administrators implies this, a delegated Hyper-V Administrators-only identity does not.
-  Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the New-VMSwitch / Set-VMSwitch / Remove-VMSwitch cmdlets via a typed JSON contract.
-  Recovery from partial-create failure: if New-VMSwitch succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent terraform apply will fail with switch already exists. Recover with terraform import hyperv_virtual_switch.<name> <switch-name> and re-plan.
+  Requirements: Depend on switch_type, empirically verified on Windows Server 2022 (build 10.0.20348):
+  Private, Internal: Hyper-V Administrators is sufficient.NAT: local Administrators is required; the underlying New-NetNat returns "Access denied" for Hyper-V Administrators alone.External: local Administrators is the recommended floor; binding a physical NIC under a lower-privilege identity risks disrupting the management plane and was not directly tested.
+  Over WinRM, the connecting identity also needs Administrators or Remote Management Users membership for endpoint access; Administrators implies this, but a delegated Hyper-V-Administrators-only identity does not.
+  Manages a Hyper-V virtual switch: External, Internal, Private, or NAT.
+  ~> Note: If New-VMSwitch succeeds on the host but the provider fails to record the result, for example on a transient stdout decode error, the switch exists on the host with no Terraform state, and the next terraform apply fails with "switch already exists." Recover with terraform import hyperv_virtual_switch.<name> <switch-name> and re-plan.
 ---
 
 # hyperv_virtual_switch (Resource)
 
-**Requirements:** depend on `switch_type`. Empirically verified on Windows Server 2022 (build 10.0.20348):
+**Requirements:** Depend on `switch_type`, empirically verified on Windows Server 2022 (build 10.0.20348):
 
-  * `Private`, `Internal` — **Hyper-V Administrators** is sufficient. `New-VMSwitch` succeeds for both types under a user in `Hyper-V Administrators` alone (not in local `Administrators`).
-  * `NAT` — **local Administrators** is required. The underlying `New-NetNat` returns "Access denied" for `Hyper-V Administrators` alone.
-  * `External` — **local Administrators** is the recommended floor; not directly tested (binding a physical NIC under a low-privilege identity risks disrupting the management plane).
+- `Private`, `Internal`: **Hyper-V Administrators** is sufficient.
+- `NAT`: **local Administrators** is required; the underlying `New-NetNat` returns "Access denied" for Hyper-V Administrators alone.
+- `External`: local Administrators is the recommended floor; binding a physical NIC under a lower-privilege identity risks disrupting the management plane and was not directly tested.
 
-WinRM-backend note: the connecting identity also needs `Administrators` or `Remote Management Users` membership for WinRM endpoint access — `Administrators` implies this, a delegated `Hyper-V Administrators`-only identity does not.
+Over WinRM, the connecting identity also needs `Administrators` or `Remote Management Users` membership for endpoint access; `Administrators` implies this, but a delegated Hyper-V-Administrators-only identity does not.
 
-Manages a Hyper-V virtual switch (External, Internal, or Private). Wraps the `New-VMSwitch` / `Set-VMSwitch` / `Remove-VMSwitch` cmdlets via a typed JSON contract.
+Manages a Hyper-V virtual switch: `External`, `Internal`, `Private`, or `NAT`.
 
-**Recovery from partial-create failure:** if `New-VMSwitch` succeeds on the host but the provider fails to capture the result (e.g., transient stdout decode error), the switch will exist on the host with no Terraform state. Subsequent `terraform apply` will fail with `switch already exists`. Recover with `terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.
+~> **Note:** If `New-VMSwitch` succeeds on the host but the provider fails to record the result, for example on a transient stdout decode error, the switch exists on the host with no Terraform state, and the next `terraform apply` fails with "switch already exists." Recover with `terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.
 
 ## Example Usage
 
@@ -58,22 +58,24 @@ resource "hyperv_virtual_switch" "external" {
 
 ### Required
 
-- `name` (String) Switch name. Must be unique on the host. **Forces replacement** -- Hyper-V doesn't support renaming a switch in place.
-- `switch_type` (String) Switch type. One of `External` (binds to a host NIC), `Internal` (host-VM only), `Private` (VM-VM only), or `NAT` (Internal switch with a registered `NetNat` instance providing outbound NAT). **Forces replacement** -- Hyper-V cannot convert a switch from one type to another. NAT requires `nat_name` and `nat_internal_address_prefix`. An existing NetNat with the same `nat_name` is idempotently adopted (re-apply / import safety); a name-matching NetNat with a different prefix fails the create with a clear remediation.
+- `name` (String) Name of the switch. Must be unique on the host. Changing this forces a new resource, since Hyper-V does not support renaming a switch in place.
+- `switch_type` (String) Switch type: `External` (binds to a host NIC), `Internal` (host-VM only), `Private` (VM-VM only), or `NAT` (an Internal switch with a registered `NetNat` instance providing outbound NAT). `NAT` requires `nat_name` and `nat_internal_address_prefix`; an existing NetNat with the same `nat_name` is adopted, but one with a different prefix fails the create. Changing this forces a new resource; Hyper-V cannot convert a switch from one type to another.
 
 ### Optional
 
-- `allow_management_os` (Boolean) Whether the host OS can use the bound NIC alongside VMs. Defaults to `true` on `External` and `Internal` switches. **Not valid for `Private` switches** -- a config validator rejects this combination at plan time.
-- `force_management_os_migration` (Boolean) Acknowledges the destroy hazard for an `External` switch with `allow_management_os = true`. Removing such a switch triggers an asynchronous host-IP migration back to the physical NIC; if the SSH session traverses the switch's vNIC and drops mid-migration, the host can be left LAN-unreachable -- recoverable only via console / IPMI. The provider does not introspect the SSH path, so the gate fires unconditionally on every External + `allow_management_os = true` destroy regardless of how Terraform is connecting; defaults to `false`. Set `true` to confirm you have console / IPMI fallback or are managing the host through a path that does not traverse this switch's vNIC. **Only valid when `switch_type = "External"`** -- a config validator rejects this attribute on NAT / Internal / Private switches at plan time.
-- `nat_host_address` (String) Host-side gateway IPv4 address assigned to the host vNIC (`vEthernet (<switch_name>)`). Must lie inside `nat_internal_address_prefix`. **Required** when `switch_type = "NAT"`; rejected otherwise. **Forces replacement** -- changing the host vNIC's IP requires tearing the NAT triple down.
-- `nat_internal_address_prefix` (String) Internal subnet (CIDR) the NAT instance routes for, e.g. `192.168.100.0/24`. **Required** when `switch_type = "NAT"`; rejected otherwise. **Forces replacement** -- `Set-NetNat` does not accept `-InternalIPInterfaceAddressPrefix`, so changing the prefix requires tearing the NAT triple down and recreating it.
-- `nat_name` (String) NAT instance name. **Required** when `switch_type = "NAT"`; rejected otherwise. Doubles as the resource-side identifier consumers reference. **Forces replacement** -- `New-NetNat -Name` is immutable. Must start with a letter or digit and otherwise contain only letters, digits, underscores, dots, and hyphens; wildcard metacharacters (`*`, `?`, `[`) are rejected because `Get-NetNat -Name` would interpret them as a pattern.
+- `allow_management_os` (Boolean) Whether the host OS can use the bound NIC alongside VMs. Defaults to `true` on `External` and `Internal` switches. Not valid for `Private` switches.
+- `force_management_os_migration` (Boolean) Acknowledges the destroy hazard for an `External` switch with `allow_management_os = true`. Removing such a switch triggers an asynchronous host-IP migration back to the physical NIC; if the connection to the host traverses the switch's vNIC and drops mid-migration, the host can be left LAN-unreachable, recoverable only through console or IPMI.
+
+~> **Note:** The provider can't tell how Terraform is connecting to the host, so this gate fires on every `External` destroy with `allow_management_os = true`, regardless of connection path. Set this to `true` only once you've confirmed console or IPMI fallback, or that the connection doesn't traverse this switch's vNIC. Defaults to `false`. Valid only when `switch_type = "External"`.
+- `nat_host_address` (String) Host-side gateway IPv4 address assigned to the host vNIC (`vEthernet (<switch_name>)`). Must lie inside `nat_internal_address_prefix`. Required when `switch_type = "NAT"`; rejected otherwise. Changing this forces a new resource.
+- `nat_internal_address_prefix` (String) Internal subnet, in CIDR form, the NAT instance routes for, for example `192.168.100.0/24`. Required when `switch_type = "NAT"`; rejected otherwise. Changing this forces a new resource, since `Set-NetNat` does not accept an updated prefix.
+- `nat_name` (String) NAT instance name. Required when `switch_type = "NAT"`; rejected otherwise. Must start with a letter or digit and otherwise contain only letters, digits, underscores, dots, and hyphens; wildcard metacharacters (`*`, `?`, `[`) are rejected, since `Get-NetNat -Name` would interpret them as a pattern. Changing this forces a new resource; `New-NetNat -Name` is immutable.
 - `net_adapter_names` (List of String) List of host NIC names to bind the switch to. Required when `switch_type = "External"`; ignored otherwise. Multiple names form a NIC team.
 - `notes` (String) Free-form description stored on the switch by Hyper-V. Setting to an empty string clears it.
 
 ### Read-Only
 
-- `id` (String) Resource identifier. Mirrors `name` -- Hyper-V switch names are unique per host.
+- `id` (String) Resource identifier, matching `name` since switch names are unique per host.
 - `net_adapter_interface_description` (String) Read-only: the Hyper-V-reported description of the bound NIC (External switches only). Empty for Internal/Private/NAT. For NIC-teamed External switches this is the team adapter's description, not any individual member NIC's.
 
 ## Import

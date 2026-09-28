@@ -6,7 +6,7 @@ description: |-
   Requirements on the target host
   The connecting identity needs the privilege appropriate to each resource. The matrix below was verified empirically on Windows Server 2022 (build 10.0.20348).
   Hyper-V Administrators is sufficient for: hyperv_vm, hyperv_vhd, hyperv_image_file; data sources hyperv_host, hyperv_vm_state, hyperv_virtual_switch; and hyperv_virtual_switch with switch_type = "Private" or "Internal". Per Microsoft, members of this group have complete and unrestricted access to all the features in Hyper-V https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups.Local Administrators is required for: hyperv_nat_static_mapping (Add-NetNatStaticMapping and New-NetFirewallRule both return "Access denied" for Hyper-V Administrators alone); and hyperv_virtual_switch with switch_type = "NAT" (the underlying New-NetNat returns the same). switch_type = "External" was not directly tested — Local Administrators is the recommended floor.No host-side requirement for hyperv_iso_volume — it runs on the Terraform runner.
-  WinRM-backend transport. Opening a WinRM/PSSession needs membership in Administrators or Remote Management Users (in addition to the per-resource privilege above). Administrators implies this; a delegated identity in only Hyper-V Administrators does not. For least-privilege delegation, configure a JEA https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview endpoint and point the WinRM backend at it; the provider itself does not configure JEA.
+  Opening a WinRM/PSSession also needs membership in Administrators or Remote Management Users, in addition to the per-resource privilege above; Administrators implies this, but a delegated identity in only Hyper-V Administrators does not. For least-privilege delegation, configure a JEA https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview endpoint and point the WinRM backend at it; the provider itself does not configure JEA.
 ---
 
 # hyperv Provider
@@ -23,7 +23,7 @@ The connecting identity needs the privilege appropriate to each resource. The ma
   * **Local Administrators** is required for: `hyperv_nat_static_mapping` (`Add-NetNatStaticMapping` and `New-NetFirewallRule` both return "Access denied" for Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = "NAT"` (the underlying `New-NetNat` returns the same). `switch_type = "External"` was not directly tested — Local Administrators is the recommended floor.
   * **No host-side requirement** for `hyperv_iso_volume` — it runs on the Terraform runner.
 
-**WinRM-backend transport.** Opening a WinRM/PSSession needs membership in `Administrators` or `Remote Management Users` (in addition to the per-resource privilege above). `Administrators` implies this; a delegated identity in only `Hyper-V Administrators` does not. For least-privilege delegation, configure a [JEA](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview) endpoint and point the WinRM backend at it; the provider itself does not configure JEA.
+Opening a WinRM/PSSession also needs membership in `Administrators` or `Remote Management Users`, in addition to the per-resource privilege above; `Administrators` implies this, but a delegated identity in only `Hyper-V Administrators` does not. For least-privilege delegation, configure a [JEA](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview) endpoint and point the WinRM backend at it; the provider itself does not configure JEA.
 
 ## Example Usage
 
@@ -51,7 +51,7 @@ provider "hyperv" {}
 - `backend` (String) Execution backend. One of `local`, `ssh`, `winrm`. Defaults to `HYPERV_BACKEND` env var, or `local` if neither is set.
 - `host` (String) Hostname or IP of the Hyper-V host. Required for `ssh` and `winrm` backends; ignored for `local`. Falls back to `HYPERV_HOST`.
 - `local` (Attributes) Local-backend-specific configuration. (see [below for nested schema](#nestedatt--local))
-- `password` (String, Sensitive) Password. **Sensitive.** Falls back to `HYPERV_PASSWORD`.
+- `password` (String, Sensitive) Password. Falls back to `HYPERV_PASSWORD`.
 - `port` (Number) TCP port. Defaults to 22 (`ssh`) or 5986 (`winrm`). Falls back to `HYPERV_PORT`.
 - `skip_auth_probe` (Boolean) Skip the Configure-time `Get-VMHost` authorization probe. The probe verifies at plan time that the connecting identity can run a Hyper-V cmdlet, turning permission/transport failures into clean plan-time diagnostics instead of mid-apply mysteries. **Default: `false`** (probe runs). Set to `true` for `terraform validate` in CI environments without a reachable host. Falls back to `HYPERV_SKIP_AUTH_PROBE` (accepts `true`/`false`/`1`/`0`/`t`/`f`/`yes`/`no`).
 - `ssh` (Attributes) SSH-backend-specific configuration. (see [below for nested schema](#nestedatt--ssh))
@@ -73,8 +73,8 @@ Optional:
 Optional:
 
 - `known_hosts_path` (String) Path to known_hosts. Default: `~/.ssh/known_hosts`. Falls back to `HYPERV_SSH_KNOWN_HOSTS_PATH`.
-- `passphrase` (String, Sensitive) Passphrase for the private key. **Sensitive.** Falls back to `HYPERV_SSH_PASSPHRASE`.
-- `private_key` (String, Sensitive) Private key contents. **Sensitive.** Falls back to `HYPERV_SSH_PRIVATE_KEY`. Wins over `private_key_path` when both are set.
+- `passphrase` (String, Sensitive) Passphrase for the private key. Falls back to `HYPERV_SSH_PASSPHRASE`.
+- `private_key` (String, Sensitive) Private key contents. Falls back to `HYPERV_SSH_PRIVATE_KEY`. Wins over `private_key_path` when both are set.
 - `private_key_path` (String) Path to a private key file. Falls back to `HYPERV_SSH_PRIVATE_KEY_PATH`.
 
 
@@ -106,5 +106,5 @@ Optional:
 - `krb5_conf_path` (String) Path to a krb5.conf file. Default: first existing of `$KRB5_CONFIG`, `~/.config/krb5.conf`, `/etc/krb5.conf`. Falls back to `HYPERV_KRB5_CONF_PATH`.
 
 The file must define the realm (`[realms]` block) and either `kdc =` entries or DNS lookups (`dns_lookup_kdc = true`).
-- `realm` (String) Kerberos realm (uppercase by convention, e.g. `HV.LAB`). **Required when `auth = "kerberos"`** -- a config validator rejects configs that omit it. Falls back to `HYPERV_KRB5_REALM`.
+- `realm` (String) Kerberos realm, uppercase by convention, for example `HV.LAB`. Required when `auth = "kerberos"`. Falls back to `HYPERV_KRB5_REALM`.
 - `spn` (String) Service Principal Name to authenticate against. Default: `HTTP/<host>`. Override only when the WinRM listener was registered under a non-standard SPN. Falls back to `HYPERV_KRB5_SPN`.

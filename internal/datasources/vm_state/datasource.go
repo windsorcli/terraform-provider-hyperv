@@ -48,15 +48,15 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 // hyperv_vm resource's state.
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
-			"the target host (or read access to `Get-VM` via a JEA endpoint).\n\n" +
-			"Reads live power state and reported IP addresses for an existing Hyper-V " +
-			"virtual machine by name. Useful for HCL conditionals and downstream resources that gate " +
-			"on whether the VM is `Running` (e.g. provisioners that wait for the guest to come up) " +
-			"without managing the VM itself.\n\n" +
-			"Refreshed on every plan: an out-of-band `Start-VM` / `Stop-VM` surfaces immediately. " +
-			"Pairs with `hyperv_vm.state.{desired, current, shutdown_mode}` -- the resource manages " +
-			"transitions; this data source reports them.",
+		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** " +
+			"group on the target host, or read access to `Get-VM` through a JEA endpoint.\n\n" +
+			"Reads live power state and reported IP addresses for an existing " +
+			"Hyper-V virtual machine by name, useful for HCL conditionals and downstream " +
+			"resources that gate on whether the VM is `Running`, such as a provisioner that waits " +
+			"for the guest to come up, without managing the VM itself. Refreshed on every plan, so " +
+			"an out-of-band `Start-VM` or `Stop-VM` surfaces immediately. Pairs with " +
+			"`hyperv_vm.state.{desired, current, shutdown_mode}`: the resource manages " +
+			"transitions, and this data source reports them.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required:            true,
@@ -64,7 +64,7 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 			},
 			"id": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Resource identifier. Mirrors `name` -- VM names are unique per host.",
+				MarkdownDescription: "Resource identifier, matching `name` since VM names are unique per host.",
 			},
 			"current": schema.StringAttribute{
 				Computed: true,
@@ -75,22 +75,17 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 			"ip_addresses": schema.ListAttribute{
 				Computed:    true,
 				ElementType: types.StringType,
-				MarkdownDescription: "Flat list of IPv4 / IPv6 addresses the guest's Hyper-V " +
+				MarkdownDescription: "Flat list of IPv4 and IPv6 addresses the guest's Hyper-V " +
 					"integration services have reported across all attached NICs. Empty when the " +
 					"VM is `Off`, when the guest is still booting, or when the guest doesn't ship " +
 					"integration services.\n\n" +
-					"**Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, " +
-					"per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, " +
-					"and a data source is evaluated on every plan -- so any downstream resource that " +
-					"references `data.hyperv_vm_state.web.ip_addresses[0]` will see the value flip " +
-					"when the host happens to surface a different IP first, planning a spurious " +
-					"update. **Index into this list only when the VM is single-NIC, single-IP and " +
-					"the user trusts that contract operationally.** Multi-homed VMs should pin to " +
-					"a specific NIC via `hyperv_vm.network_adapter[*].ip_addresses` -- the per-NIC " +
-					"view keys off the deterministic display `name` and eliminates the cross-NIC " +
-					"ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing " +
-					"is the dominant single-IP use case, and the type may flip to `Set` in a " +
-					"future major release if multi-homed users surface real pain.",
+					"~> **Note:** Order is host-driven and not stable across VM restarts; a reboot " +
+					"or DHCP lease renewal can change which IP appears first, and since this data " +
+					"source is evaluated on every plan, indexing " +
+					"`data.hyperv_vm_state.web.ip_addresses[0]` can plan a spurious update. Index " +
+					"into this list only for a single-NIC, single-IP VM. A multi-homed VM should " +
+					"pin to a specific NIC through `hyperv_vm.network_adapter[*].ip_addresses` " +
+					"instead, which keys off a NIC's deterministic display `name`.",
 			},
 		},
 	}

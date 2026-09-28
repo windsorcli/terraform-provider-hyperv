@@ -147,10 +147,10 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			"directly tested — Local Administrators is the recommended floor.\n" +
 			"  * **No host-side requirement** for `hyperv_iso_volume` — it runs on the Terraform " +
 			"runner.\n\n" +
-			"**WinRM-backend transport.** Opening a WinRM/PSSession needs membership in " +
-			"`Administrators` or `Remote Management Users` (in addition to the per-resource privilege " +
-			"above). `Administrators` implies this; a delegated identity in only `Hyper-V Administrators` " +
-			"does not. For least-privilege delegation, configure a " +
+			"Opening a WinRM/PSSession also needs membership in `Administrators` or " +
+			"`Remote Management Users`, in addition to the per-resource privilege above; " +
+			"`Administrators` implies this, but a delegated identity in only " +
+			"`Hyper-V Administrators` does not. For least-privilege delegation, configure a " +
 			"[JEA](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview) " +
 			"endpoint and point the WinRM backend at it; the provider itself does not configure JEA.",
 		Attributes: map[string]schema.Attribute{
@@ -179,7 +179,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			"password": schema.StringAttribute{
 				Optional:            true,
 				Sensitive:           true,
-				MarkdownDescription: "Password. **Sensitive.** Falls back to `HYPERV_PASSWORD`.",
+				MarkdownDescription: "Password. Falls back to `HYPERV_PASSWORD`.",
 			},
 			"timeout": schema.StringAttribute{
 				Optional: true,
@@ -217,7 +217,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 					"private_key": schema.StringAttribute{
 						Optional:            true,
 						Sensitive:           true,
-						MarkdownDescription: "Private key contents. **Sensitive.** Falls back to `HYPERV_SSH_PRIVATE_KEY`. Wins over `private_key_path` when both are set.",
+						MarkdownDescription: "Private key contents. Falls back to `HYPERV_SSH_PRIVATE_KEY`. Wins over `private_key_path` when both are set.",
 					},
 					"private_key_path": schema.StringAttribute{
 						Optional:            true,
@@ -226,7 +226,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 					"passphrase": schema.StringAttribute{
 						Optional:            true,
 						Sensitive:           true,
-						MarkdownDescription: "Passphrase for the private key. **Sensitive.** Falls back to `HYPERV_SSH_PASSPHRASE`.",
+						MarkdownDescription: "Passphrase for the private key. Falls back to `HYPERV_SSH_PASSPHRASE`.",
 					},
 					"known_hosts_path": schema.StringAttribute{
 						Optional:            true,
@@ -273,7 +273,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 						Attributes: map[string]schema.Attribute{
 							"realm": schema.StringAttribute{
 								Optional:            true,
-								MarkdownDescription: "Kerberos realm (uppercase by convention, e.g. `HV.LAB`). **Required when `auth = \"kerberos\"`** -- a config validator rejects configs that omit it. Falls back to `HYPERV_KRB5_REALM`.",
+								MarkdownDescription: "Kerberos realm, uppercase by convention, for example `HV.LAB`. Required when `auth = \"kerberos\"`. Falls back to `HYPERV_KRB5_REALM`.",
 							},
 							"spn": schema.StringAttribute{
 								Optional:            true,

@@ -3,21 +3,18 @@
 page_title: "hyperv_iso_volume Data Source - hyperv"
 subcategory: ""
 description: |-
-  Requirements: None on the Hyper-V host — this data source runs entirely on the Terraform runner and produces bytes only. The placement primitive paired with it (hyperv_image_file) is what requires Hyper-V Administrators.
-  Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its bytes (base64-encoded), sha256, and size as Computed attributes. Pair with a placement primitive (hyperv_image_file in literal_bytes mode, or local_file + hyperv_image_file in local_path mode) to land the bytes on a Hyper-V host.
-  Why a data source rather than a managed resource? Synthesis is a filesystem-image operation, not a Hyper-V concern. Keeping it separate from host placement lets the placement primitive own the host-side lifecycle (incl. the replace_while_mounted escape hatch for files held open by a running VM's DVD), while this data source stays pure: same volume_label + same files -> byte-identical bytes -> stable sha256.
-  Determinism contract: the synthesized bytes are stable across runners, OSes, and clocks. The Primary Volume Descriptor's timestamp and system-identifier fields are post-processed to fixed values; per-file timestamps are zero-valued by the upstream library; files are sorted by name before adding so HCL iteration order does not leak into the ISO.
+  Requirements: None on the Hyper-V host; this data source runs entirely on the Terraform runner and produces bytes only. The placement primitive paired with it, such as hyperv_image_file, is what requires Hyper-V Administrators.
+  Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its bytes as base64, along with its SHA-256 and size, as computed attributes. Pair it with a placement primitive, such as hyperv_image_file in literal_bytes mode, to land the bytes on a Hyper-V host.
+  Synthesis is a filesystem-image operation, not a Hyper-V concern, so it's kept separate from host placement: the placement primitive owns the host-side lifecycle, including the replace_while_mounted escape hatch for files held open by a running VM's DVD, while this data source stays pure. The same volume_label and files always produce byte-identical output and the same SHA-256, since the Primary Volume Descriptor's timestamp and system-identifier fields are fixed, per-file timestamps are zero-valued, and files are sorted by name before being added, so HCL iteration order never leaks into the ISO.
 ---
 
 # hyperv_iso_volume (Data Source)
 
-**Requirements:** None on the Hyper-V host — this data source runs entirely on the Terraform runner and produces bytes only. The placement primitive paired with it (`hyperv_image_file`) is what requires Hyper-V Administrators.
+**Requirements:** None on the Hyper-V host; this data source runs entirely on the Terraform runner and produces bytes only. The placement primitive paired with it, such as `hyperv_image_file`, is what requires Hyper-V Administrators.
 
-Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its bytes (base64-encoded), sha256, and size as Computed attributes. Pair with a placement primitive (`hyperv_image_file` in `literal_bytes` mode, or `local_file` + `hyperv_image_file` in `local_path` mode) to land the bytes on a Hyper-V host.
+Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its bytes as base64, along with its SHA-256 and size, as computed attributes. Pair it with a placement primitive, such as `hyperv_image_file` in `literal_bytes` mode, to land the bytes on a Hyper-V host.
 
-**Why a data source rather than a managed resource?** Synthesis is a filesystem-image operation, not a Hyper-V concern. Keeping it separate from host placement lets the placement primitive own the host-side lifecycle (incl. the `replace_while_mounted` escape hatch for files held open by a running VM's DVD), while this data source stays pure: same `volume_label` + same `files` -> byte-identical bytes -> stable sha256.
-
-**Determinism contract:** the synthesized bytes are stable across runners, OSes, and clocks. The Primary Volume Descriptor's timestamp and system-identifier fields are post-processed to fixed values; per-file timestamps are zero-valued by the upstream library; files are sorted by name before adding so HCL iteration order does not leak into the ISO.
+Synthesis is a filesystem-image operation, not a Hyper-V concern, so it's kept separate from host placement: the placement primitive owns the host-side lifecycle, including the `replace_while_mounted` escape hatch for files held open by a running VM's DVD, while this data source stays pure. The same `volume_label` and `files` always produce byte-identical output and the same SHA-256, since the Primary Volume Descriptor's timestamp and system-identifier fields are fixed, per-file timestamps are zero-valued, and files are sorted by name before being added, so HCL iteration order never leaks into the ISO.
 
 
 
@@ -26,18 +23,12 @@ Synthesizes a deterministic ISO9660 seed volume on the runner and exposes its by
 
 ### Required
 
-- `files` (Map of String) Filename -> UTF-8 content map. Each entry becomes a file at the root of the synthesized ISO.
+- `files` (Map of String) Filename to UTF-8 content map. Each entry becomes a file at the root of the synthesized ISO. An empty map is permitted and produces a valid empty-volume ISO.
 
-**Constraints:**
+Filenames must not contain path separators (`/` or `\`); only root-level files are supported, not a subdirectory layout such as `EFI/Boot/...` for installer media. Filenames are case-insensitive on the volume. Content must be UTF-8 text; binary content isn't supported directly, so encode it as base64 or hex in config and decode it in the consumer if needed.
+- `volume_label` (String) ISO9660 volume label. 1-32 bytes, using only A-Z, 0-9, and underscore, the ECMA-119 d-character set. Lowercase is rejected: use the uppercase form your consumer expects, for example `CIDATA` for cloud-init NoCloud or `AUTOUNATTEND` for Windows installer answer files.
 
-  * Filenames must not contain path separators (`/` or `\`). v1 supports root-level files only -- subdirectory layouts (e.g. `EFI/Boot/...` for installer media) are out of scope.
-  * Filenames are case-insensitive on the volume.
-  * Content is UTF-8 text. Binary content is not directly supported; encode as base64 / hex in your config and decode in the consumer if needed.
-
-**Empty map** is permitted and produces a valid empty-volume ISO.
-- `volume_label` (String) ISO9660 volume label.
-
-**Constraints (ECMA-119 d-characters):** 1-32 bytes, A-Z / 0-9 / underscore only. Lowercase is rejected at validate time -- cloud-init and the Windows installer both uppercase before matching, but storing the user-supplied form lowercased would mean the data source's outputs and the on-disk PVD bytes disagree, surfacing as phantom drift in any consumer that hashes the bytes. Pick the uppercase form your consumer expects: `CIDATA` for cloud-init NoCloud, `AUTOUNATTEND` for Windows installer answer files.
+~> **Note:** Storing a lowercased form would make this data source's output disagree with the on-disk volume descriptor bytes, surfacing as phantom drift in any consumer that hashes them.
 
 ### Read-Only
 
