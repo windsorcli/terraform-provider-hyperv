@@ -67,7 +67,7 @@ func main() {
 
 	var violations []violation
 	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error { // #nosec G703 -- root is a CLI arg to this local dev tool, not untrusted input
 			if err != nil {
 				return err
 			}
@@ -211,7 +211,7 @@ func lintGoFile(path string) ([]violation, error) {
 }
 
 func lintPS1File(path string) ([]violation, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- path is discovered by walking a CLI-supplied root, not untrusted input
 	if err != nil {
 		return nil, err
 	}
