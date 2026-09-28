@@ -61,27 +61,21 @@ func (c *Client) GetVHD(ctx context.Context, path string) (*VHD, error) {
 	return &v, nil
 }
 
-// NewVHDFixed creates a pre-allocated (full-sized on disk) VHD/VHDX.
-// Slow create, no runtime expansion. Returns the post-create read shape.
+// NewVHDFixed creates a pre-allocated (full-sized on disk) VHD/VHDX:
+// slow create, no runtime expansion. Returns the post-create read
+// result.
 //
-// Recovers from connection.ErrSessionDropped -- same root cause as
-// NewVMSwitch's recovery: an External-switch NIC rebind on the same SSH
-// path can blink the session before the cmdlet's exit status reaches the
-// runner. New-VHD itself is not the cmdlet rebinding the NIC, but its
-// session is collateral damage when a parallel resource (e.g.
-// hyperv_virtual_switch.main running concurrently) does the rebinding.
-// Verify-on-drop polls GetVHD: if a matching VHD lands at the requested
-// path with the requested VhdType + SizeBytes, the cmdlet succeeded and
-// we adopt it into state; if mismatched, surface the drop with the
-// mismatch detail so the operator can sweep before retry.
+// Recovers from connection.ErrSessionDropped the same way NewVMSwitch
+// does: a concurrent resource's External-switch NIC rebind can blink
+// this call's SSH session after New-VHD succeeds. Verify-on-drop polls
+// GetVHD; a match adopts the VHD into state, a mismatch surfaces the
+// drop with the mismatch detail so the operator can retry.
 func (c *Client) NewVHDFixed(ctx context.Context, in NewVHDFixedInput) (*VHD, error) {
 	body, err := scripts.VHDScript("new")
 	if err != nil {
 		return nil, fmt.Errorf("load vhd/new.ps1: %w", err)
 	}
-	// Embedded struct + extra discriminator: see image_file.go for the
-	// rationale -- callers can't pass the wrong vhd_type for the method
-	// they invoke because the discriminator lives only on the wire shape.
+	// Embedded struct + discriminator, same reasoning as image_file.go.
 	stdin, err := json.Marshal(struct {
 		NewVHDFixedInput
 		VhdType string `json:"vhd_type"`
@@ -138,16 +132,12 @@ func (c *Client) NewVHDDynamic(ctx context.Context, in NewVHDDynamicInput) (*VHD
 }
 
 // NewVHDDifferencing creates a child that reads from in.ParentPath and
-// writes new blocks locally. Returns ErrInvalidParentPath when the parent
-// path is missing or invalid; the mapping comes from New-VHD's
-// "InvalidParameter,Microsoft.Vhd.*" error envelope, classified in
-// errors.go.
-//
-// Recovers from connection.ErrSessionDropped -- see NewVHDFixed. The
-// recovery's expectedVHD passes SizeBytes=0 ("skip size check") because
-// differencing disks inherit size from the parent and the typed-client
-// method does not read the parent ahead of time. Path + VhdType match
-// is the load-bearing guard for this variant.
+// writes new blocks locally. Returns ErrInvalidParentPath when the
+// parent path is missing or invalid. Recovers from
+// connection.ErrSessionDropped like NewVHDFixed, but the recovery's
+// expectedVHD passes SizeBytes=0 (skip the size check), since a
+// differencing disk inherits its size from the parent and Path + VhdType
+// alone are the load-bearing match for this variant.
 func (c *Client) NewVHDDifferencing(ctx context.Context, in NewVHDDifferencingInput) (*VHD, error) {
 	body, err := scripts.VHDScript("new")
 	if err != nil {
@@ -177,24 +167,14 @@ func (c *Client) NewVHDDifferencing(ctx context.Context, in NewVHDDifferencingIn
 }
 
 // recoverVHDNewOnDrop polls GetVHD up to N times and returns the read
-// shape on the first hit whose VhdType (and SizeBytes when applicable)
-// matches expected. Surfaces the original drop on:
+// result on the first hit whose VhdType (and SizeBytes, when expected)
+// matches expected. Surfaces the original drop if Get returns NotFound,
+// returns a mismatched VHD, the attempts run out, or ctx.Done fires
+// first.
 //
-//   - Get returning NotFound (cmdlet did not take effect),
-//   - Get returning a VHD whose VhdType / SizeBytes differs from
-//     expected (foreign or partial-allocation match -- adoption would
-//     propagate broken state into terraform's view of the resource),
-//   - the verify loop running out of attempts,
-//   - ctx.Done firing between attempts.
-//
-// Verify uses Path implicitly (Get-VHD is keyed by it) plus VhdType
-// (catches "wrong type at same path" -- e.g. a Dynamic where we asked
-// for Fixed) plus SizeBytes when expected.SizeBytes > 0 (catches
-// truncated allocations on the bench's FS that nonetheless emit a
-// readable Get-VHD header). ParentPath is not compared because for the
-// Differencing variant Get-VHD's canonicalization (backslash,
-// case-folding) doesn't match user-supplied input form without
-// pathtype.Path semantic-equality plumbing the typed client doesn't
+// ParentPath isn't compared: for the Differencing variant, Get-VHD's
+// canonicalization (backslash, case-folding) doesn't match user-supplied
+// input without semantic-equality plumbing this client doesn't
 // otherwise need.
 func (c *Client) recoverVHDNewOnDrop(ctx context.Context, expected expectedVHD, original error) (*VHD, error) {
 	var lastVerifyErr error
@@ -276,26 +256,22 @@ func (c *Client) RemoveVHD(ctx context.Context, path string) error {
 	return c.runScript(ctx, string(body), stdin, nil)
 }
 
-// VHDPath is the minimal shape vhd/list.ps1 emits per result. Path-only
-// because the sweeper's RemoveVHD call only needs the path; bigger
-// shape means slower enumeration on a directory with many files and a
-// wider blast radius for script-Go contract drift.
+// VHDPath is the minimal format vhd/list.ps1 emits per result. Path-only
+// because the sweeper's RemoveVHD call only needs it; more fields would
+// mean slower enumeration on a directory with many files and a wider
+// blast radius for script-Go contract drift.
 type VHDPath struct {
 	Path string `json:"Path"`
 }
 
-// ListVHDsByPrefix returns paths of all VHD/VHDX (and avhd/avhdx) files
-// under parentDir whose filename starts with the given prefix. Unlike
-// ListVMsByPrefix which enumerates host-globally via Get-VM, VHDs are
-// path-addressable -- there's no "list all VHDs on the host" Hyper-V
-// cmdlet -- so the caller must supply the directory to scan. The
-// acctest sweeper threads HYPERV_TEST_VHD_DIR as parentDir.
-//
-// A missing parentDir is a normal empty return ([]VHDPath{}, nil), not
-// an error -- a fresh bench legitimately has no fixture directory yet.
-// Other errors (permission denied, etc.) propagate.
-//
-// Backed by vhd/list.ps1. Read-only.
+// ListVHDsByPrefix returns paths of every VHD/VHDX/avhd/avhdx file
+// under parentDir whose filename starts with prefix. Unlike
+// ListVMsByPrefix, which enumerates host-globally via Get-VM, VHDs are
+// path-addressable, so the caller supplies the directory to scan (the
+// acctest sweeper threads HYPERV_TEST_VHD_DIR). A missing parentDir
+// returns []VHDPath{} rather than an error, since a fresh bench
+// legitimately has no fixture directory yet; other errors propagate.
+// Backed by vhd/list.ps1, read-only.
 func (c *Client) ListVHDsByPrefix(ctx context.Context, parentDir, prefix string) ([]VHDPath, error) {
 	body, err := scripts.VHDScript("list")
 	if err != nil {

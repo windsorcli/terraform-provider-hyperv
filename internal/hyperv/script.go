@@ -30,22 +30,14 @@ const defaultReadTimeout = 60 * time.Second
 // lookups) never log anything.
 const scriptHeartbeatInterval = 15 * time.Second
 
-// runScript is the single chokepoint between Go DTOs and PowerShell. Every
-// typed Client method routes through here:
-//
-//  1. Concatenate the embedded preamble (common/preamble.ps1) to the body.
-//  2. Invoke the underlying Runner.
-//  3. Map non-zero exits via the structured-envelope parser to typed errors.
-//  4. Decode stdout JSON into `dst` if non-nil.
-//
-// While the runner is in flight a goroutine emits a tflog.Debug
-// heartbeat every scriptHeartbeatInterval so a stalled remote call
-// shows up under TF_LOG=DEBUG instead of going silent until the
-// transport's CommandTimeout fires. Plain operator output stays
-// uncluttered.
-//
-// Pass `dst = nil` for command-only cmdlets (Remove-VMSwitch, Set-*, etc.)
-// that don't return a result.
+// runScript is the single chokepoint between Go DTOs and PowerShell:
+// concatenates the embedded preamble to body, invokes the Runner, maps
+// a non-zero exit through the structured-envelope parser to a typed
+// error, and decodes stdout JSON into dst if non-nil (pass nil for
+// command-only cmdlets like Remove-VMSwitch or Set-*). A goroutine logs
+// a tflog.Debug heartbeat every scriptHeartbeatInterval while the runner
+// is in flight, so a stalled remote call shows up under TF_LOG=DEBUG
+// instead of going silent until the transport's CommandTimeout fires.
 func (c *Client) runScript(ctx context.Context, body string, stdinJSON []byte, dst any) error {
 	preamble, err := scripts.Preamble()
 	if err != nil {
@@ -114,26 +106,15 @@ func heartbeatLogger(ctx context.Context, done <-chan struct{}, scriptBytes int)
 	}
 }
 
-// minifyPS shrinks a PowerShell script for the wire by dropping comment-only
-// lines, blank lines, and leading/trailing whitespace per line. The source
-// preamble.ps1 is human-readable (~3.7 KB); after minification it's ~0.9 KB.
-//
-// This is load-bearing for the SSH backend: Windows OpenSSH server invokes
-// commands through cmd.exe whose CreateProcess command-line max is 8191
-// chars. The full preamble + verb-script + base64 + UTF-16LE expansion can
-// overflow that. Minification gets us comfortably under the limit while
-// preserving every functional line of the §5 contract.
-//
-// `#Requires` directives are preserved verbatim -- PowerShell parses them
-// before execution to enforce version/privilege checks, so silently
-// stripping them would bypass the check at runtime with no error.
-//
-// Trailing inline comments (e.g. `$x = 1 # note`) are NOT stripped -- doing
-// so safely requires PS-string-literal awareness. Same goes for collapsing
-// internal whitespace runs (here-strings @"..."@ would lose meaningful
-// indentation). Leading/trailing strip is unambiguously safe for our
-// scripts because none use here-strings; if a future script does, this
-// function's contract needs revisiting.
+// minifyPS shrinks a PowerShell script for the wire by dropping
+// comment-only lines, blank lines, and outer whitespace per line, to
+// keep the SSH backend under cmd.exe's 8191-char CreateProcess limit.
+// `#Requires` directives are kept verbatim, since PowerShell enforces
+// version/privilege checks from them before execution. Trailing inline
+// comments and internal whitespace are left alone too: safely stripping
+// either needs PS-string-literal and here-string awareness this
+// function doesn't have. No current script uses here-strings; a future
+// one would need this revisited.
 func minifyPS(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -143,8 +124,7 @@ func minifyPS(s string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "#") {
-			// Split on the first run of any whitespace so `#Requires\t-Version 5.1`
-			// is recognized alongside the space-separated form.
+			// Split on the first whitespace run so a tab-separated #Requires still matches.
 			head := trimmed
 			if i := strings.IndexFunc(trimmed, unicode.IsSpace); i > 0 {
 				head = trimmed[:i]

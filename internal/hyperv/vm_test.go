@@ -10,7 +10,7 @@ import (
 )
 
 // TestClient_GetVM_HappyPath_Gen2 decodes the gen 2 fixture into the
-// typed shape. Pins the field-by-field mapping -- breakage here means
+// typed result. Pins the field-by-field mapping: breakage here means
 // the wire contract drifted.
 func TestClient_GetVM_HappyPath_Gen2(t *testing.T) {
 	t.Parallel()
@@ -69,7 +69,7 @@ func TestClient_GetVM_HappyPath_Gen1(t *testing.T) {
 	}
 }
 
-// TestClient_GetVM_ForwardsNameInStdin pins the snake_case stdin shape.
+// TestClient_GetVM_ForwardsNameInStdin pins the snake_case stdin format.
 // This is what get.ps1's entry block reads via [Console]::In.ReadToEnd().
 func TestClient_GetVM_ForwardsNameInStdin(t *testing.T) {
 	t.Parallel()
@@ -128,7 +128,7 @@ func TestClient_GetVM_PermissionDeniedMapsToErrUnauthorized(t *testing.T) {
 }
 
 // TestClient_NewVM_StdinMatchesWireContract pins the snake_case stdin
-// shape with all optionals set. The Pester contract treats absent and
+// format with all optionals set. The Pester contract treats absent and
 // null as equivalent on the script side, but the Go side standardizes
 // on omitempty + pointer-types so the wire payload is minimal.
 func TestClient_NewVM_StdinMatchesWireContract(t *testing.T) {
@@ -256,9 +256,9 @@ func TestClient_SetVM_ForwardsGenerationForGuard(t *testing.T) {
 	}
 }
 
-// TestClient_SetVM_ReturnsReadShape confirms the post-mutation read shape
-// reaches the caller -- so the resource layer can write it back to state
-// without an extra GetVM round-trip.
+// TestClient_SetVM_ReturnsReadShape confirms the post-mutation read
+// result reaches the caller, so the resource layer can write it back to
+// state without an extra GetVM round-trip.
 func TestClient_SetVM_ReturnsReadShape(t *testing.T) {
 	t.Parallel()
 
@@ -415,8 +415,8 @@ func TestClient_DetachHardDisk_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	}
 }
 
-// TestClient_GetVM_DecodesHardDiskDrives confirms the array-of-objects
-// shape decodes into the typed VM.HardDiskDrives slice. An envelope
+// TestClient_GetVM_DecodesHardDiskDrives confirms an array-of-objects
+// decodes into the typed VM.HardDiskDrives slice. An envelope
 // emitted by the script with two attached disks should round-trip
 // through json.Unmarshal preserving slot identity (not just count).
 func TestClient_GetVM_DecodesHardDiskDrives(t *testing.T) {
@@ -459,7 +459,7 @@ func TestClient_GetVM_DecodesHardDiskDrives(t *testing.T) {
 
 // TestClient_GetVM_DecodesEmptyHardDiskDrives confirms an empty list
 // round-trips as an empty slice (not nil), matching the script-side
-// @() wrapper that forces array shape on the wire.
+// @() wrapper that forces an array on the wire.
 func TestClient_GetVM_DecodesEmptyHardDiskDrives(t *testing.T) {
 	t.Parallel()
 
@@ -600,8 +600,8 @@ func TestClient_DetachNetworkAdapter_ObjectNotFoundMapsToErrNotFound(t *testing.
 	}
 }
 
-// TestClient_GetVM_DecodesNetworkAdapters confirms the array shape
-// round-trips through the typed VM struct.
+// TestClient_GetVM_DecodesNetworkAdapters confirms the array round-trips
+// through the typed VM struct.
 func TestClient_GetVM_DecodesNetworkAdapters(t *testing.T) {
 	t.Parallel()
 
@@ -718,7 +718,7 @@ func TestClient_DetachDvdDrive_HappyPath(t *testing.T) {
 	}
 }
 
-// TestClient_GetVM_DecodesDvdDrives: array shape round-trips, including
+// TestClient_GetVM_DecodesDvdDrives: the array round-trips, including
 // the empty-Path case for an empty (no-ISO-loaded) drive.
 func TestClient_GetVM_DecodesDvdDrives(t *testing.T) {
 	t.Parallel()
@@ -755,7 +755,7 @@ func TestClient_GetVM_DecodesDvdDrives(t *testing.T) {
 // TestClient_SetVMState_ForwardsShutdownMode pins the wire payload for
 // the new shutdown_mode attribute. "graceful" lands as a top-level
 // snake_case field; the script's ValidateSet rejects anything else
-// (Pester covers the validation, this just locks the JSON shape).
+// (Pester covers the validation, this just locks the JSON format).
 func TestClient_SetVMState_ForwardsShutdownMode(t *testing.T) {
 	t.Parallel()
 
@@ -1000,7 +1000,7 @@ func TestClient_ListVMsByPrefix_DecodesArray(t *testing.T) {
 }
 
 // TestClient_ListVMsByPrefix_EmptyArray locks the empty-result case. The
-// PS-side -InputObject keeps the shape array-typed even at zero matches;
+// PS-side -InputObject keeps the result array-typed even at zero matches;
 // the Go side decodes that to []VMName{} (length 0), not nil. Either
 // would satisfy len()==0, but documenting the choice keeps a future
 // reader from "fixing" the non-nil empty slice into a nil one.
@@ -1021,7 +1021,7 @@ func TestClient_ListVMsByPrefix_EmptyArray(t *testing.T) {
 }
 
 // TestClient_ListVMsByPrefix_ForwardsPrefixInStdin pins the snake_case
-// stdin shape ({"name_prefix": "..."}) that list.ps1's entry block
+// stdin format ({"name_prefix": "..."}) that list.ps1's entry block
 // reads via [Console]::In.ReadToEnd().
 func TestClient_ListVMsByPrefix_ForwardsPrefixInStdin(t *testing.T) {
 	t.Parallel()

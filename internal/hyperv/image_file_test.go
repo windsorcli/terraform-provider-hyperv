@@ -34,7 +34,7 @@ func stubNoExistingDestination(fr *testutil.FakeRunner) *testutil.FakeRunner {
 		Return("", `{"category":"ObjectNotFound","message":"not found","cmdlet":""}`, 1)
 }
 
-// GetImageFile happy path: typed result decoded from the canned JSON shape
+// GetImageFile happy path: typed result decoded from the canned JSON
 // the Pester contract locked in. Pins the field-by-field mapping --
 // breakage here means the wire contract drifted.
 func TestClient_GetImageFile_HappyPath(t *testing.T) {
@@ -404,7 +404,7 @@ func TestClient_CopyHostFile_ChecksumMismatchMapsToErrChecksumMismatch(t *testin
 
 // StatImageFile runs the same get.ps1 read as GetImageFile. It exists to
 // escape the 60s defaultReadTimeout for the source_path plan-time hash,
-// so the contract worth pinning is that the wire shape is identical --
+// so the contract worth pinning is that the wire format is identical:
 // callers get the same DTO whichever entry point they use.
 func TestClient_StatImageFile_StdinMatchesGetWireContract(t *testing.T) {
 	t.Parallel()
@@ -428,7 +428,7 @@ func TestClient_StatImageFile_StdinMatchesGetWireContract(t *testing.T) {
 }
 
 // NewImageFileFromLocalPath orchestrates two transport calls (StreamFile
-// then RunScript). This test pins the wire shape of both: StreamFile
+// then RunScript). This test pins the wire format of both: StreamFile
 // lands at a sibling .part of DestinationPath, RunScript carries
 // destination_path + source_mode=local_path + the runner-computed
 // expected_sha256 + the same staging_path that StreamFile used. A drift
@@ -437,10 +437,7 @@ func TestClient_StatImageFile_StdinMatchesGetWireContract(t *testing.T) {
 func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
-	// Real fixture file -- the typed client opens it for SHA computation
-	// before any transport call, so the test needs an actual on-disk
-	// blob. Tiny content is fine; we're verifying wire shape, not
-	// streaming throughput.
+	// Real fixture file, since the typed client opens it for SHA computation; tiny content is fine here.
 	tmpDir := t.TempDir()
 	localPath := filepath.Join(tmpDir, "fixture.iso")
 	payload := []byte("hello local_path mode")
@@ -492,8 +489,7 @@ func TestClient_NewImageFileFromLocalPath_StdinMatchesWireContract(t *testing.T)
 	if strings.Contains(stdin, localPath) {
 		t.Errorf("stdin leaks LocalPath %q (should be runner-only)\nfull stdin: %s", localPath, stdin)
 	}
-	// staging_path on the wire must equal the path StreamFile wrote to;
-	// PS Test-Path keys on it for the verify-and-rename step.
+	// staging_path on the wire must equal the path StreamFile wrote to; PS Test-Path keys on it.
 	var got struct {
 		StagingPath string `json:"staging_path"`
 	}
@@ -554,7 +550,7 @@ func TestClient_NewImageFileFromLocalPath_StdinForwardsReplaceWhileMounted(t *te
 }
 
 // NewImageFileFromBytes lands an in-memory payload via the same
-// local_path wire shape -- runner writes the bytes to a tmpfile,
+// local_path wire format: runner writes the bytes to a tmpfile,
 // streams to a sibling .part of DestinationPath, dispatches new.ps1
 // in source_mode=local_path. The host script doesn't know whether
 // the staged bytes came from a runner-side file or a literal payload.
@@ -616,7 +612,7 @@ func TestClient_NewImageFileFromBytes_StdinMatchesLocalPathContract(t *testing.T
 }
 
 // NewImageFileFromBytes maps ErrChecksumMismatch on the host-side
-// hash failure -- same shape as local_path mode (transport corruption).
+// hash failure, same as local_path mode (transport corruption).
 func TestClient_NewImageFileFromBytes_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -635,8 +631,8 @@ func TestClient_NewImageFileFromBytes_ChecksumMismatchMapsToErrChecksumMismatch(
 }
 
 // NewImageFileFromLocalPath maps the InvalidData + ImageFileChecksumMismatch
-// envelope to ErrChecksumMismatch -- same shape as url-mode so the
-// resource layer's diagnostic can use one rule for both source modes.
+// envelope to ErrChecksumMismatch, same as url-mode, so the resource
+// layer's diagnostic can use one rule for both source modes.
 // In local_path mode this signals transport corruption (Connection
 // streamed bytes, host-side hash didn't match).
 func TestClient_NewImageFileFromLocalPath_ChecksumMismatchMapsToErrChecksumMismatch(t *testing.T) {
@@ -717,8 +713,7 @@ func TestClient_NewImageFileFromLocalPath_StreamFailureSurfacesAndSkipsRunScript
 	if !errors.Is(err, want) {
 		t.Errorf("err = %v, want %v wrapped", err, want)
 	}
-	// The pre-fetch destination check always runs (call 0); the write's
-	// own RunScript must still never run after StreamFile fails.
+	// Call 0 is the pre-fetch destination check; the write's own RunScript must never run after StreamFile fails.
 	if len(fr.Calls()) != 1 {
 		t.Errorf("RunScript Calls = %d, want 1 (stream failure must short-circuit the write)", len(fr.Calls()))
 	}
@@ -828,17 +823,15 @@ func zstdBytes(t *testing.T, payload []byte) []byte {
 }
 
 // bz2FixturePlaintext / bz2FixtureCompressed are a precomputed bzip2
-// round-trip pair. The Go stdlib (`compress/bzip2`) ships only a
-// reader; rather than pulling in a third-party encoder just for a
-// test fixture, the compressed bytes are a single inline literal.
+// round-trip pair. compress/bzip2 ships only a reader, so the
+// compressed bytes are an inline literal instead of a third-party
+// encoder dependency.
 //
-// Generation (one-time, on a machine with bzip2 in PATH):
+// Regenerate with:
 //
 //	printf 'tfhyperv bz2 fixture\n' | bzip2 -9 | xxd -p -c 200
 //
-// If the plaintext is changed, the compressed bytes must be
-// regenerated. The decompression-roundtrip assertion in the bz2
-// happy-path test catches a mismatch immediately.
+// The bz2 happy-path test's round-trip assertion catches a stale value.
 var (
 	bz2FixturePlaintext  = []byte("tfhyperv bz2 fixture\n")
 	bz2FixtureCompressed = mustHexDecode(
@@ -869,7 +862,7 @@ func hexSum(b []byte) string {
 // flow: the runner fetches the URL, decompresses on the fly, streams the
 // decompressed bytes to a host-side .part sibling of destination_path,
 // and dispatches new.ps1 in local_path mode for verify-and-rename. This
-// test pins the shape on every wire boundary the pipeline crosses --
+// test pins the format at every wire boundary the pipeline crosses:
 // StreamFile destination, RunScript stdin (source_mode, expected_sha256
 // = decompressed hash, staging_path matching StreamFile destination, and
 // destination_path round-trip).
@@ -899,9 +892,7 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 		t.Fatalf("NewImageFileFromURL: %v", err)
 	}
 
-	// StreamFile must have been called exactly once with a `.part-`
-	// sibling of destination_path on the host side. The runner-side
-	// LocalPath is a tmpfile we don't predict, but it must be set.
+	// StreamFile must land at a `.part-` sibling of destination_path; the runner-side tmpfile path isn't predicted.
 	streams := fr.StreamCalls()
 	if len(streams) != 1 {
 		t.Fatalf("StreamCalls = %d, want 1", len(streams))
@@ -914,10 +905,7 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 			streams[0].RemotePath)
 	}
 
-	// RunScript must have been called exactly once with the local_path
-	// wire shape. expected_sha256 is the *decompressed* SHA -- the
-	// runner publisher-side checksum check has already been done in
-	// process before the script runs.
+	// expected_sha256 is the *decompressed* SHA; the publisher-side check already ran before the script.
 	calls := fr.Calls()
 	if len(calls) != 2 {
 		t.Fatalf("Calls = %d, want 2 (pre-fetch destination check + the write itself)", len(calls))
@@ -932,8 +920,7 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 			t.Errorf("stdin missing %q\nfull stdin: %s", want, stdin)
 		}
 	}
-	// staging_path on the wire must equal the path StreamFile wrote to
-	// -- the host script's Test-Path keys on it for the verify step.
+	// staging_path on the wire must equal the path StreamFile wrote to; Test-Path keys on it.
 	var got struct {
 		StagingPath string `json:"staging_path"`
 	}
@@ -944,17 +931,14 @@ func TestClient_NewImageFileFromURL_GzipRunnerPipeline(t *testing.T) {
 		t.Errorf("stdin.staging_path = %q, want %q (must match StreamFile destination)",
 			got.StagingPath, streams[0].RemotePath)
 	}
-	// The user-facing URL field must NOT leak into the local_path-mode
-	// wire shape -- new.ps1 doesn't accept `url` outside url-mode and
-	// would either ignore it (forward-compatible noise) or reject it
-	// (strict-mode trip). Either way, omitting is the contract.
+	// URL must NOT leak into the local_path-mode wire format; new.ps1 doesn't accept it outside url-mode.
 	if strings.Contains(stdin, `"url"`) {
 		t.Errorf("stdin should omit 'url' for local_path-mode dispatch; got: %s", stdin)
 	}
 }
 
 // runCodecHappyPath is the per-codec smoke check that drives the runner-
-// pipelined fetch end-to-end and asserts the load-bearing wire shape:
+// pipelined fetch end-to-end and asserts the load-bearing wire format:
 // the host receives source_mode=local_path with expected_sha256 set to
 // the *decompressed* hash, and StreamFile lands on a destination .part
 // sibling. The gzip-specific test above does the full StreamCall +
@@ -1003,7 +987,7 @@ func runCodecHappyPath(t *testing.T, codec string, decompressed, compressed []by
 // runCodecDecompressionFailed feeds garbage to the named codec and asserts
 // the typed sentinel reaches the resource layer. Together with the
 // happy path above, this nails the dispatch table's two failure modes
-// per codec: bad bytes -> ErrDecompressionFailed, wire-shape mismatch
+// per codec: bad bytes -> ErrDecompressionFailed, wire-format mismatch
 // would be caught by the gzip-specific tests already.
 func runCodecDecompressionFailed(t *testing.T, codec string) {
 	t.Helper()
@@ -1057,17 +1041,13 @@ func TestClient_NewImageFileFromURL_XzDecompressionFailed(t *testing.T) {
 func TestClient_NewImageFileFromURL_XzMidStreamCorruption(t *testing.T) {
 	t.Parallel()
 
-	// Plaintext is large enough to land bytes well past the xz header
-	// and into block payload, so a single-byte flip in the middle
-	// guarantees a block-decode error rather than a header-decode one.
+	// Long enough that a mid-stream byte flip lands in block payload, not the header.
 	plain := bytes.Repeat([]byte("xz mid-stream regression "), 200)
 	compressed := xzBytes(t, plain)
 	if len(compressed) < 64 {
 		t.Fatalf("xz fixture too small for mid-stream test: %d bytes", len(compressed))
 	}
-	// Flip a byte deep enough into the stream that the xz header has
-	// already been consumed and the reader is mid-block. The header is
-	// 12 bytes; len/2 lands well past it.
+	// len/2 lands well past the 12-byte xz header, into a mid-block flip.
 	corrupted := make([]byte, len(compressed))
 	copy(corrupted, compressed)
 	corrupted[len(corrupted)/2] ^= 0xFF
@@ -1106,8 +1086,7 @@ func TestClient_NewImageFileFromURL_XzContextCanceled(t *testing.T) {
 	plain := bytes.Repeat([]byte("xz transport error fixture "), 200)
 	compressed := xzBytes(t, plain)
 
-	// Serve the xz bytes, but cancel the context before any bytes are read
-	// so the HTTP body reader returns context.Canceled through xzReader.Read.
+	// Canceled before any bytes are read, so xzReader.Read returns context.Canceled.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -1195,9 +1174,7 @@ func TestIsSupportedCodec(t *testing.T) {
 		}
 	}
 	for _, codec := range []string{"", "gzip", "tar", "tar.gz", "zstd", "bzip2", "lz4"} {
-		// Aliases ("gzip", "zstd", "bzip2") must NOT be supported by
-		// the post-normalization lookup -- the table keys are canonical.
-		// normalizeCompression is the seam that folds aliases.
+		// Aliases must fail the post-normalization lookup; normalizeCompression is the seam that folds them.
 		if isSupportedCodec(codec) {
 			t.Errorf("isSupportedCodec(%q) = true, want false (raw, pre-normalize)", codec)
 		}
@@ -1269,8 +1246,7 @@ func TestClient_NewImageFileFromURL_GzipCompressedChecksumMismatch(t *testing.T)
 		t.Errorf("StreamCalls = %d, want 0 (compressed-checksum mismatch must short-circuit)",
 			len(fr.StreamCalls()))
 	}
-	// Call 0 is the pre-fetch destination check; the write's own
-	// RunScript must still never run after a checksum mismatch.
+	// Call 0 is the pre-fetch destination check; the write's own RunScript must never run after a checksum mismatch.
 	if len(fr.Calls()) != 1 {
 		t.Errorf("RunScript Calls = %d, want 1 (compressed-checksum mismatch must short-circuit the write)",
 			len(fr.Calls()))
@@ -1306,8 +1282,7 @@ func TestClient_NewImageFileFromURL_GzipDecompressionFailed(t *testing.T) {
 		t.Errorf("StreamCalls = %d, want 0 (decompression failure must short-circuit)",
 			len(fr.StreamCalls()))
 	}
-	// Call 0 is the pre-fetch destination check; the write's own
-	// RunScript must still never run after a decompression failure.
+	// Call 0 is the pre-fetch destination check; the write's own RunScript must never run after a decompression failure.
 	if len(fr.Calls()) != 1 {
 		t.Errorf("RunScript Calls = %d, want 1 (decompression failure must short-circuit the write)",
 			len(fr.Calls()))
@@ -1350,8 +1325,8 @@ func TestClient_NewImageFileFromURL_GzipHTTPNon2xx(t *testing.T) {
 // Compression="" preserves the existing host-direct fetch flow byte-for-
 // byte: the typed client must dispatch to new.ps1's url-mode entry
 // point, not the runner-pipelined one. A regression that flipped the
-// dispatch on a "" check would silently change the wire shape for every
-// existing user.
+// dispatch on a "" check would silently change the wire format for
+// every existing user.
 func TestClient_NewImageFileFromURL_NoCompressionUsesHostDirectFlow(t *testing.T) {
 	t.Parallel()
 
@@ -1411,7 +1386,7 @@ func TestClient_NewImageFileFromURL_RunnerDownloadWithCompressionErrors(t *testi
 // pipelined fetch path: the runner downloads the URL into a local
 // tmpfile, computes SHA-256, streams to a host-side .part sibling of
 // destination_path, then dispatches new.ps1 in local_path mode.
-// This test pins the wire shape on every boundary the pipeline crosses.
+// This test pins the wire format at every boundary the pipeline crosses.
 func TestClient_NewImageFileFromURL_RunnerDownloadPipeline(t *testing.T) {
 	t.Parallel()
 
@@ -1473,7 +1448,7 @@ func TestClient_NewImageFileFromURL_RunnerDownloadPipeline(t *testing.T) {
 		t.Errorf("stdin.staging_path = %q, want %q (must match StreamFile destination)",
 			got.StagingPath, streams[0].RemotePath)
 	}
-	// URL must not leak into the local_path-mode wire shape.
+	// URL must not leak into the local_path-mode wire format.
 	if strings.Contains(stdin, `"url"`) {
 		t.Errorf("stdin should omit 'url' for local_path dispatch; got: %s", stdin)
 	}
@@ -1624,8 +1599,8 @@ func TestClient_RemoveImageFile_ForwardsExpectedSha256InStdin(t *testing.T) {
 }
 
 // RemoveImageFile forwards force=true into the stdin JSON so the host
-// script's detach-then-retry branch can run. Pins the JSON shape locked
-// by remove.Tests.ps1 -- the field name and boolean type matter; a typo
+// script's detach-then-retry branch can run. Pins the JSON format locked
+// by remove.Tests.ps1: the field name and boolean type matter, a typo
 // here would silently disable force_destroy at the wire layer.
 func TestClient_RemoveImageFile_ForwardsForceTrueInStdin(t *testing.T) {
 	t.Parallel()
@@ -1726,8 +1701,8 @@ func TestClient_SweepImageFiles_DecodesRemovedList(t *testing.T) {
 }
 
 // TestClient_SweepImageFiles_EmptyArray locks the zero-match return as
-// []string{}, not nil -- the PS -InputObject contract keeps the inner
-// shape array-typed.
+// []string{}, not nil: the PS -InputObject contract keeps the inner
+// result array-typed.
 func TestClient_SweepImageFiles_EmptyArray(t *testing.T) {
 	t.Parallel()
 
@@ -1739,8 +1714,7 @@ func TestClient_SweepImageFiles_EmptyArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SweepImageFiles: %v", err)
 	}
-	// len(nil) == 0, so the explicit nil check is what actually enforces
-	// the non-nil contract this test claims to lock.
+	// len(nil) == 0 too, so this explicit nil check is what actually locks non-nil.
 	if removed == nil {
 		t.Errorf("want non-nil empty slice, got nil")
 	}

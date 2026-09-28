@@ -58,9 +58,8 @@ func parseErrorEnvelope(stderr []byte, exitCode int) error {
 }
 
 // mapCategory routes a structured-envelope category to the appropriate
-// typed sentinel. Spike #3 finding 2 documents the InvalidParameter,Microsoft.Vhd.*
-// FQId path that distinguishes a bad differencing parent from generic
-// InvalidArgument.
+// typed sentinel. The InvalidParameter,Microsoft.Vhd.* FQId distinguishes
+// a bad differencing parent from a generic InvalidArgument.
 func mapCategory(env errorEnvelope) error {
 	switch env.Category {
 	case "ObjectNotFound":
@@ -75,14 +74,11 @@ func mapCategory(env errorEnvelope) error {
 		}
 		return ErrPSExecution
 	case "InvalidData":
-		// image_file/new.ps1 throws this category with FQId
-		// "ImageFileChecksumMismatch" on a hash-verify failure. Other
-		// InvalidData uses fall through to ErrPSExecution.
+		// new.ps1's FQId for a hash-verify failure; other InvalidData falls through to ErrPSExecution.
 		if strings.HasPrefix(env.FullyQualifiedErrorId, "ImageFileChecksumMismatch") {
 			return ErrChecksumMismatch
 		}
-		// remove.ps1 throws this category with FQId "ImageFileContentDrift"
-		// when the on-host file no longer hashes to expected_sha256.
+		// remove.ps1's FQId when the on-host file no longer hashes to expected_sha256.
 		if strings.HasPrefix(env.FullyQualifiedErrorId, "ImageFileContentDrift") {
 			return ErrContentDrift
 		}

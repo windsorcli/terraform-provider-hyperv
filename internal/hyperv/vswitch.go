@@ -12,42 +12,29 @@ import (
 )
 
 // vmSwitchVerifyAttempts and vmSwitchVerifyDelay control the
-// verify-on-drop recovery loops in RemoveVMSwitch and NewVMSwitch. The
-// window has to span the External-switch network blip on either side of
-// the lifecycle (Create binds the NIC; Remove unbinds it; both rebind
-// trigger ~5-15s vEthernet churn that can blink the SSH session before
-// the cmdlet's exit status reaches the runner). Five attempts at 5s
-// each gives 25s headroom -- generous for the host to recover, tight
-// enough that a genuinely-failed Create or Remove still surfaces in
-// well under a terraform-apply deadline.
-//
-// Shared between Create and Remove because the timing target is the
-// same physical event (the NIC rebind) -- splitting them would just
-// duplicate the same numbers under different names.
-//
-// Vars (not consts) so tests can shrink the delay to keep unit-test
-// runtime under a second; production callers should leave the defaults
-// alone.
+// verify-on-drop recovery loop shared by NewVMSwitch and RemoveVMSwitch:
+// both trigger the same NIC rebind, which can blink the SSH session for
+// 5-15s before a cmdlet's exit status reaches the runner. Five attempts
+// at 5s gives 25s headroom, generous for recovery but still well under
+// a terraform-apply deadline for a genuine failure. Vars, not consts,
+// so tests can shrink the delay; production callers should leave the
+// defaults alone.
 var (
 	vmSwitchVerifyAttempts = 5
 	vmSwitchVerifyDelay    = 5 * time.Second
 )
 
-// GetVMSwitch fetches a virtual switch by name. Returns ErrNotFound when the
-// switch doesn't exist (resource Read should call RemoveResource), or
-// ErrUnavailable when vmms is stopped / cluster node fenced (transient).
-//
-// natName is optional. When non-empty, the script joins Get-NetNat +
-// Get-NetIPAddress with the underlying VMSwitch read and synthesizes
-// SwitchType="NAT" -- callers managing NAT-typed resources pass the
-// nat_name from state so Read round-trips correctly. Empty natName
-// returns the bare six-field shape with empty NAT fields and SwitchType
-// reflecting Hyper-V's underlying enum (External/Internal/Private).
+// GetVMSwitch fetches a virtual switch by name. Returns ErrNotFound when
+// the switch doesn't exist (resource Read should call RemoveResource),
+// or ErrUnavailable when vmms is stopped or a cluster node is fenced
+// (transient). natName is optional: when set, the script joins
+// Get-NetNat and Get-NetIPAddress with the VMSwitch read and
+// synthesizes SwitchType="NAT", so callers managing NAT-typed resources
+// pass nat_name from state for Read to round-trip correctly. An empty
+// natName returns the bare six-field result, with SwitchType reflecting
+// Hyper-V's own enum instead.
 func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwitch, error) {
-	// NAT branch reads Get-NetNat + Get-NetIPAddress; take the read
-	// lock to block against concurrent NetNat writes from nat_static_mapping
-	// or vswitch mutations, but allow concurrent reads to parallelize.
-	// Non-NAT switches don't touch NetNat at all and run unlocked.
+	// natName set: RLock blocks concurrent NetNat writers, allows concurrent readers.
 	if natName != "" {
 		c.netNatMu.RLock()
 		defer c.netNatMu.RUnlock()
@@ -71,29 +58,32 @@ func (c *Client) GetVMSwitch(ctx context.Context, name, natName string) (*VMSwit
 	return &sw, nil
 }
 
-// NewVMSwitch creates a virtual switch and returns the canonical read shape.
-// The script-side guard rejects Private + AllowManagementOS with a clear
-// error before invoking the cmdlet (see new.ps1).
-//
-// Recovers from connection.ErrSessionDropped via a verify-on-drop loop --
-// symmetric to RemoveVMSwitch's recovery, same physical root cause:
-// New-VMSwitch -NetAdapterName <NIC> on the very NIC the SSH session
-// traverses makes Hyper-V re-bind that NIC for a few seconds, blinking
-// the session before the cmdlet's exit status reaches the runner. The
-// cmdlet itself almost always succeeded -- the response just got
-// stranded. The recovery polls GetVMSwitch and on the first hit returns
-// that switch's read shape (Hyper-V refuses to create over an existing
-// same-name switch, so a post-drop Get-found switch is the one this
-// call just created). The collateral-damage twin -- another resource
-// running concurrently whose session shared the blinking link -- is
-// out of scope here; that resource's apply needs a separate retry,
-// which terraform's normal failure-and-rerun cycle covers.
-//
-// If the verify ultimately can't confirm the switch exists (Get keeps
-// failing with transport errors, returns NotFound, or ctx cancels),
-// the original ErrSessionDropped surfaces -- the operator can re-run
-// terraform apply once the host is healthy and the resource's Read
-// path will reconcile.
+// withNatLock runs fn holding netNatMu.Lock only while natName is set,
+// releasing before returning so a reentrant NAT-locking call (GetVMSwitch
+// in a recovery path) doesn't deadlock against this same non-reentrant
+// mutex. The lock lives inside a closure, not the caller's defer, so a
+// panic from fn can't leak it held.
+func (c *Client) withNatLock(natName string, fn func() error) error {
+	var err error
+	func() {
+		if natName != "" {
+			c.netNatMu.Lock()
+			defer c.netNatMu.Unlock()
+		}
+		err = fn()
+	}()
+	return err
+}
+
+// NewVMSwitch creates a virtual switch and returns the canonical read
+// result. The script-side guard rejects Private + AllowManagementOS
+// before invoking the cmdlet. Recovers from
+// connection.ErrSessionDropped: New-VMSwitch on the NIC the SSH session
+// traverses rebinds it, which can blink the session before the cmdlet's
+// exit status reaches the runner. Recovery polls GetVMSwitch and returns
+// the first hit, safe since Hyper-V refuses to create over an existing
+// same-name switch; if verify can't confirm the switch exists, the
+// original ErrSessionDropped surfaces for the operator to retry.
 func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitch, error) {
 	body, err := scripts.VswitchScript("new")
 	if err != nil {
@@ -104,33 +94,10 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 		return nil, fmt.Errorf("marshal new.ps1 input: %w", err)
 	}
 
-	// NAT branch invokes New-NetNat + New-NetIPAddress; serialize with
-	// the package-wide netNatMu so we don't race nat_static_mapping CRUD on
-	// the host's NetNat persistent store. Two constraints shape the
-	// pattern below:
-	//
-	//   1. Reentrancy: we can't hold the lock for the full method body
-	//      because the recovery path below calls GetVMSwitch, which
-	//      takes this same mutex when natName is non-empty. sync.Mutex
-	//      is non-reentrant -- a second Lock from the same goroutine
-	//      would deadlock. The closure exits before recovery runs, so
-	//      the inner GetVMSwitch sees the lock free.
-	//
-	//   2. Panic safety: the framework's RPC layer recover()s panics
-	//      from resource methods, so a panic in runScript would leave
-	//      the provider process alive but with the mutex permanently
-	//      held -- every subsequent NAT op deadlocks. defer fires on
-	//      panic AND normal return, so wrap the locked region in an
-	//      IIFE with defer Unlock instead of a manual Unlock.
 	var sw VMSwitch
-	var runErr error
-	func() {
-		if in.NatName != "" {
-			c.netNatMu.Lock()
-			defer c.netNatMu.Unlock()
-		}
-		runErr = c.runScript(ctx, string(body), stdin, &sw)
-	}()
+	runErr := c.withNatLock(in.NatName, func() error {
+		return c.runScript(ctx, string(body), stdin, &sw)
+	})
 	if runErr == nil {
 		return &sw, nil
 	}
@@ -141,19 +108,12 @@ func (c *Client) NewVMSwitch(ctx context.Context, in NewVMSwitchInput) (*VMSwitc
 }
 
 // recoverVMSwitchNewOnDrop polls GetVMSwitch up to N times with a short
-// delay, returning the read shape on the first successful Get (the
-// cmdlet succeeded; the SSH session just blinked). Returns the original
-// drop error if Get reports NotFound (the cmdlet did not take effect)
-// OR if the verify loop runs out of attempts.
-//
-// On exhaustion the wrap includes the last verify error so the operator
-// can see *why* the verify never completed (transport flapping,
-// permission flap on the host, vmms restart) rather than just "verify
-// exhausted N attempts." Without that hint, repeated transient drops
-// look identical to silent infrastructure problems.
-//
-// ctx.Done is honored between attempts: a canceled apply unblocks
-// without consuming the full delay budget.
+// delay, returning the result on the first successful Get. Returns the
+// original drop error if Get reports NotFound, or if attempts run out;
+// on exhaustion the wrapped error includes the last verify error, so a
+// transient-drop storm doesn't look identical to a silent infrastructure
+// problem. ctx.Done is honored between attempts, so a canceled apply
+// doesn't wait out the full delay budget.
 func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name, natName string, original error) (*VMSwitch, error) {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
@@ -175,17 +135,14 @@ func (c *Client) recoverVMSwitchNewOnDrop(ctx context.Context, name, natName str
 		original, vmSwitchVerifyAttempts, lastVerifyErr)
 }
 
-// SetVMSwitch applies a partial update and returns the post-mutation read
-// shape (set.ps1 follows Set-VMSwitch with a Get-VMSwitch read-back so the
-// emitted shape matches GetVMSwitch exactly).
-//
-// Callers should populate in.SwitchType from prior state so set.ps1's
-// Private + AllowManagementOS guard can fire at the script layer; without
-// it, the cmdlet's opaque "parameter is not applicable" error surfaces
-// instead.
+// SetVMSwitch applies a partial update and returns the post-mutation
+// read result (set.ps1 follows Set-VMSwitch with a Get-VMSwitch
+// read-back so the result matches GetVMSwitch exactly). Callers should
+// populate in.SwitchType from prior state so set.ps1's Private +
+// AllowManagementOS guard can fire at the script layer; without it, the
+// cmdlet's opaque "parameter is not applicable" error surfaces instead.
 func (c *Client) SetVMSwitch(ctx context.Context, in SetVMSwitchInput) (*VMSwitch, error) {
-	// NAT branch reads Get-NetNat for the synthesized read-back;
-	// serialize. Non-NAT updates don't touch NetNat and run unlocked.
+	// natName set: serialize against the synthesized NAT read-back.
 	if in.NatName != "" {
 		c.netNatMu.Lock()
 		defer c.netNatMu.Unlock()
@@ -206,41 +163,17 @@ func (c *Client) SetVMSwitch(ctx context.Context, in SetVMSwitchInput) (*VMSwitc
 	return &sw, nil
 }
 
-// RemoveVMSwitch deletes a virtual switch by name. Resource Delete should
-// treat ErrNotFound as success (the switch is already gone).
-//
-// External switches with AllowManagementOS=true get a two-step destroy:
-// first Set-VMSwitch -AllowManagementOS $false to migrate the host's IP
-// off the vNIC and back to the physical NIC, then Remove-VMSwitch -Force
-// once the host is on a stable connection. The naive single-step
-// Remove-VMSwitch on the same kind of switch causes a NIC rebind
-// concurrent with the cmdlet's own teardown, and the resulting SSH-
-// session blink can land mid-destroy -- leaving the switch in a
-// transitional state Hyper-V's Get-VMSwitch still reports as "exists"
-// and a subsequent terraform-destroy retry re-triggers from scratch.
-// Splitting the operation lets the destabilizing event (IP migration)
-// happen in a small property-toggle that the bench-side cmdlet
-// completes quickly, then runs the destructive Remove against an
-// already-stabilized host.
-//
-// Internal / Private switches and External switches with
-// AllowManagementOS=false skip the pre-step -- there's no IP migration
-// concern. The dispatch reads the bench's actual state (not Terraform's
-// last-known state) so a drifted switch type still gets the right path.
-//
-// natName is forwarded so remove.ps1 can run the multi-phase NAT
-// teardown (Remove-NetNat -> Remove-NetIPAddress -> Remove-VMSwitch).
-// Empty natName runs the bare Remove-VMSwitch path. Each NAT step
-// tolerates ObjectNotFound -- best-effort destroy.
-//
-// Recovers from connection.ErrSessionDropped on the actual Remove via
-// the existing recoverVMSwitchRemoveOnDrop verify-loop. After the
-// pre-step the SSH path is on the physical NIC and Remove typically
-// completes cleanly without triggering recovery; the recovery is
-// belt-and-suspenders for transient drops unrelated to the migration.
+// RemoveVMSwitch deletes a virtual switch by name; ErrNotFound is
+// success (already gone). An External switch with
+// AllowManagementOS=true gets a two-step destroy via
+// prepareVMSwitchExternalForRemove before the actual Remove; every
+// other switch type or state removes directly. natName forwards to
+// remove.ps1's NAT teardown (Remove-NetNat, Remove-NetIPAddress, then
+// Remove-VMSwitch), each step tolerating ObjectNotFound; empty natName
+// skips it. Recovers from connection.ErrSessionDropped on the actual
+// Remove via recoverVMSwitchRemoveOnDrop.
 func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error {
-	// Pre-step gate: read the switch's current shape. NotFound is a
-	// success path (already gone); other errors propagate.
+	// NotFound here is success (already gone); other errors propagate.
 	current, err := c.GetVMSwitch(ctx, name, natName)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -267,36 +200,16 @@ func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error
 		return fmt.Errorf("marshal remove.ps1 input: %w", err)
 	}
 
-	// NAT branch invokes Remove-NetNat + Remove-NetIPAddress before the
-	// Remove-VMSwitch teardown; serialize with the package-wide
-	// netNatMu so we don't race nat_static_mapping CRUD on the host's NetNat
-	// persistent store. Same two constraints as NewVMSwitch's inner
-	// closure:
-	//
-	//   1. Reentrancy: GetVMSwitch in the pre-step above already takes
-	//      this same mutex when natName is non-empty, and the recovery
-	//      path below also calls back into GetVMSwitch. sync.Mutex is
-	//      non-reentrant; the closure must release before any of those
-	//      reentrant call paths run.
-	//
-	//   2. Panic safety: framework recover()s panics; manual Unlock
-	//      after a panicking runScript would leak the mutex. IIFE +
-	//      defer Unlock fires on panic AND normal return.
-	var runErr error
-	func() {
-		if natName != "" {
-			c.netNatMu.Lock()
-			defer c.netNatMu.Unlock()
-		}
-		runErr = c.runScript(ctx, string(body), stdin, nil)
-	}()
+	runErr := c.withNatLock(natName, func() error {
+		return c.runScript(ctx, string(body), stdin, nil)
+	})
 	if runErr == nil || !errors.Is(runErr, connection.ErrSessionDropped) {
 		return runErr
 	}
 	return c.recoverVMSwitchRemoveOnDrop(ctx, name, natName, runErr)
 }
 
-// VMSwitchName is the minimal shape vswitch/list.ps1 emits per result.
+// VMSwitchName is the minimal format vswitch/list.ps1 emits per result.
 // Only Name is carried because the sweeper (the sole caller today)
 // passes name + empty natName to RemoveVMSwitch; the existing acctest
 // bar uses Private + Internal switches only, so empty natName is
@@ -308,16 +221,11 @@ type VMSwitchName struct {
 }
 
 // ListVMSwitchesByPrefix returns the names of all virtual switches
-// whose Name begins with the given prefix (typically "tfacc-" for the
-// acceptance-test sweeper). Empty result is a normal return
-// ([]VMSwitchName{}, nil); the caller can distinguish "no matches"
-// from "fault" without checking err.
-//
-// Backed by vswitch/list.ps1. Read-only operation; no side effects.
-// Doesn't take the netNatMu (vs RLock on GetVMSwitch's NAT branch)
-// because Get-VMSwitch enumeration without name-narrowing doesn't
-// touch the NetNat backing file at all -- the NAT join lives in the
-// caller-supplied-natName path of GetVMSwitch, not here.
+// whose Name begins with prefix (typically "tfacc-" for the
+// acceptance-test sweeper). An empty result is a normal return, not an
+// error. Backed by vswitch/list.ps1, read-only; doesn't take netNatMu
+// since bare enumeration never touches the NetNat backing file (the NAT
+// join only happens in GetVMSwitch's natName path).
 func (c *Client) ListVMSwitchesByPrefix(ctx context.Context, prefix string) ([]VMSwitchName, error) {
 	body, err := scripts.VswitchScript("list")
 	if err != nil {
@@ -337,23 +245,16 @@ func (c *Client) ListVMSwitchesByPrefix(ctx context.Context, prefix string) ([]V
 	return switches, nil
 }
 
-// prepareVMSwitchExternalForRemove flips the switch's AllowManagementOS
-// to false so the host's IP migrates from the vEthernet (windsor-X)
-// vNIC back to the physical NIC. Hyper-V handles this as a graceful
-// migration -- the cmdlet completes quickly on the bench even when the
-// SSH session itself blinks during the IP move, because the cmdlet's
-// work is a single property toggle (not a tear-and-rebuild). When the
-// session does drop, recovery polls GetVMSwitch until AllowManagementOS
-// reads as false, then returns nil -- the host is now on the physical
-// NIC and a follow-up Remove-VMSwitch will run against a stable
-// connection.
-//
-// Failure modes:
-//   - Set-VMSwitch fails for a non-drop reason (vmms unavailable, etc.):
-//     propagate. RemoveVMSwitch surfaces the typed error to the caller.
-//   - Verify-after-drop exhausts attempts without seeing
-//     AllowManagementOS=false: surface the original drop. The operator
-//     can re-run terraform destroy; the Get pre-step will reconcile.
+// prepareVMSwitchExternalForRemove flips AllowManagementOS to false,
+// migrating the host's IP off the vEthernet vNIC and back to the
+// physical NIC, before RemoveVMSwitch's destructive Remove-VMSwitch
+// runs. Without this step, Remove-VMSwitch's own NIC rebind can collide
+// with an SSH blink landing mid-destroy, leaving Hyper-V reporting the
+// switch as still existing and a destroy retry starting from scratch.
+// The migration is a graceful single-property toggle that completes
+// quickly even if the session blinks; recovery on a drop polls
+// GetVMSwitch until AllowManagementOS reads false, surfacing the
+// original drop if verify exhausts its attempts.
 func (c *Client) prepareVMSwitchExternalForRemove(ctx context.Context, name string) error {
 	disable := false
 	_, err := c.SetVMSwitch(ctx, SetVMSwitchInput{
@@ -393,16 +294,12 @@ func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, na
 			if !sw.AllowManagementOS {
 				return nil
 			}
-			// Host re-stabilized but the property toggle didn't take.
-			// Surface the original drop so the operator can re-attempt
-			// rather than silently proceeding to the destructive Remove
-			// against a still-AllowManagementOS=true switch.
+			// Toggle didn't take; surface the drop instead of removing a still-true switch.
 			return fmt.Errorf("%w (pre-remove verify: switch %q still has AllowManagementOS=true)",
 				original, name)
 		}
 		if errors.Is(getErr, ErrNotFound) {
-			// Switch vanished during the migration -- treat as success
-			// because the destroy goal is already achieved.
+			// Switch vanished during migration; destroy goal already achieved.
 			return nil
 		}
 		lastVerifyErr = getErr

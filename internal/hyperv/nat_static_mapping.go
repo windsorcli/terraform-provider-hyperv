@@ -11,16 +11,13 @@ import (
 
 // GetNatStaticMapping fetches a NAT static netnat-static-mapping mapping by its
 // (nat_name, protocol, external_ip, external_port) lookup tuple and
-// joins the optional companion firewall rule into the read shape.
+// joins the optional companion firewall rule into the read result.
 //
 // Returns ErrNotFound when no mapping matches the tuple (resource Read
 // should call RemoveResource), or ErrUnavailable when the underlying
 // service is transiently unreachable.
 func (c *Client) GetNatStaticMapping(ctx context.Context, in GetNatStaticMappingInput) (*NatStaticMapping, error) {
-	// RLock: Get-NetNatStaticMapping is read-only. Concurrent reads
-	// against the NetNat backing file's shared-read handle don't
-	// conflict; writers (New/Set/Remove below) take the exclusive
-	// Lock to block both other writers and any in-flight readers.
+	// RLock: concurrent reads don't conflict; writers below take the exclusive Lock.
 	c.netNatMu.RLock()
 	defer c.netNatMu.RUnlock()
 	body, err := scripts.NatStaticMappingScript("get")
@@ -70,7 +67,7 @@ func (c *Client) NewNatStaticMapping(ctx context.Context, in NewNatStaticMapping
 // SetNatStaticMapping applies a partial update. internal_ip/internal_port
 // changes are Remove + Add under the hood (NatStaticMapping has no
 // in-place edit); firewall.* changes go through Set-NetFirewallRule.
-// Returns the post-mutation read shape -- the StaticMappingID may
+// Returns the post-mutation read result: the StaticMappingID may
 // change because Hyper-V re-numbers mappings on Add.
 func (c *Client) SetNatStaticMapping(ctx context.Context, in SetNatStaticMappingInput) (*NatStaticMapping, error) {
 	c.netNatMu.Lock()
@@ -108,11 +105,7 @@ func (c *Client) RemoveNatStaticMapping(ctx context.Context, in RemoveNatStaticM
 	}
 
 	if err := c.runScript(ctx, string(body), stdin, nil); err != nil {
-		// remove.ps1 doesn't surface ObjectNotFound on its own (the
-		// script tolerates missing mapping/rule internally as best-
-		// effort destroy), but mirror the vswitch convention of
-		// treating ErrNotFound as success regardless -- defensive
-		// against future script changes that might bubble it up.
+		// Defensive: treat ErrNotFound as success even though the script already tolerates it.
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}

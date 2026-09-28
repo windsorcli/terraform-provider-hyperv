@@ -12,7 +12,7 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
-// GetVMSwitch happy path: typed result decoded from the canned JSON shape
+// GetVMSwitch happy path: typed result decoded from the canned JSON
 // the Pester contract locked in. Pins the field-by-field mapping --
 // breakage here means the wire contract drifted.
 func TestClient_GetVMSwitch_HappyPath(t *testing.T) {
@@ -110,7 +110,7 @@ func TestClient_GetVMSwitch_ForwardsNatNameInStdin(t *testing.T) {
 
 // GetVMSwitch with empty natName omits the field from stdin entirely
 // (omitempty), so the script doesn't take the NAT branch for non-NAT
-// switches. Locks the wire-level shape -- absent vs explicit empty
+// switches. Locks the wire-level contract: absent vs explicit empty
 // matters because the script uses key presence as the discriminator.
 func TestClient_GetVMSwitch_EmptyNatNameOmitsField(t *testing.T) {
 	t.Parallel()
@@ -258,8 +258,8 @@ func TestClient_SetVMSwitch_ForwardsSwitchTypeForGuard(t *testing.T) {
 	}
 }
 
-// SetVMSwitch returns the post-mutation read shape so callers can write it
-// back to state without an extra GetVMSwitch round-trip.
+// SetVMSwitch returns the post-mutation read result so callers can write
+// it back to state without an extra GetVMSwitch round-trip.
 func TestClient_SetVMSwitch_ReturnsReadShape(t *testing.T) {
 	t.Parallel()
 
@@ -284,7 +284,7 @@ func TestClient_SetVMSwitch_ReturnsReadShape(t *testing.T) {
 // RemoveVMSwitch's happy path on a Private switch: pre-step Get reads
 // the switch, sees no IP-migration concern (Private has no NIC), skips
 // the AllowManagementOS=false dance, and goes straight to
-// Remove-VMSwitch. Most-common destroy shape and the simplest mock.
+// Remove-VMSwitch. Most-common destroy path and the simplest mock.
 func TestClient_RemoveVMSwitch_HappyPath_Private(t *testing.T) {
 	t.Parallel()
 
@@ -296,8 +296,7 @@ func TestClient_RemoveVMSwitch_HappyPath_Private(t *testing.T) {
 	if err := c.RemoveVMSwitch(t.Context(), "private-switch", ""); err != nil {
 		t.Fatalf("RemoveVMSwitch: %v", err)
 	}
-	// The Remove call's stdin must still forward the name -- verify that
-	// the script call went out as expected (last call after the Get).
+	// The Remove call's stdin must still forward the name (last call after the Get).
 	calls := fr.Calls()
 	if len(calls) < 2 {
 		t.Fatalf("Calls = %d, want >=2 (Get + Remove)", len(calls))
@@ -389,9 +388,7 @@ func TestClient_RemoveVMSwitch_RemoveReturnsNotFound(t *testing.T) {
 func TestClient_RemoveVMSwitch_ExternalNoManagementOS_SkipsPreStep(t *testing.T) {
 	t.Parallel()
 
-	// Externally-shaped switch but with AllowManagementOS=false. Build
-	// the fixture inline because the standard external fixture has it
-	// true and that's the case the pre-step IS supposed to handle.
+	// External switch with AllowManagementOS=false, inline since the standard fixture has it true.
 	externalNoManagementOS := `{
 		"Name": "external-no-mgmt",
 		"SwitchType": "External",
@@ -435,8 +432,7 @@ func TestClient_RemoveVMSwitch_PreStepDropSurfacesWhenStillManagementOS(t *testi
 	fr := testutil.NewFakeRunner().
 		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0).
 		On("function Set-HypervSwitch").ReturnErr(connection.ErrSessionDropped).
-		// Verify-after-drop Get still sees AllowManagementOS=true: the
-		// pre-step didn't take effect.
+		// Verify-after-drop Get still sees AllowManagementOS=true: the pre-step didn't take effect.
 		On("function Get-HypervSwitch").Return(testutil.VMSwitchExternalFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -452,7 +448,7 @@ func TestClient_RemoveVMSwitch_PreStepDropSurfacesWhenStillManagementOS(t *testi
 // SessionDropped + post-drop GetVMSwitch returns the freshly-created
 // switch: the cmdlet succeeded on the host but the SSH session blinked
 // (the External-switch NIC rebind case for Create -- same root cause as
-// Remove). NewVMSwitch must verify and return the read shape from Get
+// Remove). NewVMSwitch must verify and return the read result from Get
 // rather than surface a false-failure that leaves the user with a
 // post-drop switch on the bench but a "Create failed" diagnostic in
 // terraform's output.
@@ -530,10 +526,7 @@ func TestClient_NewVMSwitch_SessionDroppedExhaustsAttempts(t *testing.T) {
 	if !errors.Is(err, connection.ErrSessionDropped) {
 		t.Errorf("err = %v, want chain to contain connection.ErrSessionDropped", err)
 	}
-	// Exhaustion wrap must surface the last verify error so the
-	// operator sees *why* the verify never completed (transport
-	// flapping, vmms restart) -- regression of this hint would
-	// drop diagnostic detail to "exhausted N attempts" only.
+	// Exhaustion wrap must surface the last verify error, not just "exhausted N attempts".
 	if !strings.Contains(err.Error(), "last verify error") {
 		t.Errorf("err = %v, want detail naming last verify error", err)
 	}
@@ -586,20 +579,13 @@ func shortenVerifyTimings(t *testing.T) {
 	})
 }
 
-// TODO(follow-up): four post-Remove recovery-loop tests
-// (SessionDroppedRecoversWhenSwitchGone /
-// SessionDroppedSurfacesWhenSwitchStillExists /
-// SessionDroppedExhaustsAttempts /
-// SessionDroppedRespectsContextCancel) used to live here and exercised
-// the recoverVMSwitchRemoveOnDrop verify-loop after Remove-VMSwitch
-// returned ErrSessionDropped. They were removed when RemoveVMSwitch
-// gained the pre-step Get + Set-AllowManagementOS-false dance: the
-// FakeRunner indexes responses by script-substring (overwrite-by-key)
-// and cannot queue distinct responses for the pre-step Get, the
-// post-Remove verify Get, and the cancel-test's pre-step Get-fails
-// case. The recovery loop's logic is unchanged structurally; the gap
-// is unit-test coverage of that loop in the Remove path. Re-add once
-// FakeRunner gains response-queue support.
+// TODO(follow-up): recoverVMSwitchRemoveOnDrop's Remove-path recovery
+// loop lacks unit coverage for session-dropped recovery, error surfacing
+// when the switch still exists, exhausted attempts, and context
+// cancellation. FakeRunner indexes responses by script-substring, so it
+// can't queue the distinct pre-step Get, post-Remove verify Get, and
+// cancel-test Get-failure a single test needs; add coverage once it
+// supports queued responses.
 
 // TestClient_ListVMSwitchesByPrefix_DecodesArray pins the wire contract:
 // list.ps1 emits a JSON array of {Name} objects, even on zero or one
@@ -625,7 +611,7 @@ func TestClient_ListVMSwitchesByPrefix_DecodesArray(t *testing.T) {
 }
 
 // TestClient_ListVMSwitchesByPrefix_EmptyArray locks the empty-result
-// case -- the PS-side -InputObject keeps the shape array-typed so the
+// case: the PS-side -InputObject keeps the output array-typed, so the
 // Go decoder returns []VMSwitchName{} (length 0), not nil-or-error.
 func TestClient_ListVMSwitchesByPrefix_EmptyArray(t *testing.T) {
 	t.Parallel()
@@ -644,7 +630,7 @@ func TestClient_ListVMSwitchesByPrefix_EmptyArray(t *testing.T) {
 }
 
 // TestClient_ListVMSwitchesByPrefix_ForwardsPrefixInStdin pins the
-// snake_case stdin shape ({"name_prefix": "..."}) that list.ps1's
+// snake_case stdin format ({"name_prefix": "..."}) that list.ps1's
 // entry block reads via [Console]::In.ReadToEnd().
 func TestClient_ListVMSwitchesByPrefix_ForwardsPrefixInStdin(t *testing.T) {
 	t.Parallel()

@@ -31,8 +31,8 @@ func TestClient_SweepNetNats_DecodesRemovedList(t *testing.T) {
 	}
 }
 
-// TestClient_SweepNetNats_EmptyArray locks the zero-match case -- the
-// PS-side -InputObject keeps the inner shape array-typed so the Go
+// TestClient_SweepNetNats_EmptyArray locks the zero-match case: the
+// PS-side -InputObject keeps the inner result array-typed, so the Go
 // decoder returns []string{} (length 0), not nil-or-error.
 func TestClient_SweepNetNats_EmptyArray(t *testing.T) {
 	t.Parallel()
@@ -51,7 +51,7 @@ func TestClient_SweepNetNats_EmptyArray(t *testing.T) {
 }
 
 // TestClient_SweepNetNats_ForwardsPrefixInStdin pins the snake_case
-// stdin shape ({"name_prefix": "..."}) that sweep.ps1's entry block
+// stdin format ({"name_prefix": "..."}) that sweep.ps1's entry block
 // reads via [Console]::In.ReadToEnd().
 func TestClient_SweepNetNats_ForwardsPrefixInStdin(t *testing.T) {
 	t.Parallel()

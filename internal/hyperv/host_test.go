@@ -9,10 +9,7 @@ import (
 )
 
 func TestGetVMHostScript_HasContractWrapper(t *testing.T) {
-	// Pin: every script body MUST wrap cmdlets in try/catch and pair
-	// Write-HypervError with `exit 1` per §5. Without this, terminating
-	// PS errors reach stderr as native PS error records (multi-line,
-	// not JSON), and the typed-error mapping in errors.go never fires.
+	// Pin: every script wraps cmdlets in try/catch and pairs Write-HypervError with exit 1, or errors.go's mapping never fires.
 	t.Parallel()
 
 	for _, want := range []string{`try {`, `Write-HypervError $_`, `exit 1`} {
@@ -89,9 +86,7 @@ func TestClient_GetVMHost_PermissionDeniedMapsToErrUnauthorized(t *testing.T) {
 }
 
 func TestClient_GetVMHost_EmptyStdoutFailsWithPSExecution(t *testing.T) {
-	// Exit 0 but no stdout — the chokepoint catches this with a clear
-	// preamble/encoding-pin diagnostic instead of a generic JSON parse
-	// failure deep in the stack.
+	// Exit 0, no stdout: the chokepoint gives a clear diagnostic instead of a JSON parse failure deep in the stack.
 	t.Parallel()
 
 	fr := testutil.NewFakeRunner().On("Get-VMHost").Return("   \n  ", "", 0)

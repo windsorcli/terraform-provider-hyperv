@@ -9,8 +9,8 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
-// GetNatStaticMapping happy path: typed result decoded from the canned JSON
-// shape the Pester contract locked in. Pins the field-by-field mapping --
+// GetNatStaticMapping happy path: typed result decoded from the canned
+// JSON the Pester contract locked in. Pins the field-by-field mapping:
 // breakage here means the wire contract drifted.
 func TestClient_GetNatStaticMapping_HappyPath(t *testing.T) {
 	t.Parallel()
@@ -151,7 +151,7 @@ func TestClient_NewNatStaticMapping_ForwardsNestedFirewallBlock(t *testing.T) {
 	}
 }
 
-// SetNatStaticMapping returns the post-mutation read shape -- StaticMappingID
+// SetNatStaticMapping returns the post-mutation read result: StaticMappingID
 // can change because internal_* mutations are Remove + Add under the
 // hood. Locking the round-trip here ensures the Go-side resource
 // Update threads the new ID into state.

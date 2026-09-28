@@ -114,9 +114,9 @@ func TestClient_GetVHD_ObjectNotFoundMapsToErrNotFound(t *testing.T) {
 	}
 }
 
-// NewVHDFixed sends the right stdin shape: path, size_bytes, vhd_type=fixed.
+// NewVHDFixed sends the right stdin fields: path, size_bytes, vhd_type=fixed.
 // BlockSizeBytes is omitted from the JSON when the input pointer is nil
-// (omitempty on the wire shape).
+// (omitempty on the wire format).
 func TestClient_NewVHDFixed_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
@@ -172,7 +172,7 @@ func TestClient_NewVHDFixed_ForwardsBlockSizeWhenSet(t *testing.T) {
 }
 
 // NewVHDDynamic sends vhd_type=dynamic, distinguishing it from fixed at
-// the wire level even though the input struct shape is identical.
+// the wire level even though the input struct is identical.
 func TestClient_NewVHDDynamic_StdinMatchesWireContract(t *testing.T) {
 	t.Parallel()
 
@@ -371,7 +371,7 @@ func shortenVHDVerifyTimings(t *testing.T) {
 // but the SSH session blinked (collateral damage from a parallel
 // vswitch's NIC rebind, which is the actual recurring case in the
 // External-on-management-NIC topology). NewVHDDynamic must verify and
-// return the read shape from Get rather than surface a false-failure
+// return the read result from Get rather than surface a false-failure
 // that leaves the user with an orphan VHDX on the bench but a "Create
 // failed" diagnostic.
 func TestClient_NewVHDDynamic_SessionDroppedRecoversWhenVHDPresent(t *testing.T) {
@@ -384,9 +384,7 @@ func TestClient_NewVHDDynamic_SessionDroppedRecoversWhenVHDPresent(t *testing.T)
 
 	v, err := c.NewVHDDynamic(t.Context(), NewVHDDynamicInput{
 		Path: "C:\\hyperv\\vhds\\my-vm-system.vhdx",
-		// Match the fixture's SizeBytes so the verify guard accepts
-		// the Get result. A mismatch here would surface as a verify
-		// error -- exercised by the dedicated test below.
+		// Matches the fixture's SizeBytes so the verify guard accepts the Get result.
 		SizeBytes: 34359738368,
 	})
 	if err != nil {
@@ -429,12 +427,12 @@ func TestClient_NewVHDDynamic_SessionDroppedSurfacesWhenVHDAbsent(t *testing.T) 
 	}
 }
 
-// SessionDropped + post-drop GetVHD returns a VHD whose SizeBytes does
-// not match what we requested: the cmdlet may have written a partial
-// header (or some other file already lived at the path with a different
-// shape). Adoption would propagate broken state into terraform; surface
-// the drop with the mismatch detail so the operator can sweep before
-// retry. Pairs with the symmetric VhdType-mismatch case below.
+// SessionDropped + post-drop GetVHD returns a VHD whose SizeBytes
+// doesn't match the request: the cmdlet may have written a partial
+// header (or some other file already lived at the path with different
+// contents). Adoption would propagate broken state into terraform;
+// surface the drop with the mismatch detail so the operator can sweep
+// before retry. Pairs with the symmetric VhdType-mismatch case below.
 func TestClient_NewVHDDynamic_SessionDroppedSurfacesWhenSizeMismatch(t *testing.T) {
 	shortenVHDVerifyTimings(t)
 
@@ -443,8 +441,7 @@ func TestClient_NewVHDDynamic_SessionDroppedSurfacesWhenSizeMismatch(t *testing.
 		On("function Get-HypervVHD").Return(testutil.VHDDynamicFixtureJSON, "", 0)
 	c := NewClient(fr)
 
-	// Fixture SizeBytes is 34359738368 (32 GiB); request a different
-	// value so the verify guard rejects.
+	// Fixture SizeBytes is 34359738368 (32 GiB); request a different value so the verify guard rejects.
 	_, err := c.NewVHDDynamic(t.Context(), NewVHDDynamicInput{
 		Path:      "C:\\hyperv\\vhds\\my-vm-system.vhdx",
 		SizeBytes: 16106127360, // 15 GiB
@@ -470,8 +467,7 @@ func TestClient_NewVHDFixed_SessionDroppedSurfacesWhenTypeMismatch(t *testing.T)
 
 	fr := testutil.NewFakeRunner().
 		On("function New-HypervVHDFixed").ReturnErr(connection.ErrSessionDropped).
-		// Fixture is Dynamic; user requested Fixed. Type mismatch is
-		// the canonical "wrong VHD at same path" signal.
+		// Fixture is Dynamic; user requested Fixed, the canonical "wrong VHD at same path" signal.
 		On("function Get-HypervVHD").Return(testutil.VHDDynamicFixtureJSON, "", 0)
 	c := NewClient(fr)
 
@@ -623,7 +619,7 @@ func TestClient_ListVHDsByPrefix_EmptyArray(t *testing.T) {
 }
 
 // TestClient_ListVHDsByPrefix_ForwardsBothParamsInStdin pins the
-// snake_case stdin shape ({"parent_dir":"...","name_prefix":"..."})
+// snake_case stdin format ({"parent_dir":"...","name_prefix":"..."})
 // that list.ps1's entry block reads. Distinct from the VM/switch
 // variants because list.ps1 takes TWO inputs: parent dir + prefix.
 func TestClient_ListVHDsByPrefix_ForwardsBothParamsInStdin(t *testing.T) {

@@ -18,10 +18,10 @@ type VMHost struct {
 	VirtualHardDiskPath   string `json:"VirtualHardDiskPath"`
 }
 
-// VMSwitch is the canonical read shape emitted by vswitch/{get,new,set}.ps1.
+// VMSwitch is the canonical read format vswitch/{get,new,set}.ps1 emits.
 // Field tags use PascalCase to match Get-VMSwitch's native output (the
 // stdin convention is snake_case per the wire contract; stdout is the raw
-// cmdlet shape consumed by the typed client).
+// cmdlet output the typed client consumes as-is).
 //
 // SwitchType reads as "External", "Internal", "Private", or the synthesized
 // "NAT" -- Hyper-V's underlying enum has no NAT type, so the script reports
@@ -40,17 +40,14 @@ type VMSwitch struct {
 	NatHostAddress                 string `json:"NatHostAddress"`
 }
 
-// NewVMSwitchInput is the stdin JSON shape for vswitch/new.ps1.
-//
-// Required fields: Name, SwitchType. Optional fields use pointer types so
-// missing-vs-explicit-false round-trips correctly through the wire contract:
-// the entry block in new.ps1 treats absent keys and explicit null as
-// equivalent (both skip the splat), so omitempty + nil pointer yields the
-// "use cmdlet default" behavior.
-//
-// NAT fields are required when SwitchType == "NAT" and rejected otherwise
-// (the resource-layer validator enforces this; the script trusts the
-// validation already happened).
+// NewVMSwitchInput is the stdin JSON format for vswitch/new.ps1.
+// Required: Name, SwitchType. Optional fields use pointer types so
+// missing-vs-explicit-false round-trips correctly: new.ps1 treats an
+// absent key and an explicit null as equivalent (both skip the splat),
+// so omitempty plus a nil pointer yields the cmdlet's default. NAT
+// fields are required when SwitchType == "NAT" and rejected otherwise;
+// the resource-layer validator enforces this and the script trusts it
+// already happened.
 type NewVMSwitchInput struct {
 	Name                     string   `json:"name"`
 	SwitchType               string   `json:"switch_type"`
@@ -62,20 +59,15 @@ type NewVMSwitchInput struct {
 	NatHostAddress           string   `json:"nat_host_address,omitempty"`
 }
 
-// SetVMSwitchInput is the stdin JSON shape for vswitch/set.ps1.
-//
-// Same pattern as NewVMSwitchInput, with two differences:
-//   - SwitchType is OPTIONAL here -- it's a validation hint, not a mutation.
-//     The Update path should populate it from prior state so set.ps1's
-//     Private + AllowManagementOS guard fires with a clear error.
-//   - Only keys present in the input get forwarded to Set-VMSwitch (see
-//     set.ps1's wire contract). Sending nil/null for an attribute means
-//     "leave it alone"; sending a value means "set it to this".
-//
-// NatName is forwarded for NAT switches so set.ps1 can route the read-back
-// through Get-NetNat + Get-NetIPAddress and synthesize SwitchType=NAT.
-// Every NAT-specific input on the resource is RequiresReplace; the only
-// in-place mutation that reaches Update for a NAT switch is Notes.
+// SetVMSwitchInput is the stdin JSON format for vswitch/set.ps1.
+// SwitchType is optional here, a validation hint rather than a mutation:
+// the Update path should populate it from prior state so set.ps1's
+// Private + AllowManagementOS guard fires with a clear error. Only keys
+// present in the input forward to Set-VMSwitch; nil/null means leave it
+// alone, a value means set it. NatName is forwarded for NAT switches so
+// set.ps1 can route the read-back through Get-NetNat + Get-NetIPAddress;
+// every NAT-specific input is RequiresReplace, so Notes is the only
+// in-place mutation Update reaches for a NAT switch.
 type SetVMSwitchInput struct {
 	Name              string   `json:"name"`
 	SwitchType        string   `json:"switch_type,omitempty"`
@@ -85,8 +77,8 @@ type SetVMSwitchInput struct {
 	NatName           string   `json:"nat_name,omitempty"`
 }
 
-// NatStaticMapping is the canonical eleven-field read shape emitted by
-// nat_static_mapping/{get,new,set}.ps1. Composite Id encodes the lookup
+// NatStaticMapping is the canonical eleven-field read format
+// nat_static_mapping/{get,new,set}.ps1 emits. Composite Id encodes the lookup
 // tuple (NatName:Protocol:ExternalIPAddress:ExternalPort) lowercase
 // for stable cross-tool interop; Protocol on the rest of the struct
 // is uppercase (TCP / UDP) because that's what Get-NetNatStaticMapping
@@ -107,7 +99,7 @@ type NatStaticMapping struct {
 	FirewallRuleProfile string `json:"FirewallRuleProfile"`
 }
 
-// NatStaticMappingFirewallInput is the nested firewall block's wire shape
+// NatStaticMappingFirewallInput is the nested firewall block's wire format
 // for new.ps1 / set.ps1. Defaulting (enabled=true, derived name,
 // profile=Any) lives on the resource layer; this struct carries the
 // already-resolved values to the script.
@@ -117,7 +109,7 @@ type NatStaticMappingFirewallInput struct {
 	Profile string `json:"profile"`
 }
 
-// NewNatStaticMappingInput is the stdin JSON shape for nat_static_mapping/new.ps1.
+// NewNatStaticMappingInput is the stdin JSON format for nat_static_mapping/new.ps1.
 // All mapping fields are required; firewall is required as a nested
 // object (resource defaults populate it before reaching the wire).
 type NewNatStaticMappingInput struct {
@@ -130,13 +122,13 @@ type NewNatStaticMappingInput struct {
 	Firewall          NatStaticMappingFirewallInput `json:"firewall"`
 }
 
-// SetNatStaticMappingInput is the stdin JSON shape for nat_static_mapping/set.ps1.
-// Same shape as NewNatStaticMappingInput -- set.ps1 looks up the existing
-// mapping by tuple (nat_name + protocol + external_ip + external_port)
-// then mutates internal_ip/internal_port via Remove + Add and the
-// firewall via Set-NetFirewallRule. The lookup tuple is RequiresReplace
-// at the schema layer; Update only fires when internal_* or firewall.*
-// changes.
+// SetNatStaticMappingInput is the stdin JSON format for
+// nat_static_mapping/set.ps1, the same fields as NewNatStaticMappingInput:
+// set.ps1 looks up the existing mapping by tuple (nat_name + protocol +
+// external_ip + external_port), then mutates internal_ip/internal_port
+// via Remove + Add and the firewall via Set-NetFirewallRule. The lookup
+// tuple is RequiresReplace at the schema layer; Update only fires when
+// internal_* or firewall.* changes.
 type SetNatStaticMappingInput struct {
 	NatName           string                        `json:"nat_name"`
 	Protocol          string                        `json:"protocol"`
@@ -147,7 +139,7 @@ type SetNatStaticMappingInput struct {
 	Firewall          NatStaticMappingFirewallInput `json:"firewall"`
 }
 
-// GetNatStaticMappingInput is the stdin JSON shape for nat_static_mapping/get.ps1
+// GetNatStaticMappingInput is the stdin JSON format for nat_static_mapping/get.ps1
 // and nat_static_mapping/remove.ps1. The lookup tuple uniquely identifies a
 // mapping; firewall_name is needed alongside because the firewall rule
 // is keyed by DisplayName, not derived from the mapping itself.
@@ -169,7 +161,7 @@ type RemoveNatStaticMappingInput struct {
 	FirewallName      string `json:"firewall_name"`
 }
 
-// ImageFile is the canonical read shape emitted by image_file/{get,new}.ps1.
+// ImageFile is the canonical read format image_file/{get,new}.ps1 emits.
 // Sha256 is lowercase hex (the wire contract); SizeBytes is int64 because
 // VHDX/ISO files routinely exceed 2^31 bytes.
 type ImageFile struct {
@@ -178,22 +170,16 @@ type ImageFile struct {
 	Sha256    string `json:"Sha256"`
 }
 
-// NewImageFileFromURLInput is the public input shape for the URL source
-// mode of image_file/new.ps1. The discriminator field (source_mode) is
-// not on the public struct -- the typed-client method sets it internally
-// so callers can't pass the wrong value for the method they invoke.
-//
-// Compression is a canonical decompressor identifier (currently "gz"
-// only; "" means no compression). When set, the typed client switches
-// from the host-direct fetch flow to a runner-pipelined flow:
-// download via the runner's net/http stack, decompress in-process,
-// stream the decompressed bytes to a sibling .part of DestinationPath
-// via Connection.StreamFile, and dispatch new.ps1 in local_path mode.
-// ExpectedSha256 is always the hash of the *compressed* bytes the
-// publisher signs (this is what users copy from a SHA256SUMS file).
-// The runner-computed *decompressed* SHA is what the host script
-// receives for staging-bytes verification; the wire shape stays
-// identical to the existing local_path mode.
+// NewImageFileFromURLInput is the public input for the URL source mode
+// of image_file/new.ps1. The discriminator field (source_mode) isn't on
+// the public struct; the typed-client method sets it internally so
+// callers can't pass the wrong value. Compression identifies a
+// decompressor ("gz" currently, "" for none); when set, the client
+// downloads and decompresses on the runner instead, streaming the
+// result to a sibling .part of DestinationPath and dispatching new.ps1
+// in local_path mode. ExpectedSha256 is always the publisher-signed hash
+// of the *compressed* bytes; the runner-computed *decompressed* SHA is
+// what the host receives for staging verification.
 type NewImageFileFromURLInput struct {
 	DestinationPath string `json:"destination_path"`
 	URL             string `json:"url"`
@@ -202,8 +188,8 @@ type NewImageFileFromURLInput struct {
 	RunnerDownload  bool   `json:"-"`
 }
 
-// NewImageFileFromLocalPathInput is the public input shape for the
-// local_path source mode of image_file/new.ps1. The runner-local source
+// NewImageFileFromLocalPathInput is the public input for the local_path
+// source mode of image_file/new.ps1. The runner-local source
 // (LocalPath) is JSON-skipped because it never crosses the wire -- the
 // typed-client method opens it on the runner side, computes the SHA-256,
 // streams the bytes to a sibling .part of DestinationPath via
@@ -222,32 +208,27 @@ type NewImageFileFromLocalPathInput struct {
 	ReplaceWhileMounted bool `json:"-"`
 }
 
-// NewImageFileFromBytesInput is the public input shape for the
-// literal_bytes source mode. The runner writes Bytes to a tmpfile,
-// hashes it, streams to a sibling .part of DestinationPath, and asks
-// new.ps1 to verify-and-rename via the same wire path local_path mode
-// uses. The wire shape on the host stays identical -- new.ps1 cannot
-// tell whether the staged bytes came from the runner's filesystem
-// (local_path) or from an in-memory payload (literal_bytes).
-//
-// ReplaceWhileMounted has the same semantics as on the local_path
-// input. Callers that synthesize iso_volume bytes for a DVD-mountable
-// destination set it true; literal_bytes for a fresh path leaves it
-// false (default).
+// NewImageFileFromBytesInput is the public input for the literal_bytes
+// source mode. The runner writes Bytes to a tmpfile, hashes it, streams
+// to a sibling .part of DestinationPath, and asks new.ps1 to
+// verify-and-rename via the same wire path local_path mode uses; new.ps1
+// can't tell whether the staged bytes came from a runner-local file or
+// an in-memory payload. ReplaceWhileMounted has the same semantics as
+// the local_path input: true for callers that synthesize iso_volume
+// bytes for a DVD-mountable destination, false (default) for a fresh
+// path.
 type NewImageFileFromBytesInput struct {
 	DestinationPath     string `json:"destination_path"`
 	Bytes               []byte `json:"-"`
 	ReplaceWhileMounted bool   `json:"-"`
 }
 
-// CopyHostFileInput is the public input shape for a host-side copy. Both
-// paths are host-local, so unlike the other write modes there is no
-// StreamFile leg and no staging_path for the caller to compute -- new.ps1
-// picks its own.
-//
-// ExpectedSha256 is the hash the caller read from SourcePath (the resource
-// layer takes it at plan time). A mismatch at apply means the source
-// changed under us, which fails loudly rather than writing bytes the plan
+// CopyHostFileInput is the public input for a host-side copy. Both
+// paths are host-local, so unlike the other write modes there's no
+// StreamFile leg and no staging_path for the caller to compute; new.ps1
+// picks its own. ExpectedSha256 is the hash the caller read from
+// SourcePath at plan time; a mismatch at apply means the source changed
+// underneath, which fails loudly rather than writing bytes the plan
 // never promised. ReplaceWhileMounted matches the local_path input.
 type CopyHostFileInput struct {
 	DestinationPath     string `json:"destination_path"`
@@ -256,12 +237,11 @@ type CopyHostFileInput struct {
 	ReplaceWhileMounted bool   `json:"replace_while_mounted"`
 }
 
-// RemoveImageFileInput is the public input shape for RemoveImageFile.
-//
-// ExpectedSha256 is the resource's last-known state.sha256. Empty skips
+// RemoveImageFileInput is the public input for RemoveImageFile.
+// ExpectedSha256 is the resource's last-known state.sha256; empty skips
 // the drift check (e.g. a caller with no prior state). A non-empty value
 // that no longer matches the on-host file means something else changed
-// the destination since this resource last read it -- remove.ps1 refuses
+// the destination since this resource last read it; remove.ps1 refuses
 // the delete rather than removing content this resource no longer
 // recognizes.
 type RemoveImageFileInput struct {
@@ -270,7 +250,7 @@ type RemoveImageFileInput struct {
 	ExpectedSha256  string `json:"expected_sha256"`
 }
 
-// VHD is the canonical read shape emitted by vhd/{get,new,set}.ps1.
+// VHD is the canonical read format vhd/{get,new,set}.ps1 emits.
 // SizeBytes is the declared logical size; FileSizeBytes is the actual
 // on-disk size (smaller than SizeBytes for dynamic and differencing).
 // ParentPath is empty unless VhdType is "Differencing".
@@ -285,7 +265,7 @@ type VHD struct {
 	Attached       bool   `json:"Attached"`
 }
 
-// NewVHDFixedInput is the public input shape for the Fixed creation mode.
+// NewVHDFixedInput is the public input for the Fixed creation mode.
 // BlockSizeBytes is *int64 + omitempty so absent leaves the cmdlet
 // default. The discriminator (vhd_type) is set internally by the typed
 // client method, not on the public struct.
@@ -295,15 +275,15 @@ type NewVHDFixedInput struct {
 	BlockSizeBytes *int64 `json:"block_size_bytes,omitempty"`
 }
 
-// NewVHDDynamicInput is the public input shape for the Dynamic creation
-// mode. Same field set as fixed -- the discriminator is what differs.
+// NewVHDDynamicInput is the public input for the Dynamic creation
+// mode: the same fields as fixed, the discriminator is what differs.
 type NewVHDDynamicInput struct {
 	Path           string `json:"path"`
 	SizeBytes      int64  `json:"size_bytes"`
 	BlockSizeBytes *int64 `json:"block_size_bytes,omitempty"`
 }
 
-// NewVHDDifferencingInput is the public input shape for the Differencing
+// NewVHDDifferencingInput is the public input for the Differencing
 // creation mode. SizeBytes and BlockSizeBytes are inherited from the
 // parent and rejected by Hyper-V if supplied; the typed-client method
 // omits them from the wire payload.
@@ -312,14 +292,13 @@ type NewVHDDifferencingInput struct {
 	ParentPath string `json:"parent_path"`
 }
 
-// VM is the canonical read shape emitted by vm/{get,new,set}.ps1.
+// VM is the canonical read format vm/{get,new,set}.ps1 emits.
 // SecureBootEnabled is *bool because gen 1 VMs return null (BIOS-based,
 // no Secure Boot concept); gen 2 always returns a real bool.
-//
 // HardDiskDrives, NetworkAdapters, and DvdDrives are always (possibly
-// empty) slices -- the script-side @() wrapper guarantees JSON array
-// shape even when nothing is attached, so a freshly-created VM with
-// no attachments round-trips as "[]" rather than null.
+// empty) slices: the script-side @() wrapper guarantees a JSON array
+// even when nothing is attached, so a freshly-created VM with no
+// attachments round-trips as "[]" rather than null.
 type VM struct {
 	Name                 string           `json:"Name"`
 	ID                   string           `json:"Id"`
@@ -341,15 +320,14 @@ type VM struct {
 	BootOrder            []BootOrderEntry `json:"BootOrder"`
 }
 
-// BootOrderEntry is the per-entry shape vm/get.ps1 emits inside
+// BootOrderEntry is the per-entry format vm/get.ps1 emits inside
 // VM.BootOrder. Type discriminates between hard_disk_drive / dvd_drive
 // (which carry the ControllerType + ControllerNumber + ControllerLocation
-// slot tuple) and network_adapter (which carries Name). Unused fields
-// for a given Type are zero values; consumers branch on Type.
-//
-// Gen 1 VMs always emit []BootOrderEntry{} (the script doesn't fetch
+// slot tuple) and network_adapter (which carries Name); unused fields
+// for a given Type are zero values, and consumers branch on Type. Gen 1
+// VMs always emit []BootOrderEntry{}, since the script doesn't fetch
 // firmware for them; gen 1 BIOS StartupOrder is a separate, deferred
-// schema slice).
+// schema slice.
 type BootOrderEntry struct {
 	Type               string `json:"Type"`
 	ControllerType     string `json:"ControllerType"`
@@ -358,27 +336,25 @@ type BootOrderEntry struct {
 	Name               string `json:"Name"`
 }
 
-// SetBootOrderInput is the stdin JSON shape for vm/set-boot-order.ps1.
+// SetBootOrderInput is the stdin JSON format for vm/set-boot-order.ps1.
 // BootOrder is the new desired sequence; the script replaces the VM's
 // current order wholesale (Set-VMFirmware -BootOrder is not additive).
-// Per-entry shape mirrors BootOrderEntry above with snake_case keys.
+// Each entry mirrors BootOrderEntry above with snake_case keys.
 type SetBootOrderInput struct {
 	Name      string                   `json:"name"`
 	BootOrder []SetBootOrderEntryInput `json:"boot_order"`
 }
 
-// SetBootOrderEntryInput is the per-entry shape inside
-// SetBootOrderInput.BootOrder. Same discriminator pattern as
+// SetBootOrderEntryInput is the per-entry format inside
+// SetBootOrderInput.BootOrder, same discriminator pattern as
 // BootOrderEntry: Type drives which subset of fields the script reads.
-//
-// All fields are emitted unconditionally (no omitempty). Reason:
-// PowerShell's Set-StrictMode 3.0 throws on access of an absent
-// property on a PSCustomObject. The script reads $entry.controller_*
-// for HDD/DVD entries and $entry.name for NIC entries; whichever
-// fields are unused for a given Type still need to be present on the
-// wire (zero values are fine -- the script's switch ignores them).
-// Specifically, omitempty on `int` would drop controller_number=0,
-// which is the most common slot index and would break the resolver.
+// All fields are emitted unconditionally (no omitempty): PowerShell's
+// Set-StrictMode 3.0 throws on access of an absent property on a
+// PSCustomObject, and the script reads $entry.controller_* or
+// $entry.name regardless of Type, so unused fields must still be
+// present on the wire. omitempty on `int` specifically would drop
+// controller_number=0, the most common slot index, and break the
+// resolver.
 type SetBootOrderEntryInput struct {
 	Type               string `json:"type"`
 	ControllerType     string `json:"controller_type"`
@@ -387,17 +363,15 @@ type SetBootOrderEntryInput struct {
 	Name               string `json:"name"`
 }
 
-// NetworkAdapter is the per-NIC shape vm/get.ps1 emits inside
-// VM.NetworkAdapters. Display Name is the slot key the resource-layer
+// NetworkAdapter is the per-NIC format vm/get.ps1 emits inside
+// VM.NetworkAdapters. Name is the slot key the resource-layer
 // reconciliation uses to diff plan vs state. SwitchName identifies
-// which hyperv_virtual_switch the NIC is bound to (or empty when
-// unbound -- Hyper-V allows that, though it's rare).
-//
-// IPAddresses is populated by Hyper-V's integration services running
-// in the guest -- empty when the VM is Off, when integration services
-// haven't loaded yet, or when the guest doesn't ship them. The
-// resource layer flattens IPAddresses across all NICs into a top-
-// level ip_addresses Computed attribute.
+// which hyperv_virtual_switch the NIC is bound to, empty when unbound
+// (rare, but Hyper-V allows it). IPAddresses comes from Hyper-V's
+// integration services running in the guest, empty when the VM is Off,
+// integration services haven't loaded, or the guest doesn't ship them;
+// the resource layer flattens it across all NICs into a top-level
+// ip_addresses Computed attribute.
 type NetworkAdapter struct {
 	Name        string   `json:"Name"`
 	SwitchName  string   `json:"SwitchName"`
@@ -417,7 +391,7 @@ type NetworkAdapter struct {
 	VlanID int `json:"VlanID"`
 }
 
-// AttachNetworkAdapterInput is the stdin JSON shape for
+// AttachNetworkAdapterInput is the stdin JSON format for
 // vm/add-network-adapter.ps1. Name / VMName / SwitchName are required;
 // MacAddress and VlanID are optional. Uniqueness of Name within a VM
 // is enforced by the resource-layer schema validator (Hyper-V itself
@@ -440,7 +414,7 @@ type AttachNetworkAdapterInput struct {
 	VlanID int `json:"vlan_id,omitempty"`
 }
 
-// DetachNetworkAdapterInput is the stdin JSON shape for
+// DetachNetworkAdapterInput is the stdin JSON format for
 // vm/remove-network-adapter.ps1. Name + VMName identify the NIC to
 // detach; the cmdlet would happily remove ALL NICs sharing the same
 // Name, but the schema-level uniqueness validator means there's only
@@ -450,7 +424,7 @@ type DetachNetworkAdapterInput struct {
 	VMName string `json:"vm_name"`
 }
 
-// DvdDrive is the per-attachment shape vm/get.ps1 emits inside
+// DvdDrive is the per-attachment format vm/get.ps1 emits inside
 // VM.DvdDrives. Same slot-tuple identity as HardDiskDrive
 // (ControllerType + ControllerNumber + ControllerLocation), but
 // Path may be empty -- a DVD drive without an ISO loaded is a
@@ -462,7 +436,7 @@ type DvdDrive struct {
 	ControllerLocation int    `json:"ControllerLocation"`
 }
 
-// AttachDvdDriveInput is the stdin JSON shape for vm/add-dvd-drive.ps1.
+// AttachDvdDriveInput is the stdin JSON format for vm/add-dvd-drive.ps1.
 // IsoPath is *string so the wire JSON drops it cleanly when the user
 // wants an empty drive (script's "if not empty" guard then omits
 // -Path from the cmdlet call).
@@ -483,7 +457,7 @@ type DetachDvdDriveInput struct {
 	ControllerLocation int    `json:"controller_location"`
 }
 
-// HardDiskDrive is the per-attachment shape vm/get.ps1 emits inside
+// HardDiskDrive is the per-attachment format vm/get.ps1 emits inside
 // VM.HardDiskDrives. The (ControllerType, ControllerNumber,
 // ControllerLocation) tuple identifies the slot uniquely on a given
 // VM; Path identifies the underlying VHD/VHDX. The same VHD attached
@@ -495,7 +469,7 @@ type HardDiskDrive struct {
 	ControllerLocation int    `json:"ControllerLocation"`
 }
 
-// AttachHardDiskInput is the stdin JSON shape for vm/add-hard-disk-drive.ps1.
+// AttachHardDiskInput is the stdin JSON format for vm/add-hard-disk-drive.ps1.
 // All fields are required; the script's ValidateSet on ControllerType
 // is the second line of defense against typos that the resource-layer
 // schema validator should catch first.
@@ -507,7 +481,7 @@ type AttachHardDiskInput struct {
 	Path               string `json:"path"`
 }
 
-// DetachHardDiskInput is the stdin JSON shape for vm/remove-hard-disk-drive.ps1.
+// DetachHardDiskInput is the stdin JSON format for vm/remove-hard-disk-drive.ps1.
 // Path is intentionally omitted -- the slot tuple identifies the
 // attachment, not the underlying VHD.
 type DetachHardDiskInput struct {
@@ -517,21 +491,15 @@ type DetachHardDiskInput struct {
 	ControllerLocation int    `json:"controller_location"`
 }
 
-// NewVMInput is the stdin JSON shape for vm/new.ps1.
-//
-// Required fields: Name, Generation, Vcpu, MemoryBytes (startup).
-// Optionals use pointer types so missing-vs-explicit-false round-trips
-// correctly through the wire contract: the entry block in new.ps1 treats
-// absent keys and explicit null as equivalent (both skip the corresponding
-// Set-*), so omitempty + nil pointer yields the "use cmdlet default"
-// behavior.
-//
-// Dynamic memory: DynamicMemory opts in to Hyper-V's dynamic memory mode.
-// MinMemoryBytes / MaxMemoryBytes are the minimum and maximum bounds and
-// are only meaningful when DynamicMemory is true (the script gates
-// forwarding accordingly). When DynamicMemory is nil, the script defaults
-// to static memory (DynamicMemoryEnabled=$false), preserving the v2-and-
-// prior behavior for callers that don't manage dynamic memory.
+// NewVMInput is the stdin JSON format for vm/new.ps1. Required: Name,
+// Generation, Vcpu, MemoryBytes (startup). Optionals use pointer types
+// so missing-vs-explicit-false round-trips correctly: new.ps1 treats an
+// absent key and an explicit null as equivalent (both skip the
+// corresponding Set-*), so omitempty plus a nil pointer yields the
+// cmdlet's default. DynamicMemory opts into Hyper-V's dynamic memory
+// mode; MinMemoryBytes/MaxMemoryBytes only matter when it's true. A nil
+// DynamicMemory defaults to static memory, preserving the behavior for
+// callers that don't manage dynamic memory.
 type NewVMInput struct {
 	Name               string  `json:"name"`
 	Generation         int     `json:"generation"`
@@ -545,39 +513,28 @@ type NewVMInput struct {
 	Notes              *string `json:"notes,omitempty"`
 }
 
-// SetVMStateInput is the stdin JSON shape for vm/set-state.ps1.
-//
+// SetVMStateInput is the stdin JSON format for vm/set-state.ps1.
 // Desired is the primary mutation: 'Off' invokes Stop-VM, 'Running'
-// invokes Start-VM. Other Hyper-V states (Saved, Paused) are out of
-// scope for this slice -- the script's ValidateSet on Desired rejects
-// them.
-//
-// ShutdownMode is optional and only governs the Stop dispatch:
-//   - "" or "turn_off" (default): Stop-VM -TurnOff -Force (hard
-//     power-off, matches destroy semantics, no integration-services
-//     dependency).
-//   - "graceful": Stop-VM -Force without -TurnOff (ACPI shutdown via
-//     integration services; hangs on guests without them).
-//
-// `omitempty` keeps the wire shape stable for callers that don't care
-// about the mode -- the script defaults to turn_off when the field
-// is absent or empty.
+// invokes Start-VM; other Hyper-V states (Saved, Paused) are out of
+// scope, rejected by the script's ValidateSet. ShutdownMode is optional
+// and only governs the Stop dispatch: "" or "turn_off" (default) runs
+// Stop-VM -TurnOff -Force, a hard power-off with no integration-services
+// dependency; "graceful" runs Stop-VM -Force without -TurnOff, an ACPI
+// shutdown that hangs on guests without integration services. omitempty
+// keeps the format stable for callers that don't care about the mode.
 type SetVMStateInput struct {
 	Name         string `json:"name"`
 	Desired      string `json:"desired"`
 	ShutdownMode string `json:"shutdown_mode,omitempty"`
 }
 
-// SetVMInput is the stdin JSON shape for vm/set.ps1.
-//
-// Same pattern as NewVMInput, with two differences:
-//   - Vcpu and MemoryBytes are *int / *int64 because Set is a partial
-//     update -- only changed fields are forwarded; nil drops them from
-//     the JSON (omitempty) so the script's "key present?" check skips
-//     the corresponding Set-* cmdlet.
-//   - Generation is OPTIONAL on the schema but ALWAYS forwarded by the
-//     Update path; it's a validation hint for set.ps1's gen-2-only
-//     SecureBoot guard, not a mutation.
+// SetVMInput is the stdin JSON format for vm/set.ps1, the same fields
+// as NewVMInput with two differences: Vcpu and MemoryBytes are
+// *int/*int64, since Set is a partial update where only changed fields
+// forward and nil drops them from the JSON (omitempty) so the script
+// skips the corresponding Set-* cmdlet; and Generation is optional on
+// the schema but always forwarded by the Update path, a validation hint
+// for set.ps1's gen-2-only SecureBoot guard, not a mutation.
 type SetVMInput struct {
 	Name           string  `json:"name"`
 	Generation     int     `json:"generation"`

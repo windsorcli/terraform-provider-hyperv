@@ -32,10 +32,11 @@ func (c *Client) GetImageFile(ctx context.Context, path string) (*ImageFile, err
 	return c.StatImageFile(ctx, path)
 }
 
-// StatImageFile reads the same shape as GetImageFile but bounds the call
-// by the caller's context instead of the 60s defaultReadTimeout. Exists
-// for the source_path plan-time hash, where Get-FileHash over a multi-GiB
-// vhdx routinely outruns that cap. Callers must supply their own deadline.
+// StatImageFile reads the same fields as GetImageFile but bounds the
+// call by the caller's context instead of the 60s defaultReadTimeout,
+// for the source_path plan-time hash where Get-FileHash over a
+// multi-GiB vhdx routinely outruns that cap. Callers must supply their
+// own deadline.
 func (c *Client) StatImageFile(ctx context.Context, path string) (*ImageFile, error) {
 	body, err := scripts.ImageFileScript("get")
 	if err != nil {
@@ -57,10 +58,9 @@ func (c *Client) StatImageFile(ctx context.Context, path string) (*ImageFile, er
 
 // skipIfDestinationMatches reports whether destinationPath already holds
 // content hashing to expectedSha256, returning that file's metadata when
-// so. A miss -- no expected hash to check, a missing destination, or any
-// error reading it -- just means "no shortcut"; callers fall through to
-// their normal fetch/copy path, so this never introduces a new failure
-// mode, only a skip.
+// so. A miss (no expected hash, a missing destination, or a read error)
+// just means no shortcut: callers fall through to their normal
+// fetch/copy path, never a new failure mode.
 func (c *Client) skipIfDestinationMatches(ctx context.Context, destinationPath, expectedSha256 string) (*ImageFile, bool) {
 	if expectedSha256 == "" {
 		return nil, false
@@ -72,21 +72,13 @@ func (c *Client) skipIfDestinationMatches(ctx context.Context, destinationPath, 
 	return existing, true
 }
 
-// NewImageFileFromURL fetches a file by URL. With Compression="" the
-// host-side new.ps1 url-mode path runs: HttpClient streams to a sibling
-// .part file in the destination directory, the host verifies the SHA-256
-// against in.ExpectedSha256, and Move-Item atomic-renames into place.
-// With Compression set (currently only "gz"/"gzip"), the call delegates
-// to the runner-pipelined flow in newImageFileFromCompressedURL --
-// fetching and decompressing happen on the runner because PS 5.1 has no
-// built-in xz/zst/bz2 decompressors and shipping host-side third-party
-// modules defeats the §5 PS 5.1 floor that exists so Hyper-V hosts need
-// no extra installs.
-//
-// Returns ErrChecksumMismatch when the downloaded bytes don't hash to
-// the expected value (the .part is cleaned up; no half-baked file
-// lingers at the canonical destination). Returns ErrDecompressionFailed
-// from the runner-pipelined path when the gzip stream is corrupt.
+// NewImageFileFromURL fetches a file by URL, streaming to a sibling
+// .part file and verifying its SHA-256 before an atomic rename into
+// place. A supported Compression ("gz" or "gzip") routes through
+// newImageFileFromCompressedURL instead, since PS 5.1 has no built-in
+// decompressor. Returns ErrChecksumMismatch on a hash mismatch, or
+// ErrDecompressionFailed when the compressed path hits a corrupt
+// stream.
 func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
 	if in.RunnerDownload && normalizeCompression(in.Compression) != "" {
 		return nil, fmt.Errorf("runner_download and compression are mutually exclusive: runner_download streams raw bytes without decompression")
@@ -108,10 +100,7 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
 	}
-	// Embedded struct + extra discriminator: the public input has no
-	// source_mode field so callers can't pass the wrong value for the
-	// method they invoke; we set it here, where the method choice and the
-	// discriminator are guaranteed to agree.
+	// Embedded struct + discriminator: source_mode is set here so it can't disagree with the method called.
 	stdin, err := json.Marshal(struct {
 		NewImageFileFromURLInput
 		SourceMode string `json:"source_mode"`
@@ -127,31 +116,11 @@ func (c *Client) NewImageFileFromURL(ctx context.Context, in NewImageFileFromURL
 	return &f, nil
 }
 
-// newImageFileFromCompressedURL implements the runner-pipelined fetch:
-// the runner does the HTTP download and decompression in-process, then
-// streams the decompressed bytes to the host via Connection.StreamFile
-// and dispatches new.ps1 in local_path mode for the verify-and-rename.
-//
-// The wire shape on the host stays identical to local_path mode --
-// new.ps1 doesn't know whether the staged bytes came from the runner's
-// filesystem or from a runner-side decompression of an HTTP body. That
-// keeps the §5 PS 5.1 contract unchanged and means no Pester churn.
-//
-// Pipeline (single read of the HTTP body, no buffering):
-//
-//	HTTP body
-//	  -> tee(compressed sha)        // verify against in.ExpectedSha256
-//	  -> gzip.NewReader (decompressor)
-//	  -> tee(decompressed sha)      // sent to new.ps1 as expected_sha256
-//	  -> os.File (runner tmpfile, decompressed)
-//
-// The verify ordering is deliberate: read+decompress to completion before
-// checking the compressed-bytes hash. A truncated body that decompresses
-// "successfully" through some prefix would still fail the SHA check --
-// that's what we want. ErrDecompressionFailed only fires for bytes that
-// are not valid gzip (header magic missing, CRC mismatch on the trailer);
-// ErrChecksumMismatch fires when the bytes are valid gzip but don't
-// match the publisher-signed compressed hash.
+// newImageFileFromCompressedURL runs the fetch and decompression on the
+// runner, streams the result to the host via Connection.StreamFile, then
+// dispatches new.ps1 in local_path mode to verify and rename. new.ps1
+// can't tell staged bytes from a runner-local file, so its contract
+// doesn't change.
 func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageFileFromURLInput) (*ImageFile, error) {
 	codec := normalizeCompression(in.Compression)
 	if !isSupportedCodec(codec) {
@@ -163,9 +132,7 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 		return nil, fmt.Errorf("create runner tmpfile for decompressed image: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	// Cleanup is best-effort and must run on every exit path -- even
-	// after a successful StreamFile, the runner-side tmpfile is no
-	// longer needed (the bytes live on the host).
+	// Best-effort cleanup; the tmpfile isn't needed after a successful StreamFile either.
 	defer func() {
 		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
@@ -176,10 +143,7 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 		return nil, err
 	}
 
-	// Empty ExpectedSha256 means the caller didn't supply a publisher checksum
-	// (TLS-only trust); skip the compressed-bytes verification. The decompressed
-	// SHA still rides through to new.ps1 as the runner->host transport check, so
-	// drift between the runner's view and the on-disk bytes is still caught.
+	// Empty ExpectedSha256 skips compressed-bytes verification; the decompressed SHA below still catches transport drift.
 	if expectedCompressed := strings.ToLower(in.ExpectedSha256); expectedCompressed != "" {
 		if compressedSHA != expectedCompressed {
 			return nil, fmt.Errorf("%w: expected sha256=%s of compressed bytes from %s, got sha256=%s",
@@ -187,10 +151,7 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 		}
 	}
 
-	// Close the file before StreamFile reads it from the same path -- on
-	// Windows-runner setups an open writer would block readers, on
-	// POSIX it works either way but explicit close is cheaper than
-	// hoping the OS handles overlap.
+	// Close before StreamFile reads the same path; an open writer can block readers on Windows.
 	if err := tmpFile.Close(); err != nil {
 		return nil, fmt.Errorf("close runner tmpfile %s: %w", tmpPath, err)
 	}
@@ -208,10 +169,7 @@ func (c *Client) newImageFileFromCompressedURL(ctx context.Context, in NewImageF
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
 	}
-	// Wire shape matches local_path mode exactly -- new.ps1 dispatches
-	// New-HypervImageFileFromLocalPath, which Test-Paths the staging
-	// file, Get-FileHashes it against expected_sha256 (the runner-
-	// computed *decompressed* SHA), and Move-Items into place.
+	// Matches local_path mode's wire contract: staging_path/expected_sha256 verify-and-rename via the same new.ps1 path.
 	stdin, err := json.Marshal(struct {
 		DestinationPath string `json:"destination_path"`
 		StagingPath     string `json:"staging_path"`
@@ -328,25 +286,13 @@ func (c *Client) pipeHTTPToFile(ctx context.Context, rawURL string, dst io.Write
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// pipeCompressedHTTPToFile drives the HTTP body through the
-// double-tee+decompressor pipeline and writes decompressed bytes to dst.
-// Returns hex-encoded compressed and decompressed SHA-256 hashes for the
-// caller to verify and forward to the host script.
-//
-// Method (not free function) so the request rides c.httpClient -- which
-// carries a ResponseHeaderTimeout the http.DefaultClient does not.
-// http.DefaultClient leaves a stuck-at-headers server bounded only by
-// the caller's ctx, which for url-mode is Terraform's apply-level
-// deadline (typically tens of minutes); the shared client closes that
-// gap without affecting legitimate large-payload downloads.
-//
-// Errors are mapped to typed sentinels at the boundaries that distinguish
-// transport from content from corruption: a non-2xx HTTP status surfaces
-// as ErrPSExecution-wrapped (treating the runner-side fetch as a single
-// "powershell-equivalent" external call from the resource's POV); a gzip
-// header or CRC failure surfaces as ErrDecompressionFailed; an io.Copy
-// failure mid-stream is wrapped without remap so transient transport
-// errors keep their original cause chain.
+// pipeCompressedHTTPToFile tees the HTTP body for its compressed hash,
+// decompresses it, then tees again for the decompressed hash on the way
+// to dst, returning both as hex. Hashing waits for a full decompress, so
+// a truncated body still fails the check rather than passing on a
+// partial read. Non-2xx HTTP maps to ErrPSExecution, a bad gzip header
+// or CRC maps to ErrDecompressionFailed, and other mid-stream failures
+// pass through unmapped.
 func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec string, dst io.Writer) (compressedSHA, decompressedSHA string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -375,13 +321,7 @@ func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec str
 	teeDecompressed := io.TeeReader(decompressor, decompressedHasher)
 
 	if _, err := io.Copy(dst, teeDecompressed); err != nil {
-		// Codec-specific corruption errors that surface from inside the
-		// decompressor pipeline (truncated stream, magic mismatch on
-		// first Read, structural data error) get remapped to the
-		// decompression sentinel. Transport errors (net.OpError on a
-		// dropped connection, ctx cancellation) bubble up unmapped so
-		// the caller can distinguish "publisher served bad bytes" from
-		// "the link dropped mid-pull."
+		// Codec-specific corruption maps to ErrDecompressionFailed; transport errors bubble up unmapped.
 		if isDecompressionStreamError(codec, err) {
 			return "", "", fmt.Errorf("%w: %s mid-stream: %w", ErrDecompressionFailed, codec, err)
 		}
@@ -393,24 +333,16 @@ func (c *Client) pipeCompressedHTTPToFile(ctx context.Context, rawURL, codec str
 		nil
 }
 
-// newDecompressor returns an io.ReadCloser that wraps src and emits
-// decompressed bytes. Supports the four single-file streaming codecs
-// publishers actually ship Hyper-V images in.
+// newDecompressor wraps src in an io.ReadCloser for one of the four
+// single-file codecs Hyper-V image publishers use:
 //
-// Adapter notes per codec:
-//
-//   - gz: gzip.NewReader returns *gzip.Reader, already an io.ReadCloser.
-//   - xz: ulikunitz/xz returns *xz.Reader (Reader-only) -- wrap in
-//     xzReader (typed error sentinel adapter) then io.NopCloser. The
-//     package allocates only Go memory, no goroutines or finalizers,
-//     so a real Close is unnecessary.
-//   - zst: klauspost zstd.NewReader returns *zstd.Decoder whose Close()
-//     returns no value (signature is Close()), so it doesn't satisfy
-//     io.Closer directly. zstdReadCloser shims it. The Decoder spawns
-//     goroutines for parallel block decoding; calling Close releases
-//     them rather than letting them sit until GC.
-//   - bz2: stdlib bzip2.NewReader returns io.Reader -- wrap with
-//     io.NopCloser. Pure Go, no resources to release.
+//   - gz: *gzip.Reader is already an io.ReadCloser.
+//   - xz: *xz.Reader has no Close; xzReader adapts it and io.NopCloser
+//     fills the rest (pure Go, nothing to release).
+//   - zst: *zstd.Decoder's Close() doesn't satisfy io.Closer;
+//     zstdReadCloser shims it. Its decode goroutines make Close matter
+//     here, unlike gz and xz.
+//   - bz2: io.Reader only; io.NopCloser wraps it (pure Go).
 func newDecompressor(codec string, src io.Reader) (io.ReadCloser, error) {
 	switch codec {
 	case "gz":
@@ -464,8 +396,7 @@ type xzReader struct{ r *xz.Reader }
 func (x *xzReader) Read(p []byte) (int, error) {
 	n, err := x.r.Read(p)
 	if err != nil && err != io.EOF {
-		// Pass transport errors through unwrapped so the caller can
-		// distinguish a dropped connection from corrupt xz data.
+		// Pass transport errors through unwrapped so callers can tell them apart from corrupt xz data.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return n, err
 		}
@@ -496,19 +427,12 @@ func isDecompressionStreamError(codec string, err error) bool {
 		var e *xzStreamError
 		return errors.As(err, &e)
 	case "zst":
-		// klauspost/compress/zstd defers magic-header validation to
-		// the first Read rather than NewReader, so ErrMagicMismatch
-		// is the most common decompression-failure signal we'll see
-		// here. The other Err* sentinels cover late-stream corruption
-		// (CRC) and dictionary mismatches.
+		// zstd defers magic-header validation to the first Read, so ErrMagicMismatch is the common signal here.
 		return errors.Is(err, zstd.ErrMagicMismatch) ||
 			errors.Is(err, zstd.ErrCRCMismatch) ||
 			errors.Is(err, zstd.ErrUnknownDictionary)
 	case "bz2":
-		// stdlib compress/bzip2 also defers all validation to Read.
-		// StructuralError is the package's blanket "data malformed"
-		// type; matching via errors.As covers every variant
-		// ("bad magic value", "non-bzip2 bytes", truncated frames).
+		// bzip2 also defers validation to Read; StructuralError covers every corruption variant.
 		var se bzip2.StructuralError
 		return errors.As(err, &se)
 	}
@@ -553,36 +477,15 @@ func normalizeCompression(s string) string {
 	case "bz2", "bzip2":
 		return "bz2"
 	default:
-		// Unknown codecs flow through verbatim so the dispatch table
-		// can produce a clean "unsupported compression" error pinned
-		// to the user-supplied value rather than silently treating
-		// e.g. "tar.gz" as "no compression."
+		// Unknown codecs flow through verbatim so the caller gets a clean error pinned to the value, not silent no-compression.
 		return strings.ToLower(strings.TrimSpace(s))
 	}
 }
 
-// NewImageFileFromLocalPath streams the runner-local file at LocalPath to
-// the host, then asks new.ps1 to verify the staged bytes against the
-// runner-computed SHA-256 and atomic-rename to DestinationPath. Three
-// transport-distinct stages, all driven from this one call:
-//
-//  1. Compute the SHA-256 of the local file (one os.Open + io.Copy into
-//     sha256.New). The bytes leave the runner once for hashing and once
-//     more for streaming -- the kernel's page cache makes the second
-//     read effectively free for files that fit in RAM.
-//  2. Pick a deterministically-shaped staging path -- DestinationPath
-//     plus a `.part-<8-hex>` suffix, sibling to the destination so the
-//     PS-side Move-Item lands on the same NTFS volume and stays atomic.
-//  3. Stream local -> staging via Connection.StreamFile, then invoke
-//     new.ps1 with source_mode=local_path so the host-side script
-//     verifies the SHA matches expectation and renames into place.
-//
-// Returns ErrChecksumMismatch when the bytes that landed don't hash to
-// the expected value -- a transport-level corruption signal the caller
-// surfaces back to the user. Returns ErrNotFound only if the staging
-// file was absent at the moment new.ps1 ran (StreamFile claimed success
-// but the file was deleted between then and the script's Test-Path);
-// in normal flow this can't happen.
+// NewImageFileFromLocalPath streams the runner-local file at LocalPath
+// to the host, then asks new.ps1 to verify the staged bytes against a
+// runner-computed SHA-256 and atomic-rename to DestinationPath. Returns
+// ErrChecksumMismatch when the landed bytes don't match.
 func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileFromLocalPathInput) (*ImageFile, error) {
 	defer c.lockDestinationPath(in.DestinationPath)()
 
@@ -608,11 +511,7 @@ func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileF
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
 	}
-	// Same embed-the-public-input + add-discriminator-and-computed-fields
-	// pattern as NewImageFileFromURL above. LocalPath is `json:"-"` on
-	// the input struct so it never reaches the wire; staging_path,
-	// expected_sha256, and source_mode are set here where the method
-	// choice and the discriminator are guaranteed to agree.
+	// Same embed+discriminator pattern as NewImageFileFromURL; LocalPath stays json:"-" since it never reaches the wire.
 	stdin, err := json.Marshal(struct {
 		NewImageFileFromLocalPathInput
 		StagingPath         string `json:"staging_path"`
@@ -638,20 +537,11 @@ func (c *Client) NewImageFileFromLocalPath(ctx context.Context, in NewImageFileF
 }
 
 // NewImageFileFromBytes lands a literal byte payload at DestinationPath
-// via the same wire path as local_path mode. Writes Bytes to a runner-
-// side tmpfile, hashes it, picks a sibling .part staging path on the
-// host, streams via Connection.StreamFile, and dispatches new.ps1 in
-// source_mode=local_path for the verify-and-rename. The host-side
-// contract is identical to local_path mode -- the script can't tell
-// whether the staged bytes came from a runner-side file or an in-memory
-// payload, and doesn't need to.
-//
-// Returns ErrChecksumMismatch when the streamed bytes don't hash to the
-// runner-computed value (transport corruption between runner and host).
-// Memory cost: the payload is held twice briefly (in `in.Bytes` and in
-// the runner tmpfile) which is fine for the sub-MiB seed-ISO workloads
-// this method targets; for multi-GiB files prefer NewImageFileFromLocalPath
-// or NewImageFileFromURL instead.
+// via the same route as local_path mode: it stages Bytes to a runner
+// tmpfile, hashes it, then streams and verifies like a local file.
+// Returns ErrChecksumMismatch on a hash mismatch. The payload sits
+// twice in memory briefly, fine for sub-MiB seed ISOs; prefer
+// NewImageFileFromLocalPath or NewImageFileFromURL for multi-GiB files.
 func (c *Client) NewImageFileFromBytes(ctx context.Context, in NewImageFileFromBytesInput) (*ImageFile, error) {
 	defer c.lockDestinationPath(in.DestinationPath)()
 
@@ -759,18 +649,13 @@ func pickStagingPath(destinationPath string) (string, error) {
 	return destinationPath + ".part-" + hex.EncodeToString(suffix[:]), nil
 }
 
-// CopyHostFile copies a file the host already holds at in.SourcePath into
-// in.DestinationPath, staging through a sibling .part and atomic-renaming.
-// Nothing crosses Connection.StreamFile -- both endpoints are host-local,
-// so multi-GiB clones run at host disk speed rather than WinRM speed.
-//
-// Shared by hyperv_image_file's source_path mode and hyperv_vhd's, which
-// is why the name is file-generic: the host script neither knows nor cares
-// whether the bytes are a VHDX or an ISO.
-//
-// Returns ErrChecksumMismatch when the copy doesn't hash to
-// in.ExpectedSha256 (the source changed between plan and apply), or
-// ErrNotFound when the source is absent at apply time.
+// CopyHostFile copies a file the host already holds at in.SourcePath
+// into in.DestinationPath, staging through a sibling .part and
+// atomic-renaming; nothing crosses Connection.StreamFile, so multi-GiB
+// clones run at host disk speed. Shared by hyperv_image_file's
+// source_path mode and hyperv_vhd's. Returns ErrChecksumMismatch when
+// the copy doesn't hash to in.ExpectedSha256, or ErrNotFound when the
+// source is absent at apply time.
 func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*ImageFile, error) {
 	defer c.lockDestinationPath(in.DestinationPath)()
 
@@ -782,9 +667,7 @@ func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*Image
 	if err != nil {
 		return nil, fmt.Errorf("load image_file/new.ps1: %w", err)
 	}
-	// Same embed-the-public-input + add-discriminator pattern as the other
-	// constructors: source_mode is set here, where the method choice and
-	// the discriminator are guaranteed to agree.
+	// Same embed+discriminator pattern as the other constructors.
 	stdin, err := json.Marshal(struct {
 		CopyHostFileInput
 		SourceMode string `json:"source_mode"`
@@ -800,11 +683,11 @@ func (c *Client) CopyHostFile(ctx context.Context, in CopyHostFileInput) (*Image
 	return &f, nil
 }
 
-// NewImageFileFromHostPath verifies a file the user attests already exists
-// at destinationPath and returns its metadata. No copy, no fetch. Returns
-// ErrNotFound if the file is absent. For host_path-mode resources, Delete
-// is a no-op on the Go side -- the user did not ask the provider to put
-// the file there, so removing it on destroy would surprise them.
+// NewImageFileFromHostPath verifies a file the user attests already
+// exists at destinationPath and returns its metadata: no copy, no
+// fetch. Returns ErrNotFound if the file is absent. For host_path-mode
+// resources, Delete is a no-op on the Go side, since the user didn't
+// ask the provider to put the file there.
 func (c *Client) NewImageFileFromHostPath(ctx context.Context, destinationPath string) (*ImageFile, error) {
 	body, err := scripts.ImageFileScript("new")
 	if err != nil {
@@ -825,22 +708,16 @@ func (c *Client) NewImageFileFromHostPath(ctx context.Context, destinationPath s
 	return &f, nil
 }
 
-// RemoveImageFile deletes a file from the host. Resource Delete should
-// treat ErrNotFound as success (the file is already gone). Should NOT be
-// called for host_path-mode resources -- the Go-side resource gates this
-// based on the source_mode tracked in state.
-//
-// imageFileSweepResult mirrors the JSON shape image_file/sweep.ps1
-// emits: the full paths of every file the sweeper removed.
+// imageFileSweepResult mirrors what image_file/sweep.ps1 emits: the
+// full paths of every file the sweeper removed.
 type imageFileSweepResult struct {
 	Removed []string `json:"removed"`
 }
 
-// SweepImageFiles removes orphan files under parentDir whose name starts
-// with prefix and whose extension is NOT in the VHD family (.vhd /
-// .vhdx / .avhd / .avhdx -- those are the hyperv_vhd sweeper's
-// territory). Empty result is a normal return; callers don't need to
-// special-case it. Backed by image_file/sweep.ps1.
+// SweepImageFiles removes orphan files under parentDir whose name
+// starts with prefix and whose extension isn't .vhd/.vhdx/.avhd/.avhdx
+// (the hyperv_vhd sweeper's territory). An empty result is a normal
+// return. Backed by image_file/sweep.ps1.
 func (c *Client) SweepImageFiles(ctx context.Context, parentDir, prefix string) ([]string, error) {
 	body, err := scripts.ImageFileScript("sweep")
 	if err != nil {
@@ -861,24 +738,14 @@ func (c *Client) SweepImageFiles(ctx context.Context, parentDir, prefix string) 
 	return result.Removed, nil
 }
 
-// Force opts into the detach-then-retry escape hatch in remove.ps1: when
-// the initial Remove-Item hits a sharing violation whose holders are
-// Hyper-V DVDs, the host script detaches each slot via
-// Set-VMDvdDrive -Path $null and retries the delete once. Used by the
-// resource Delete when the `force_destroy` attribute is set on the
-// hyperv_image_file resource. Default (false) keeps the safer behavior:
-// surface the locked-file diagnostic and let the operator resolve the
-// holder explicitly.
-//
-// Returns ErrContentDrift when ExpectedSha256 is set and no longer
-// matches the on-host file -- remove.ps1 refuses the delete rather than
-// removing content this resource no longer recognizes.
-//
-// Locked per destination_path for the same reason the write methods are:
-// two resources sharing a path can have Terraform destroy both in
-// parallel, and a delete racing a sibling's delete (or hash-check) on
-// the same file surfaces as a sharing violation indistinguishable from
-// an antivirus lock.
+// RemoveImageFile deletes a file from the host, locked per
+// destination_path so a concurrent destroy or hash-check on the same
+// file can't race. Resource Delete should treat ErrNotFound as success,
+// and must not call this for host_path-mode resources. Force opts into
+// remove.ps1's detach-then-retry on a Hyper-V-DVD sharing violation,
+// instead of surfacing the locked-file diagnostic. Returns
+// ErrContentDrift when ExpectedSha256 no longer matches the on-host
+// file.
 func (c *Client) RemoveImageFile(ctx context.Context, in RemoveImageFileInput) error {
 	defer c.lockDestinationPath(in.DestinationPath)()
 

@@ -10,49 +10,22 @@ import (
 )
 
 // Client is the typed wrapper resources use to invoke Hyper-V cmdlets.
-// One instance per provider configuration; passed via the framework's
+// One instance per provider configuration, passed via the framework's
 // resp.ResourceData / resp.DataSourceData.
-//
-// httpClient is consumed by the runner-pipelined image_file fetch; other
-// methods route entirely through the PowerShell connection layer and
-// don't observe it.
-//
-// netNatMu serializes calls to every NetNat-touching method (nat_static_mapping
-// CRUD plus the NAT branches of vswitch CRUD). Windows' NetNat is a
-// host-singleton with a persistent-store backing file; under terraform's
-// default parallelism=10 (or higher), parallel Add-NetNatStaticMapping
-// calls race the same file handle and surface as ERROR_SHARING_VIOLATION
-// ("The process cannot access the file because it is being used by
-// another process") on the loser. The PS-side _retry helper retries
-// these as defense in depth, but eliminating the contention here is the
-// real fix.
-//
-// RWMutex (not Mutex) so concurrent reads parallelize. The race is
-// specifically between WRITERS racing the NetNat backing file's
-// exclusive-write handle -- Add-NetNatStaticMapping is the offender
-// named in the bug report. Get-NetNatStaticMapping (the Read path)
-// opens the file with shared-read access per the Windows file API
-// convention and doesn't conflict with other readers. So:
-//   - Get* methods take RLock -- N parallel terraform refreshes of
-//     nat_static_mapping resources run in O(1) wall time, not O(N).
-//   - New / Set / Remove methods take Lock (exclusive) -- writers
-//     serialize against each other AND against any in-flight reader.
-//
-// One RWMutex per Client is correct because NetNat is host-singleton:
-// there's exactly one ordering of NetNat writes per host.
-//
-// imageFileLocks serializes writes and deletes for a given destination_path
-// (image file and VHD copy/remove methods), so two resources genuinely
-// running in parallel don't overlap inside new.ps1's verify-then-rename
-// or remove.ps1's hash-check-then-delete. new.ps1's hash-match adoption
-// (see Move-HypervImageFileIntoPlace) is the main fix for a shared
-// destination_path on create; this lock covers true concurrent applies
-// on both create and destroy. Keyed per-path so unrelated images still
-// proceed in parallel.
 type Client struct {
-	runner         connection.Runner
-	httpClient     *http.Client
-	netNatMu       sync.RWMutex
+	runner connection.Runner
+
+	// httpClient serves only the runner-pipelined image_file fetch; every
+	// other method goes through the PowerShell connection layer instead.
+	httpClient *http.Client
+
+	// netNatMu serializes NetNat CRUD and vswitch's NAT branches. RWMutex
+	// so concurrent Get* calls don't block each other.
+	netNatMu sync.RWMutex
+
+	// imageFileLocks serializes create/delete per destination_path so two
+	// concurrent applies against the same path don't race in new.ps1 or
+	// remove.ps1.
 	imageFileLocks sync.Map // map[string]*sync.Mutex, keyed by destination_path
 }
 
@@ -68,10 +41,10 @@ func (c *Client) lockDestinationPath(destinationPath string) func() {
 	return mu.Unlock
 }
 
-// ClientOption customizes a Client at construction time. Functional-
-// options shape rather than a constructor variant so adding future
-// knobs (per-call timeouts, retry policy, ...) doesn't ripple out into
-// every NewClient call site.
+// ClientOption customizes a Client at construction time. The functional-
+// options pattern, rather than a constructor variant, means a future
+// knob (per-call timeouts, retry policy) won't ripple out into every
+// NewClient call site.
 type ClientOption func(*Client)
 
 // WithHTTPClient overrides the default *http.Client the runner-pipelined
@@ -89,14 +62,6 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 
 // NewClient wraps a connection.Runner. The Runner abstraction is what lets
 // unit tests substitute a fake without standing up a real PowerShell host.
-//
-// The default *http.Client is configured with a non-zero
-// ResponseHeaderTimeout to bound the "TCP open, server stalled before
-// flushing headers" failure mode that http.DefaultClient leaves
-// unbounded. Overall request timeout is intentionally left unset --
-// large image downloads at low bandwidth are legitimate and shouldn't
-// trip a fixed Client.Timeout; the caller's context bounds in-flight
-// progress.
 func NewClient(r connection.Runner, opts ...ClientOption) *Client {
 	c := &Client{
 		runner:     r,
@@ -108,20 +73,14 @@ func NewClient(r connection.Runner, opts ...ClientOption) *Client {
 	return c
 }
 
-// defaultHTTPClient builds the runner-pipelined fetch client off a clone
-// of http.DefaultTransport so we inherit all of its sensibly-tuned
-// dial / idle / TLS defaults (connection pool size, keepalive interval,
-// HTTP/2 negotiation) and only adjust the one knob the reviewer
-// flagged: ResponseHeaderTimeout. 60s is conservative enough to clear
-// any healthy CDN's headers but tight enough that a stuck-at-headers
-// stall surfaces well before Terraform's apply-level deadline.
-//
-// http.DefaultTransport is documented as *http.Transport; the safe-cast
-// fallback is a defensive belt against a future stdlib change or a
-// caller-replaced DefaultTransport, not a path expected in normal use.
+// defaultHTTPClient clones http.DefaultTransport, setting
+// ResponseHeaderTimeout to 60s so a stalled server surfaces well before
+// Terraform's apply deadline; Client.Timeout stays zero so a large,
+// slow image download isn't capped.
 func defaultHTTPClient() *http.Client {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
+		// Guards a future stdlib change to DefaultTransport's concrete type.
 		return &http.Client{}
 	}
 	cloned := transport.Clone()
