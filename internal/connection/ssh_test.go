@@ -620,6 +620,24 @@ func TestWaitForDone_ReturnsOnCtxCancelEvenIfDoneNeverFires(t *testing.T) {
 	}
 }
 
+// A result that's ready at the same instant ctx is canceled must win over
+// a manufactured timeout, regardless of which select case Go picks first.
+func TestWaitForDone_PrefersReadyResultOverSimultaneousCancel(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("run succeeded")
+	for i := 0; i < 1000; i++ {
+		done := make(chan error, 1)
+		done <- sentinel
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		if err := waitForDone(ctx, done, func() { t.Error("close callback should not run") }); !errors.Is(err, sentinel) {
+			t.Fatalf("iteration %d: err = %v, want %v", i, err, sentinel)
+		}
+	}
+}
+
 // Must return the done result, not ctx.Err(), when done fires first.
 func TestWaitForDone_ReturnsDoneResultBeforeCtxExpires(t *testing.T) {
 	t.Parallel()

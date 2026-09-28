@@ -758,6 +758,13 @@ func waitForDone(ctx context.Context, done <-chan error, closeFn func()) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		// select can pick this case even when done is also ready; prefer
+		// a real result over a manufactured timeout.
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
 		closeFn()
 		go func() { <-done }()
 		return ctx.Err()
