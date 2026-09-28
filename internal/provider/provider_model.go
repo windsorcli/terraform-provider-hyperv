@@ -39,8 +39,8 @@ type SSHConfig struct {
 	KnownHostsPath types.String `tfsdk:"known_hosts_path"`
 }
 
-// WinRMConfig configures the WinRM backend. Schema is defined now to lock
-// the attribute names per §13; the backend itself ships in M3.
+// WinRMConfig configures the WinRM backend; the schema locks the
+// attribute names ahead of the backend's own implementation.
 type WinRMConfig struct {
 	UseHTTPS  types.Bool           `tfsdk:"use_https"`
 	Insecure  types.Bool           `tfsdk:"insecure"`
@@ -50,17 +50,14 @@ type WinRMConfig struct {
 	Kerberos  *WinRMKerberosConfig `tfsdk:"kerberos"`
 }
 
-// WinRMKerberosConfig configures the WinRM Kerberos auth path. Only
-// meaningful when WinRMConfig.Auth == "kerberos"; ignored otherwise (a
-// config-level validator catches mismatches at plan time, not here).
-//
-// Realm is required; the others optional with sensible defaults:
-//   - Spn defaults to "HTTP/<host>" (the standard WinRM SPN convention).
-//   - ConfigPath defaults to KRB5_CONFIG env var, then ~/.config/krb5.conf,
-//     then /etc/krb5.conf, in that order.
-//   - CCachePath enables ccache mode (pre-populated TGT from `kinit`).
-//     When set, the provider's top-level password is ignored. When unset,
-//     password mode is used and the provider performs an inline AS-REQ.
+// WinRMKerberosConfig configures the WinRM Kerberos auth path, only
+// meaningful when WinRMConfig.Auth == "kerberos" (a config-level
+// validator catches mismatches at plan time). Realm is required; Spn
+// defaults to "HTTP/<host>"; ConfigPath falls back through
+// KRB5_CONFIG, ~/.config/krb5.conf, then /etc/krb5.conf. Setting
+// CCachePath opts into ccache mode (a `kinit`-populated TGT) and
+// ignores the provider's top-level password; unset uses password mode
+// with an inline AS-REQ.
 type WinRMKerberosConfig struct {
 	Realm      types.String `tfsdk:"realm"`
 	Spn        types.String `tfsdk:"spn"`

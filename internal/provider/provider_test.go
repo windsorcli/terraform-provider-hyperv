@@ -46,8 +46,7 @@ func TestProvider_Schema(t *testing.T) {
 		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
 	}
 
-	// Pin the §6 attribute names — these are locked after M1 per §13;
-	// changing any of them would be a breaking change.
+	// These attribute names are locked; changing any of them is a breaking change.
 	wantAttrs := []string{"backend", "host", "port", "username", "password", "timeout", "skip_auth_probe", "local", "ssh", "winrm"}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -62,20 +61,7 @@ func TestProvider_Resources(t *testing.T) {
 	p := New("test")()
 	got := p.Resources(t.Context())
 
-	// hyperv_virtual_switch (PLAN M1c) + hyperv_image_file (PLAN M4 first
-	// slice: url + host_path + local_path + literal_bytes source modes) +
-	// hyperv_vhd (PLAN M4: fixed/dynamic/differencing) + hyperv_vm
-	// (PLAN M4 minimal: name/generation/vcpu/memory_bytes/secure_boot/
-	// notes) + hyperv_nat_static_mapping (PLAN M6: NatStaticMapping +
-	// optional NetFirewallRule, paired with hyperv_virtual_switch's
-	// NAT type). Pin the count so accidental wiring of additional
-	// resources doesn't slip in unnoticed before their schema is
-	// reviewed.
-	//
-	// Iso9660 synthesis lives in `data.hyperv_iso_volume` (a data source,
-	// not a managed resource); the placement primitive is image_file's
-	// literal_bytes mode. This split happened mid-PR after the original
-	// hyperv_iso_volume managed resource was judged a hacky workaround.
+	// Pin the count so accidental wiring of an additional resource doesn't slip in before its schema is reviewed.
 	if len(got) != 5 {
 		t.Errorf("got %d resources, want 5 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm, hyperv_nat_static_mapping)", len(got))
 	}
@@ -311,20 +297,12 @@ func TestKerberosRealmRequiredValidator(t *testing.T) {
 	}
 }
 
-// TestClassifyAuthProbeError pins the diagnostic shape Configure emits when
-// the Get-VMHost probe fails. Two branches exist:
-//
-//   - hyperv.ErrUnauthorized: the connecting identity authenticated but
-//     lacks Hyper-V access. The summary names the probe; the detail must
-//     name the `Hyper-V Administrators` group floor and the
-//     `skip_auth_probe` escape hatch so the operator has both the fix and
-//     the override in front of them.
-//   - any other error: surface the underlying message verbatim and offer
-//     the skip flag as the validate-without-host escape hatch.
-//
-// We assert via substring rather than exact match — message tone is
-// allowed to evolve, but the load-bearing tokens (`Hyper-V Administrators`,
-// `skip_auth_probe`) must remain.
+// TestClassifyAuthProbeError pins the diagnostic Configure emits when
+// the Get-VMHost probe fails: hyperv.ErrUnauthorized routes to detail
+// naming the `Hyper-V Administrators` group and `skip_auth_probe`; any
+// other error surfaces verbatim plus the skip-flag escape hatch.
+// Asserts via substring, since message tone may evolve but the
+// load-bearing tokens must remain.
 func TestClassifyAuthProbeError(t *testing.T) {
 	t.Parallel()
 
@@ -341,19 +319,14 @@ func TestClassifyAuthProbeError(t *testing.T) {
 			wantDetail:  []string{"Hyper-V Administrators", "skip_auth_probe", "Get-VMHost"},
 		},
 		{
-			// %w-wrapped ErrUnauthorized must still route to the unauth
-			// branch — the typed client wraps with %w when emitting
-			// envelope errors, so this is the production path.
+			// %w-wrapped is the production path: the typed client wraps with %w when emitting envelope errors.
 			name:        "%w-wrapped ErrUnauthorized routes to Hyper-V Admin guidance",
 			err:         fmt.Errorf("get-vmhost: %w: PermissionDenied (cmdlet=Get-VMHost)", hyperv.ErrUnauthorized),
 			wantSummary: "Hyper-V provider authorization probe failed",
 			wantDetail:  []string{"Hyper-V Administrators"},
 		},
 		{
-			// Any non-ErrUnauthorized routes to the default branch. In
-			// production that's probe timeouts, ErrPSExecution, or
-			// unrecognized PS failures — real transport errors fail at
-			// conn.Open() upstream and never reach classifyAuthProbeError.
+			// Real transport errors fail at conn.Open() upstream and never reach classifyAuthProbeError.
 			name:        "non-unauth error routes to generic branch with HYPERV_SKIP_AUTH_PROBE hint",
 			err:         errors.New("synthetic non-unauth failure"),
 			wantSummary: "Hyper-V provider authorization probe failed",

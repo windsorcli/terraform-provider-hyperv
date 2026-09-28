@@ -52,8 +52,8 @@ func (p *HypervProvider) ConfigValidators(_ context.Context) []provider.ConfigVa
 
 // kerberosRealmRequiredValidator enforces winrm.kerberos.realm being set
 // whenever winrm.auth="kerberos" -- the schema layer can only mark the
-// attribute Optional. Mirrors the resource-level shape of
-// secureBootRejectedForGen1Validator in internal/resources/vm/resource.go.
+// attribute Optional. Mirrors secureBootRejectedForGen1Validator in
+// internal/resources/vm/resource.go.
 type kerberosRealmRequiredValidator struct{}
 
 func (v kerberosRealmRequiredValidator) Description(_ context.Context) string {
@@ -91,14 +91,7 @@ func (v kerberosRealmRequiredValidator) validate(data HypervProviderModel) diag.
 	if auth.ValueString() != "kerberos" {
 		return diags
 	}
-	// auth=kerberos. Realm must resolve to a non-empty string -- but
-	// HYPERV_KRB5_REALM env-var fallback isn't visible at validate
-	// time, so we only fire when the *attribute* itself is null AND
-	// the kerberos block was either omitted entirely or supplied
-	// without a realm value. Configure-time check at backend_select
-	// still catches the env-only case. This validator's contribution
-	// is moving the obvious "you wrote auth=kerberos but no realm
-	// anywhere" misconfig from plan to validate.
+	// Fires only when the attribute itself is null; HYPERV_KRB5_REALM env-var fallback isn't visible here (backend_select.go catches that case).
 	if data.WinRM.Kerberos != nil {
 		realm := data.WinRM.Kerberos.Realm
 		if realm.IsUnknown() {
@@ -310,16 +303,11 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
-	// Mask sensitive log fields. Registered once at Configure; tflog.Trace/
-	// Debug/etc. throughout the provider inherit this through the context.
+	// Registered once here; tflog.Trace/Debug/etc. throughout the provider inherit the masking through the context.
 	ctx = tflog.MaskFieldValuesWithFieldKeys(ctx, "password", "private_key", "passphrase")
 	ctx = tflog.OmitLogWithFieldKeys(ctx, "stdin_json", "stdout", "stderr")
 
-	// Skip Configure if `backend` is unknown — a deferred dependency hasn't
-	// resolved yet (e.g. backend wired from another resource's computed
-	// output). The next Configure pass with known values will try again.
-	// Without this guard, validate / plan-with-deps would dial out to a
-	// wrong/empty host before the real config is known.
+	// Unknown backend means a deferred dependency hasn't resolved yet; the next Configure pass with known values retries.
 	if data.Backend.IsUnknown() {
 		return
 	}
@@ -330,16 +318,7 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
-	// Open establishes any persistent transport state (no-op for local; the
-	// SSH/WinRM backends in M2/M3 set up the SSH client / HTTP transport
-	// here). Fail fast on transport errors so misconfiguration surfaces at
-	// provider-config level rather than during a resource Read mid-plan.
-	//
-	// Notably we do NOT run Healthcheck here — that exec'd a real cmdlet
-	// which broke `terraform validate` in environments without a host
-	// (the framework calls Configure during validate too). Connectivity
-	// problems with the host now surface at first resource use, where the
-	// diagnostic can be attribute-anchored.
+	// No Healthcheck call here: it exec'd a real cmdlet and broke `terraform validate` in environments without a reachable host.
 	if err := conn.Open(ctx); err != nil {
 		resp.Diagnostics.AddError(
 			"Hyper-V provider open failed",
@@ -348,16 +327,10 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
-	// Wrap the transport in the typed client. Done before registerActive
-	// so the authorization probe below can use the client; on probe
-	// failure we Close() the still-unregistered connection inline.
+	// Wrapped before registerActive so a probe failure below can Close() the still-unregistered connection inline.
 	client := hyperv.NewClient(conn)
 
-	// Authorization probe. Runs `Get-VMHost` to confirm the connecting
-	// identity can invoke a Hyper-V cmdlet -- converts permission /
-	// transport failures from mid-apply mysteries into Configure-time
-	// diagnostics. Skippable for hostless `terraform validate` via
-	// skip_auth_probe or HYPERV_SKIP_AUTH_PROBE.
+	// Get-VMHost confirms the connecting identity can invoke a Hyper-V cmdlet; skippable via skip_auth_probe for hostless validate.
 	skip, err := resolveBool(data.SkipAuthProbe, "HYPERV_SKIP_AUTH_PROBE", false)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(
@@ -376,11 +349,7 @@ func (p *HypervProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		}
 	}
 
-	// Enroll for signal-driven shutdown in main. The Configure ctx
-	// can't carry the cleanup hook itself -- it cancels when this
-	// handler returns, which would close the connection we just
-	// opened. The package-level registry survives the handler and is
-	// drained by CloseActive on SIGINT/SIGTERM.
+	// Registered in the package-level registry, not the Configure ctx: that ctx cancels when this handler returns.
 	registerActive(conn)
 
 	tflog.Info(ctx, "provider configured", map[string]any{

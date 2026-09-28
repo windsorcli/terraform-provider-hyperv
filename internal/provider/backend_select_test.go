@@ -75,8 +75,7 @@ func TestNewConnection_LocalDefault(t *testing.T) {
 }
 
 func TestNewConnection_LocalAttributeWinsOverEnv(t *testing.T) {
-	// The §6 precedence: provider attribute > env var. With both set,
-	// the attribute (via the Local nested block) takes effect.
+	// Precedence: provider attribute wins over env var.
 	t.Setenv("HYPERV_BACKEND", "")
 	t.Setenv("HYPERV_PWSH_PATH", "/from/env")
 
@@ -92,9 +91,7 @@ func TestNewConnection_LocalAttributeWinsOverEnv(t *testing.T) {
 	if conn == nil {
 		t.Fatal("expected a connection")
 	}
-	// We can't read pwshPath off the Connection directly (unexported),
-	// but Backend() == "local" + no construction error confirms the
-	// nested-block path was taken.
+	// pwshPath is unexported; Backend() == "local" with no construction error confirms the nested-block path was taken.
 	if conn.Backend() != "local" {
 		t.Errorf("Backend() = %q, want local", conn.Backend())
 	}
@@ -407,9 +404,7 @@ func TestNewConnection_WinRMRequiresPassword(t *testing.T) {
 	if !diags.HasError() {
 		t.Fatal("expected an error diagnostic")
 	}
-	// The attribute-anchored diagnostic ought to mention `password` in
-	// either the summary or the detail text -- the operator-facing
-	// signal that the password attribute is what to fix.
+	// The diagnostic should mention `password` in the summary or detail, the operator-facing signal of what to fix.
 	combined := diags[0].Summary() + " " + diags[0].Detail()
 	if !strings.Contains(strings.ToLower(combined), "password") {
 		t.Errorf("expected diagnostic to mention 'password'; got summary=%q detail=%q",
@@ -532,20 +527,11 @@ func TestNewConnection_WinRMKerberosRejectsNoCreds(t *testing.T) {
 }
 
 // TestNewConnection_WinRMKerberosNonFQDNHostWarns covers the FQDN
-// warning across the two non-FQDN shapes the predicate must catch:
-//
-//   - Short bare hostname (no dot at all) -- the obvious case.
-//   - Raw IPv4 / IPv6 literal -- contains dots/colons but isn't a
-//     hostname; SPNs are never registered against IPs.
-//
-// Warn rather than error: a host with a working /etc/hosts entry that
-// resolves the short name to an FQDN-anchored cert + SPN may pass
-// fine. Users with that setup should ignore the warning; users
-// without it see the warning and the apply-time auth failure.
-//
-// Hardens against the "predicate uses string contains '.'" regression
-// that was caught in PR review (raw IPv4 satisfies that condition and
-// silently bypassed the warning before this fix).
+// warning across the non-FQDN forms the predicate must catch: a bare
+// short hostname, and raw IPv4/IPv6 literals (which contain dots or
+// colons but aren't hostnames, so a naive "contains '.'" check alone
+// would miss them). It's a warning, not an error, since a working
+// /etc/hosts entry can make a short name resolve fine anyway.
 func TestNewConnection_WinRMKerberosNonFQDNHostWarns(t *testing.T) {
 	cases := []struct {
 		name string
@@ -602,11 +588,10 @@ func TestNewConnection_WinRMKerberosNonFQDNHostWarns(t *testing.T) {
 }
 
 // TestNewConnection_WinRMRejectsMalformedBoolEnv pins the fail-loud
-// behavior on unrecognized boolean env values. Previously a typo like
-// HYPERV_WINRM_USE_HTTPS=disabled silently fell back to the default
-// (true), producing a confusing TLS handshake error instead of a
-// clear configuration diagnostic. Matches resolveInt's existing
-// pattern of erroring on unparseable env values.
+// behavior on unrecognized boolean env values, e.g.
+// HYPERV_WINRM_USE_HTTPS=disabled, matching resolveInt's pattern of
+// erroring on unparseable env values rather than falling back to a
+// default and surfacing a confusing TLS handshake error instead.
 func TestNewConnection_WinRMRejectsMalformedBoolEnv(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
 	t.Setenv("HYPERV_HOST", "")
@@ -672,9 +657,7 @@ func TestResolveString_FallbackWhenAllMissing(t *testing.T) {
 }
 
 func TestResolveString_UnknownAttributeFallsThroughToEnv(t *testing.T) {
-	// During plan, attributes can be types.StringUnknown if they reference
-	// another resource's computed output. resolveString should treat that
-	// the same as null and fall through to the env var.
+	// An Unknown attribute (referencing another resource's computed output) should fall through like null.
 	t.Setenv("FOO", "from-env")
 	got := resolveString(types.StringUnknown(), "FOO", "default")
 	if got != "from-env" {

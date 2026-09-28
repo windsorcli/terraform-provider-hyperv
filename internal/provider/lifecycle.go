@@ -1,20 +1,9 @@
-// Provider lifecycle helpers. Tracks live transport connections so a
-// signal-driven shutdown in main.go can close them cleanly before the
-// process exits.
-//
-// Why this exists: when terraform's parent process dies abruptly
-// (operator Ctrl-C, OOM, panic), the plugin process is orphaned for a
-// short window before go-plugin's stdin-EOF detector kills it. During
-// that window -- and on graceful SIGTERM -- the SSH backend's TCP
-// socket needs an explicit Close() so the bench-side OpenSSH server
-// frees the per-connection MaxSessions slot promptly. Without it, the
-// slot stays occupied until SO_KEEPALIVE timeouts reap the half-open
-// socket (often hours), and the next terraform apply hangs at
-// "Refreshing state..." waiting for capacity that never returns.
-//
-// SIGKILL is unreachable -- nothing can run after that. This package
-// improves the recoverable cases (graceful SIGTERM, operator SIGINT,
-// terraform's own clean-shutdown forwarding) and accepts the rest.
+// Provider lifecycle helpers: tracks live transport connections so a
+// signal-driven shutdown in main.go can close them before exit. An
+// unclosed SSH connection holds the bench's MaxSessions slot until
+// SO_KEEPALIVE reaps it, often hours later, hanging the next apply at
+// "Refreshing state...". SIGKILL is unreachable, so this only covers
+// SIGTERM, SIGINT, and terraform's own clean-shutdown forwarding.
 
 package provider
 
