@@ -203,8 +203,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 }
 
 // Read fetches the current state via get.ps1 and reconciles it.
-//
-// ErrNotFound -> RemoveResource so Terraform plans recreate.
+// ErrNotFound -> RemoveResource so Terraform plans recreate;
 // ErrUnavailable -> AddError so a transient vmms outage doesn't drop the
 // resource from state. (See errors.go for the sentinel rationale.)
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -243,7 +242,6 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 
 // Update runs set.ps1 with the plan's mutable attributes (net_adapter_names,
 // allow_management_os, notes) and writes the post-update read result back.
-//
 // switch_type is taken from STATE -- the schema marks it RequiresReplace, so
 // any change there forces destroy+recreate rather than reaching Update --
 // and forwarded so set.ps1's Private + AllowManagementOS guard fires with

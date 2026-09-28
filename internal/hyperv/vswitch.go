@@ -275,10 +275,9 @@ func (c *Client) prepareVMSwitchExternalForRemove(ctx context.Context, name stri
 // times waiting for AllowManagementOS=false to take effect. Returns nil
 // on the first read that confirms the property is disabled (the cmdlet
 // completed on the bench despite the SSH blink), or wraps the original
-// drop error if the verify loop runs out of attempts.
-//
-// ctx.Done is honored between attempts: a canceled apply unblocks
-// without consuming the full delay budget.
+// drop error if the verify loop runs out of attempts. ctx.Done is
+// honored between attempts: a canceled apply unblocks without
+// consuming the full delay budget.
 func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, name string, original error) error {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {
@@ -312,10 +311,8 @@ func (c *Client) verifyVMSwitchAllowManagementOSDisabled(ctx context.Context, na
 // short delay, returning nil on the first ErrNotFound (the cmdlet
 // succeeded; the SSH session just blinked). Returns the original drop
 // error if the switch is observed to still exist OR if the verify loop
-// itself runs out of attempts.
-//
-// ctx.Done is honored between attempts: a canceled apply unblocks
-// without consuming the full delay budget.
+// itself runs out of attempts. ctx.Done is honored between attempts: a
+// canceled apply unblocks without consuming the full delay budget.
 func (c *Client) recoverVMSwitchRemoveOnDrop(ctx context.Context, name, natName string, original error) error {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vmSwitchVerifyAttempts; attempt++ {

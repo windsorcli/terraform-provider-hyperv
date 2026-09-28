@@ -1,11 +1,9 @@
 // Package hyperv is the typed Go wrapper over the connection layer. It
 // concatenates the embedded preamble to each script body, marshals Go DTOs
 // into PowerShell input JSON, and unmarshals PowerShell output JSON back
-// into typed structs. Errors from the structured envelope (Write-HypervError)
-// are mapped to the typed errors in errors.go.
-//
-// Resources never touch connection.Runner directly — they go through this
-// Client.
+// into typed structs, mapping errors from the structured envelope
+// (Write-HypervError) to the typed errors in errors.go. Resources never
+// touch connection.Runner directly — they go through this Client.
 package hyperv
 
 // VMHost mirrors the subset of Get-VMHost output the provider exposes.
@@ -21,13 +19,12 @@ type VMHost struct {
 // VMSwitch is the canonical read format vswitch/{get,new,set}.ps1 emits.
 // Field tags use PascalCase to match Get-VMSwitch's native output (the
 // stdin convention is snake_case per the wire contract; stdout is the raw
-// cmdlet output the typed client consumes as-is).
-//
-// SwitchType reads as "External", "Internal", "Private", or the synthesized
-// "NAT" -- Hyper-V's underlying enum has no NAT type, so the script reports
+// cmdlet output the typed client consumes as-is). SwitchType reads as
+// "External", "Internal", "Private", or the synthesized "NAT" --
+// Hyper-V's underlying enum has no NAT type, so the script reports
 // SwitchType=NAT only when the caller passes nat_name and the matching
-// NetNat + NetIPAddress are both present on the host. NAT fields are empty
-// strings for non-NAT switches.
+// NetNat + NetIPAddress are both present on the host; NAT fields are
+// empty strings for non-NAT switches.
 type VMSwitch struct {
 	Name                           string `json:"Name"`
 	SwitchType                     string `json:"SwitchType"`

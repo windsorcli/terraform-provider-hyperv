@@ -3,13 +3,11 @@ package vhd_test
 // Acceptance tests for hyperv_vhd. The three creation modes (fixed,
 // dynamic, differencing) share one schema, distinguished by vhd_type
 // plus cross-attribute config validators; these tests cover dynamic
-// and fixed. Differencing needs a pre-staged parent VHD on the bench,
-// not exercised here.
-//
-// HYPERV_TEST_VHD_DIR exists because Hyper-V cmdlets refuse to create
-// disks in arbitrary locations (ACLs vary by path); a per-bench
-// configurable directory avoids baking in path assumptions. See
-// docs/contributing/acceptance-tests.md.
+// and fixed, since differencing needs a pre-staged parent VHD on the
+// bench, not exercised here. HYPERV_TEST_VHD_DIR exists because
+// Hyper-V cmdlets refuse to create disks in arbitrary locations (ACLs
+// vary by path); a per-bench configurable directory avoids baking in
+// path assumptions. See docs/contributing/acceptance-tests.md.
 
 import (
 	"context"
@@ -182,9 +180,8 @@ func joinHostPath(dir, name string) string {
 
 // TestAcc_VHD_sourcePath is the mode's whole reason for existing, end to
 // end: copy an existing disk, grow the copy past the source's size, then
-// replace the source in place and watch the next apply re-copy.
-//
-// The source is created with the typed client rather than a second
+// replace the source in place and watch the next apply re-copy. The
+// source is created with the typed client rather than a second
 // hyperv_vhd resource so it is not Terraform-managed -- that matches the
 // workflow the mode targets (a vendor image refreshed outside Terraform)
 // and keeps the source present at plan time, which is what makes the
@@ -328,13 +325,12 @@ resource "hyperv_image_file" "b" {
 }
 
 // TestAcc_VHD_sourcePathDeferred covers the case where the source is
-// produced by the same apply that copies it. The provider cannot hash a
-// file that does not exist yet, so source_sha256 plans as unknown and the
-// host derives its own expectation at apply time.
-//
-// This is the path that a Mandatory ExpectedSha256 parameter silently
-// broke: PowerShell rejects an empty string for a mandatory [string]
-// before any hashing happens, so the apply died on parameter binding.
+// produced by the same apply that copies it. The provider cannot hash
+// a file that does not exist yet, so source_sha256 plans as unknown
+// and the host derives its own expectation at apply time; this pins
+// that the script's ExpectedSha256 parameter stays Optional, since
+// PowerShell would otherwise reject an empty string for a mandatory
+// [string] before any hashing happens.
 func TestAcc_VHD_sourcePathDeferred(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
 	client := acctest.NewClient(t)

@@ -15,10 +15,9 @@ import (
 // in the NewVHD* methods. Same physical event as the vswitch verify
 // (the External-switch NIC rebind that blinks the SSH session); kept as
 // independent vars rather than aliasing vmSwitchVerify* so future tuning
-// can diverge if it needs to. Defaults match vmSwitchVerify*.
-//
-// Vars (not consts) so tests can shrink the delay to keep unit-test
-// runtime under a second.
+// can diverge if it needs to. Defaults match vmSwitchVerify*, and
+// they're vars rather than consts so tests can shrink the delay to
+// keep unit-test runtime under a second.
 var (
 	vhdVerifyAttempts = 5
 	vhdVerifyDelay    = 5 * time.Second
@@ -28,8 +27,7 @@ var (
 // polls GetVHD post-drop. Variant-specific Create methods populate this
 // from their inputs; mismatches surface as a "found VHD with different
 // config" error rather than silently adopting foreign or partial infra.
-//
-// SizeBytes=0 is the "skip size check" sentinel -- used by the
+// SizeBytes=0 is the "skip size check" sentinel, used by the
 // Differencing variant where the user does not specify a size (it is
 // inherited from the parent and the typed-client method does not read
 // the parent to compute the expected value).
@@ -63,13 +61,12 @@ func (c *Client) GetVHD(ctx context.Context, path string) (*VHD, error) {
 
 // NewVHDFixed creates a pre-allocated (full-sized on disk) VHD/VHDX:
 // slow create, no runtime expansion. Returns the post-create read
-// result.
-//
-// Recovers from connection.ErrSessionDropped the same way NewVMSwitch
-// does: a concurrent resource's External-switch NIC rebind can blink
-// this call's SSH session after New-VHD succeeds. Verify-on-drop polls
-// GetVHD; a match adopts the VHD into state, a mismatch surfaces the
-// drop with the mismatch detail so the operator can retry.
+// result. Recovers from connection.ErrSessionDropped the same way
+// NewVMSwitch does: a concurrent resource's External-switch NIC rebind
+// can blink this call's SSH session after New-VHD succeeds.
+// Verify-on-drop polls GetVHD; a match adopts the VHD into state, a
+// mismatch surfaces the drop with the mismatch detail so the operator
+// can retry.
 func (c *Client) NewVHDFixed(ctx context.Context, in NewVHDFixedInput) (*VHD, error) {
 	body, err := scripts.VHDScript("new")
 	if err != nil {
@@ -170,12 +167,10 @@ func (c *Client) NewVHDDifferencing(ctx context.Context, in NewVHDDifferencingIn
 // result on the first hit whose VhdType (and SizeBytes, when expected)
 // matches expected. Surfaces the original drop if Get returns NotFound,
 // returns a mismatched VHD, the attempts run out, or ctx.Done fires
-// first.
-//
-// ParentPath isn't compared: for the Differencing variant, Get-VHD's
-// canonicalization (backslash, case-folding) doesn't match user-supplied
-// input without semantic-equality plumbing this client doesn't
-// otherwise need.
+// first. ParentPath isn't compared: for the Differencing variant,
+// Get-VHD's canonicalization (backslash, case-folding) doesn't match
+// user-supplied input without semantic-equality plumbing this client
+// doesn't otherwise need.
 func (c *Client) recoverVHDNewOnDrop(ctx context.Context, expected expectedVHD, original error) (*VHD, error) {
 	var lastVerifyErr error
 	for attempt := 0; attempt < vhdVerifyAttempts; attempt++ {
@@ -233,12 +228,11 @@ func (c *Client) ResizeVHD(ctx context.Context, path string, sizeBytes int64) (*
 // RemoveVHD deletes the VHD file. Resource Delete should treat ErrNotFound
 // as success (already gone). The cmdlet errors loudly when the file is
 // attached to a running VM (open file handle); that surfaces as
-// ErrPSExecution rather than being swallowed.
-//
-// Locked per path against CopyHostFile: source_path-mode hyperv_vhd
-// creates through the same shared CopyHostFile as hyperv_image_file, so
-// a vhd and an image_file sharing a path need the same create/destroy
-// interlock CopyHostFile and RemoveImageFile already have.
+// ErrPSExecution rather than being swallowed. Locked per path against
+// CopyHostFile: source_path-mode hyperv_vhd creates through the same
+// shared CopyHostFile as hyperv_image_file, so a vhd and an image_file
+// sharing a path need the same create/destroy interlock CopyHostFile
+// and RemoveImageFile already have.
 func (c *Client) RemoveVHD(ctx context.Context, path string) error {
 	defer c.lockDestinationPath(path)()
 

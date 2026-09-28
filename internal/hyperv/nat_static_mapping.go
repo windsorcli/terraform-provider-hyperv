@@ -12,7 +12,6 @@ import (
 // GetNatStaticMapping fetches a NAT static netnat-static-mapping mapping by its
 // (nat_name, protocol, external_ip, external_port) lookup tuple and
 // joins the optional companion firewall rule into the read result.
-//
 // Returns ErrNotFound when no mapping matches the tuple (resource Read
 // should call RemoveResource), or ErrUnavailable when the underlying
 // service is transiently unreachable.
@@ -39,12 +38,11 @@ func (c *Client) GetNatStaticMapping(ctx context.Context, in GetNatStaticMapping
 // NewNatStaticMapping creates a static NAT mapping plus the optional
 // inbound firewall allow rule. The script-side rollback handles the
 // partial-failure case (mapping landed, firewall rule failed); see
-// nat_static_mapping/new.ps1 for the catch path.
-//
-// Cross-resource: nat_name must resolve to an existing NetNat instance
-// on the host. The script's Get-NetNat precondition surfaces a clear
-// "missing NetNat" error if it doesn't, mapped here through the
-// typed-error path.
+// nat_static_mapping/new.ps1 for the catch path. Cross-resource:
+// nat_name must resolve to an existing NetNat instance on the host,
+// and the script's Get-NetNat precondition surfaces a clear "missing
+// NetNat" error if it doesn't, mapped here through the typed-error
+// path.
 func (c *Client) NewNatStaticMapping(ctx context.Context, in NewNatStaticMappingInput) (*NatStaticMapping, error) {
 	c.netNatMu.Lock()
 	defer c.netNatMu.Unlock()

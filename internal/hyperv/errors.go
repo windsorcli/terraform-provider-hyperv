@@ -8,12 +8,11 @@ import (
 	"strings"
 )
 
-// Sentinel errors. Resources match against these with `errors.Is(err, X)` to
-// decide how to surface to the user (RemoveResource for ErrNotFound,
-// AddAttributeError for ErrInvalidParentPath, etc.).
-//
-// ErrNotFound vs ErrUnavailable is load-bearing: ErrNotFound means the object
-// genuinely does not exist (PS ObjectNotFound) and a resource Read should
+// Sentinel errors; resources match against these with `errors.Is(err, X)`
+// to decide how to surface to the user (RemoveResource for ErrNotFound,
+// AddAttributeError for ErrInvalidParentPath, etc.). ErrNotFound vs
+// ErrUnavailable is load-bearing: ErrNotFound means the object genuinely
+// does not exist (PS ObjectNotFound) and a resource Read should
 // RemoveResource so Terraform plans a recreate; ErrUnavailable means the
 // object is known but temporarily inaccessible (PS ResourceUnavailable —
 // vmms stopped, cluster node fenced, transport blip) and the resource MUST

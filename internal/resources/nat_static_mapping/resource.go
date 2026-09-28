@@ -99,7 +99,6 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 }
 
 // Read fetches the current state via get.ps1 and reconciles it.
-//
 // ErrNotFound -> RemoveResource so Terraform plans recreate.
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	if r.client == nil {
@@ -226,15 +225,14 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 }
 
 // ImportState parses the composite identifier and seeds the lookup
-// tuple in state:
+// tuple in state. The 5-segment form is for a non-default firewall
+// rule name, since Read can't locate a rule without already knowing
+// it; the 4-segment form derives it instead. The stored `id` always
+// keeps the 4-segment form: a stable identifier, not the import-only
+// firewall name.
 //
 //	<nat_name>:<protocol>:<external_ip>:<external_port>
 //	<nat_name>:<protocol>:<external_ip>:<external_port>:<firewall_rule_name>
-//
-// The 5-segment form is for a non-default firewall rule name, since
-// Read can't locate a rule without already knowing it; the 4-segment
-// form derives it instead. The stored `id` always keeps the 4-segment
-// form: a stable identifier, not the import-only firewall name.
 func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, ":")
 	if len(parts) != 4 && len(parts) != 5 {

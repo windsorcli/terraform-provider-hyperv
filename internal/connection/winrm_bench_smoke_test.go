@@ -16,15 +16,14 @@ import (
 	"time"
 )
 
-// TestWinRMBenchSmoke is a manual smoke test that hits a real bench. Gated
-// behind the `winrm_bench` build tag so `go test ./...` skips it. Run with:
+// TestWinRMBenchSmoke is a manual smoke test that hits a real bench,
+// gated behind the `winrm_bench` build tag so `go test ./...` skips
+// it. Not part of the standard CI matrix; useful for validating WinRM
+// implementation changes against an actual WSMan endpoint without
+// spinning up the full acceptance test suite. Run with:
 //
 //	BENCH_HOST=192.168.3.77 BENCH_USER=Administrator BENCH_PW=... \
 //	  go test -tags=winrm_bench -run=TestWinRMBenchSmoke -v ./internal/connection/
-//
-// Not part of the standard CI matrix. Useful for validating WinRM
-// implementation changes against an actual WSMan endpoint without spinning
-// up the full acceptance test suite.
 func TestWinRMBenchSmoke(t *testing.T) {
 	host := os.Getenv("BENCH_HOST")
 	user := os.Getenv("BENCH_USER")
@@ -82,14 +81,14 @@ func TestWinRMBenchSmoke(t *testing.T) {
 		len(largeScript), res.ExitCode, res.Duration)
 }
 
-// TestWinRMBenchSmoke_StreamFile verifies the streaming base64 file-upload
-// path against a real bench. Generates a randomized blob (so a test rerun
-// can't accidentally pass against a leftover file from the previous run),
-// streams it to %TEMP%\hyperv-streamfile-smoke-<unique>.bin on the bench,
-// then reads back the SHA-256 via Get-FileHash and compares.
-//
-// Same gating as the parent smoke test: requires BENCH_HOST / BENCH_USER /
-// BENCH_PW and the `winrm_bench` build tag.
+// TestWinRMBenchSmoke_StreamFile verifies the streaming base64
+// file-upload path against a real bench. It generates a randomized
+// blob (so a test rerun can't accidentally pass against a leftover
+// file from the previous run), streams it to
+// %TEMP%\hyperv-streamfile-smoke-<unique>.bin on the bench, then reads
+// back the SHA-256 via Get-FileHash and compares, gated the same as
+// the parent smoke test: requires BENCH_HOST / BENCH_USER / BENCH_PW
+// and the `winrm_bench` build tag.
 func TestWinRMBenchSmoke_StreamFile(t *testing.T) {
 	host := os.Getenv("BENCH_HOST")
 	user := os.Getenv("BENCH_USER")

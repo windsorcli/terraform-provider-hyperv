@@ -109,11 +109,9 @@ type VMName struct {
 // ListVMsByPrefix returns the names of all VMs whose Name begins with
 // the given prefix (typically "tfacc-" for the acceptance-test sweeper).
 // Empty result is a normal return ([]VMName{}, nil) -- the caller can
-// distinguish "no matches" from "fault" without checking err.
-//
-// Backed by vm/list.ps1 -- see that script's header for the wire
-// contract. Read-only operation; no power transitions or other side
-// effects.
+// distinguish "no matches" from "fault" without checking err. Backed
+// by vm/list.ps1 -- see that script's header for the wire contract.
+// Read-only operation; no power transitions or other side effects.
 func (c *Client) ListVMsByPrefix(ctx context.Context, prefix string) ([]VMName, error) {
 	body, err := scripts.VMScript("list")
 	if err != nil {
@@ -157,9 +155,8 @@ func (c *Client) AttachHardDisk(ctx context.Context, in AttachHardDiskInput) err
 // DetachHardDisk removes a VHD attachment from a VM at a specific
 // controller slot via Remove-VMHardDiskDrive. The slot tuple alone
 // identifies the attachment (Path is not part of the wire payload).
-//
 // "Slot already empty" surfaces as ObjectNotFound from the cmdlet ->
-// ErrNotFound on the Go side. The resource-layer reconciliation in
+// ErrNotFound on the Go side; the resource-layer reconciliation in
 // Update treats ErrNotFound as a no-op (desired state is "empty",
 // already met). Other errors map to ErrPSExecution.
 func (c *Client) DetachHardDisk(ctx context.Context, in DetachHardDiskInput) error {
@@ -177,7 +174,6 @@ func (c *Client) DetachHardDisk(ctx context.Context, in DetachHardDiskInput) err
 // AttachNetworkAdapter adds a new NIC to a VM and binds it to the
 // named virtual switch via Add-VMNetworkAdapter. The display name is
 // the slot key used by the resource-layer Update reconciliation.
-//
 // Returns ErrNotFound if the VM is missing. Switch-not-found surfaces
 // as ErrPSExecution (Hyper-V's InvalidArgument category isn't routed
 // to a typed sentinel for this cmdlet).
@@ -283,14 +279,12 @@ func (c *Client) SetVMState(ctx context.Context, in SetVMStateInput) (*VM, error
 
 // loadVMReadEmitter loads a verb script (get/new/set/set-state) and
 // prepends the canonical Read-HypervVMResult body from
-// vm/read-result.ps1 so the verb's tail call to that function resolves.
-//
-// Until 2026-04 each of these four scripts inlined Read-HypervVMResult
-// verbatim because the runtime concatenates only preamble + a single
-// verb script per call (no cross-script helpers). Lifting the function
-// out of each script into a single canonical read-result.ps1 reduces
-// the bug surface (four copies could drift) at the cost of one extra
-// fs read here.
+// vm/read-result.ps1 so the verb's tail call to that function
+// resolves, since the runtime concatenates only preamble + a single
+// verb script per call (no cross-script helpers). Sharing one
+// canonical read-result.ps1 across all four scripts, rather than each
+// carrying its own copy, costs one extra fs read here in exchange for
+// a single source of truth.
 func loadVMReadEmitter(verb string) (string, error) {
 	body, err := scripts.VMScript(verb)
 	if err != nil {

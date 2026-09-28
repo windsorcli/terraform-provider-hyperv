@@ -411,14 +411,13 @@ func (x *xzReader) Read(p []byte) (int, error) {
 
 // isDecompressionStreamError reports whether err -- surfaced from
 // io.Copy through the codec's Reader -- is data corruption rather than
-// a transport-level fault. Per-codec because each library exposes its
-// own typed sentinels.
-//
-// Returning false on transport-shaped errors is load-bearing: the
-// callers anchor ErrDecompressionFailed on `url.compression` in the
-// resource diagnostic, while transport faults stay generic. A flap
-// during a multi-GB Talos pull should not surface as a "decompression
-// failed" message that points the operator at the wrong attribute.
+// a transport-level fault; per-codec because each library exposes its
+// own typed sentinels. Returning false on transport-shaped errors is
+// load-bearing: callers anchor ErrDecompressionFailed on
+// `url.compression` in the resource diagnostic, while transport faults
+// stay generic, so a flap during a multi-GB Talos pull doesn't surface
+// as a "decompression failed" message that points the operator at the
+// wrong attribute.
 func isDecompressionStreamError(codec string, err error) bool {
 	switch codec {
 	case "gz":
@@ -612,14 +611,12 @@ func sha256Hex(buf []byte) string {
 }
 
 // ComputeFileSHA256 returns the lowercase-hex SHA-256 of the file at
-// path. Streams via io.Copy so files of any size hash without buffering
-// the whole payload in memory.
-//
-// Exported because the resource layer's local_path-mode plan-time
-// hashing reuses this -- both the typed-client method and the
-// resource's ModifyPlan need the same function so the SHA the runner
-// commits to at plan time is byte-identical to the one it sends on the
-// wire at apply time.
+// path, streamed via io.Copy so files of any size hash without
+// buffering the whole payload in memory. Exported because the resource
+// layer's local_path-mode plan-time hashing reuses this -- both the
+// typed-client method and the resource's ModifyPlan need the same
+// function so the SHA the runner commits to at plan time is
+// byte-identical to the one it sends on the wire at apply time.
 func ComputeFileSHA256(path string) (string, error) {
 	f, err := os.Open(path) // #nosec G304 -- path is operator-supplied via resource config
 	if err != nil {

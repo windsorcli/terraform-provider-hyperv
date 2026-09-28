@@ -823,15 +823,12 @@ func zstdBytes(t *testing.T, payload []byte) []byte {
 }
 
 // bz2FixturePlaintext / bz2FixtureCompressed are a precomputed bzip2
-// round-trip pair. compress/bzip2 ships only a reader, so the
+// round-trip pair; compress/bzip2 ships only a reader, so the
 // compressed bytes are an inline literal instead of a third-party
-// encoder dependency.
-//
-// Regenerate with:
+// encoder dependency, and the bz2 happy-path test's round-trip
+// assertion catches a stale value. Regenerate with:
 //
 //	printf 'tfhyperv bz2 fixture\n' | bzip2 -9 | xxd -p -c 200
-//
-// The bz2 happy-path test's round-trip assertion catches a stale value.
 var (
 	bz2FixturePlaintext  = []byte("tfhyperv bz2 fixture\n")
 	bz2FixtureCompressed = mustHexDecode(

@@ -287,11 +287,10 @@ func (v sizeBytesRequiresFixedOrDynamicValidator) validate(data Model) diag.Diag
 // user's value (NewVHDDifferencingInput has no BlockSizeBytes field), the
 // post-create read-back stores the parent-inherited block size in state,
 // and every subsequent plan diffs config-vs-state on a RequiresReplace
-// attribute -- producing an infinite replace loop.
-//
-// One-directional unlike the size_bytes validator: block_size_bytes is
-// OPTIONAL for fixed/dynamic (Hyper-V's default applies when omitted), so
-// we only fire on the differencing+set case.
+// attribute -- producing an infinite replace loop. One-directional unlike
+// the size_bytes validator: block_size_bytes is OPTIONAL for fixed/dynamic
+// (Hyper-V's default applies when omitted), so we only fire on the
+// differencing+set case.
 type blockSizeBytesRejectedForDifferencingValidator struct{}
 
 // Description is the one-line summary surfaced by `terraform validate -json`
@@ -363,10 +362,10 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 // ModifyPlan hashes the host-side `source_path` at plan time and writes it
 // into the planned `source_sha256`. That is what makes an upstream image
 // replaced in place under a fixed name surface as a diff and re-copy.
-//
-// Nothing to do outside source_path-mode, during destroy (no plan), when
-// the source is unknown (driven from a not-yet-applied dependency), or
-// during validate (Configure hasn't run, so there is no client).
+// There's nothing to do outside source_path-mode, during destroy (no
+// plan), when the source is unknown (driven from a not-yet-applied
+// dependency), or during validate (Configure hasn't run, so there is no
+// client).
 func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -499,10 +498,9 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 }
 
 // Read fetches the current state via get.ps1 and reconciles it.
-//
-// ErrNotFound -> RemoveResource so Terraform plans recreate.
-// Other errors -> AddError so a transient fault doesn't silently drop
-// the resource from state.
+// ErrNotFound -> RemoveResource so Terraform plans recreate; other
+// errors -> AddError so a transient fault doesn't silently drop the
+// resource from state.
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",

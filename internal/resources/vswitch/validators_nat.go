@@ -220,10 +220,9 @@ func checkNATPrefix(prefix string) natPrefixCheckResult {
 // bits zeroed). Windows New-NetNat -InternalIPInterfaceAddressPrefix
 // rejects host-bit forms like "192.168.100.1/24" with an opaque cmdlet
 // error; rejecting here gives the operator a plan-time diagnostic that
-// suggests the canonical equivalent.
-//
-// The actual rule logic lives in checkNATPrefix; this validator is a
-// thin wrapper that maps each issue to a path-anchored diagnostic.
+// suggests the canonical equivalent. The actual rule logic lives in
+// checkNATPrefix; this validator is a thin wrapper that maps each issue
+// to a path-anchored diagnostic.
 type natPrefixCIDRValidator struct{}
 
 func (v natPrefixCIDRValidator) Description(_ context.Context) string {

@@ -237,11 +237,11 @@ func defaultKrbConfigPath() string {
 // Backend returns the lowercase identifier used for tflog field decoration.
 func (b *winrmBackend) Backend() string { return "winrm" }
 
-// Open constructs the masterzen/winrm Client and runs a Healthcheck round-
-// trip so misconfiguration (auth failure, wrong port, untrusted cert)
-// surfaces at provider-Configure time rather than mid-plan during a Read.
-//
-// Idempotent -- subsequent calls return nil if the client is already up.
+// Open constructs the masterzen/winrm Client and runs a Healthcheck
+// round-trip so misconfiguration (auth failure, wrong port, untrusted
+// cert) surfaces at provider-Configure time rather than mid-plan
+// during a Read. Idempotent -- subsequent calls return nil if the
+// client is already up.
 func (b *winrmBackend) Open(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -573,12 +573,11 @@ func buildWinRMStreamFileScript(remotePath string) string {
 // to the underlying writer, breaking a continuous base64 stream into
 // per-line chunks so the WinRM receive script can decode each line
 // independently via ReadLine + FromBase64String, keeping host memory
-// proportional to one line rather than the whole payload.
-//
-// Close emits a trailing newline if the last line is partial. The PS
-// receiver's loop terminates on ReadLine returning $null (EOF), so a
-// missing trailing newline doesn't corrupt the stream -- but emitting
-// it keeps the wire format consistent and tested.
+// proportional to one line rather than the whole payload. Close emits
+// a trailing newline if the last line is partial; the PS receiver's
+// loop terminates on ReadLine returning $null (EOF), so a missing
+// trailing newline doesn't corrupt the stream, but emitting it keeps
+// the wire format consistent and tested.
 type lineWrappedWriter struct {
 	w       io.Writer
 	lineLen int

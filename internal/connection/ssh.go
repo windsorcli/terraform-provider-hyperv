@@ -194,14 +194,13 @@ func NewSSH(opts SSHOptions) (Connection, error) {
 func (b *sshBackend) Backend() string { return "ssh" }
 
 // Open establishes the persistent ssh.Client. Idempotent -- subsequent
-// calls return nil if the client is already up.
-//
-// Both phases honor ctx cancellation: net.Dialer.DialContext makes the TCP
-// dial cancelable; ssh.NewClientConn doesn't accept a context, so we race
-// it against ctx.Done() in a goroutine and close the underlying TCP conn
-// to force the handshake to unblock if ctx fires (otherwise an operator
-// Ctrl+C during `terraform apply`'s provider-configure phase would hang
-// for many seconds while the OS-level read times out).
+// calls return nil if the client is already up. Both phases honor ctx
+// cancellation: net.Dialer.DialContext makes the TCP dial cancelable;
+// ssh.NewClientConn doesn't accept a context, so we race it against
+// ctx.Done() in a goroutine and close the underlying TCP conn to force
+// the handshake to unblock if ctx fires (otherwise an operator Ctrl+C
+// during `terraform apply`'s provider-configure phase would hang for
+// many seconds while the OS-level read times out).
 func (b *sshBackend) Open(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -259,11 +258,9 @@ func (b *sshBackend) Open(ctx context.Context) error {
 }
 
 // Close shuts down the persistent client and stops the keepalive
-// goroutine. Idempotent.
-//
-// No credential bytes to zero here -- they're consumed once in NewSSH
-// (via buildSSHAuthMethods) and never carried onto the backend; see
-// NewSSH for the zero-after-use hygiene path.
+// goroutine. Idempotent. No credential bytes to zero here -- they're
+// consumed once in NewSSH (via buildSSHAuthMethods) and never carried
+// onto the backend; see NewSSH for the zero-after-use hygiene path.
 func (b *sshBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -602,13 +599,11 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 
 // StreamFile copies localPath to remotePath via the SCP-sink primitive.
 // The remote parent directory must already exist; SCP errors if the
-// destination directory is missing. Resources that need parent-dir
+// destination directory is missing, so resources that need parent-dir
 // creation should issue a one-line `New-Item -ItemType Directory -Force`
-// via RunScript before calling this.
-//
-// No wall-clock cap is applied -- transfers run as long as the payload
-// requires. SSH keepalive (alive=false on a stalled session) and ctx
-// cancellation are the remaining bounds.
+// via RunScript before calling this. No wall-clock cap is applied --
+// transfers run as long as the payload requires, bounded only by SSH
+// keepalive (alive=false on a stalled session) and ctx cancellation.
 func (b *sshBackend) StreamFile(ctx context.Context, localPath, remotePath string) error {
 	b.mu.Lock()
 	client := b.client
@@ -698,14 +693,13 @@ func waitForDone(ctx context.Context, done <-chan error, closeFn func()) error {
 
 // buildSSHAuthMethods resolves the auth-method precedence: raw key bytes >
 // key file path > password. Returns an empty slice if nothing is set;
-// the caller turns that into a configuration error.
-//
-// Credential hygiene: opts.PrivateKey, opts.Passphrase, opts.Password,
-// and the locally-read keyBytes are zeroed before this function returns.
-// golang.org/x/crypto/ssh has already copied the values into its
-// auth-method closures by then; the library's copies stay live for the
-// connection's lifetime but our own input slices (which the caller still
-// holds via the shared underlying array) are scrubbed.
+// the caller turns that into a configuration error. Credential hygiene:
+// opts.PrivateKey, opts.Passphrase, opts.Password, and the locally-read
+// keyBytes are zeroed before this function returns -- golang.org/x/crypto/ssh
+// has already copied the values into its auth-method closures by then,
+// and while the library's copies stay live for the connection's
+// lifetime, our own input slices (which the caller still holds via the
+// shared underlying array) are scrubbed.
 func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 	defer zeroBytes(opts.PrivateKey)
 	defer zeroBytes(opts.Passphrase)

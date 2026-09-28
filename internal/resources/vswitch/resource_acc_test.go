@@ -6,7 +6,6 @@ package vswitch_test
 // docs/contributing/acceptance-tests.md: at minimum HYPERV_BACKEND and
 // the per-backend vars (HYPERV_HOST, HYPERV_USERNAME for ssh/winrm)
 // must be loaded, typically via .env.local (task test:acc reads it).
-//
 // Private is the first scenario since it needs no host NIC or
 // management-OS toggle, independent of the bench's network topology.
 

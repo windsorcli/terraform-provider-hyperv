@@ -1,7 +1,6 @@
-// Terraform provider for Hyper-V. Entry point.
-//
-// Real provider behavior lives under internal/provider. This file does only
-// the minimum needed for `terraform init` to discover us: parse a -debug
+// Terraform provider for Hyper-V. This is the entry point; real provider
+// behavior lives under internal/provider. This file does only the
+// minimum needed for `terraform init` to discover us: parse a -debug
 // flag, then hand off to providerserver.Serve.
 package main
 
