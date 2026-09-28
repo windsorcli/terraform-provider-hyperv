@@ -1,16 +1,11 @@
 package vswitch_test
 
 // Acceptance test for the hyperv_virtual_switch data source. Creates a
-// NAT switch via the resource and reads it back through the data source
-// twice -- once with nat_name set (joined read; switch_type=NAT) and
-// once without (bare read; switch_type=Internal, nat_* null). Pins the
-// contract that surfaced from the PR review: without nat_name, the
-// data source silently reports a NAT-typed switch as Internal, which
-// would mis-route any downstream HCL branching on switch_type.
-//
-// Topology-independent: NAT switches don't bind a host NIC, so this
-// test runs against any HYPERV_BACKEND target without bench-specific
-// configuration.
+// NAT switch via the resource and reads it back twice: once with
+// nat_name set (joined read; switch_type=NAT) and once without (bare
+// read; switch_type=Internal, nat_* null), pinning that the bare read
+// doesn't silently mis-report a NAT switch as Internal. Topology-
+// independent: NAT switches don't bind a host NIC.
 
 import (
 	"context"
@@ -45,8 +40,7 @@ func TestAcc_DataVirtualSwitch_NATAugmentedRead(t *testing.T) {
 			}),
 		Steps: []resource.TestStep{
 			{
-				// nat_name supplied: the data source takes the joined
-				// path and reports the NAT-augmented view.
+				// nat_name supplied: the data source takes the joined path and reports the NAT-augmented view.
 				Config: vswitchDataNATConfig(name, natName, true),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -72,10 +66,7 @@ func TestAcc_DataVirtualSwitch_NATAugmentedRead(t *testing.T) {
 				},
 			},
 			{
-				// nat_name omitted: the data source falls back to the
-				// bare VMSwitch read. NAT switches surface as their
-				// underlying Internal type with nat_* fields null --
-				// callers branching on switch_type silently miss them.
+				// nat_name omitted: the bare read surfaces the underlying Internal type with nat_* fields null.
 				Config: vswitchDataNATConfig(name, natName, false),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(

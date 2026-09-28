@@ -1,6 +1,6 @@
-// Package vswitch implements the hyperv_virtual_switch data source --
-// read-only access to an existing switch by name. Mirrors the resource's
-// read shape but writes no state.
+// Package vswitch implements the hyperv_virtual_switch data source:
+// read-only access to an existing switch by name. Mirrors the
+// resource's read fields but writes no state.
 package vswitch
 
 import (
@@ -36,22 +36,13 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 	resp.TypeName = req.ProviderTypeName + "_virtual_switch"
 }
 
-// Schema declares the data source's read shape: name is the lookup key
-// (Required); everything else is read-only Computed pulled from Get-VMSwitch.
-//
-// net_adapter_names is intentionally absent -- the resource preserves it
-// as user intent, but Get-VMSwitch doesn't return the originally-supplied
-// adapter-name list (only NetAdapterInterfaceDescription, which is the
-// teamed adapter's friendly description). Exposing only what the cmdlet
-// actually returns avoids a phantom field that we can't reliably populate.
-//
-// nat_name is Optional. NAT switches in Hyper-V are an Internal VMSwitch
-// + a NetNat instance, joined by interface alias. Without nat_name the
-// data source returns the underlying VMSwitch view with switch_type =
-// "Internal" and empty NAT fields -- callers branching on switch_type
-// would silently miss NAT switches. Set nat_name to opt into the
-// joined read; the result reports switch_type = "NAT" with nat_*
-// populated, mirroring the resource's read path.
+// Schema declares name as the lookup key (Required); everything else
+// is read-only Computed pulled from Get-VMSwitch. net_adapter_names is
+// absent, since Get-VMSwitch doesn't return the originally-supplied
+// adapter list, only the teamed adapter's description. nat_name is
+// Optional: without it a NAT switch reads back as its underlying
+// Internal VMSwitch with empty NAT fields; setting it joins Get-NetNat
+// so switch_type reports "NAT" with nat_* populated.
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
@@ -132,11 +123,11 @@ func (d *DataSource) Configure(_ context.Context, req datasource.ConfigureReques
 	d.client = client
 }
 
-// Read fetches the switch via Get-VMSwitch and writes the typed shape into
-// state. ErrNotFound surfaces as an attribute-anchored diagnostic so the
-// operator sees which `name` value didn't resolve. ErrUnavailable surfaces
-// with transient phrasing so a vmms blip during a plan doesn't read like
-// "the switch is gone".
+// Read fetches the switch via Get-VMSwitch and writes the typed
+// result into state. ErrNotFound surfaces as an attribute-anchored
+// diagnostic so the operator sees which `name` didn't resolve;
+// ErrUnavailable surfaces with transient phrasing so a vmms blip
+// doesn't read like "the switch is gone".
 func (d *DataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	if d.client == nil {
 		resp.Diagnostics.AddError(
@@ -163,10 +154,7 @@ func (d *DataSource) Read(ctx context.Context, req datasource.ReadRequest, resp 
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// Echo nat_name from config back into state so an Optional attribute
-	// round-trips cleanly (the framework would otherwise reject "config
-	// said X but state holds null"). When the user didn't set nat_name,
-	// config.NatName is Null and state stays Null.
+	// Echo nat_name from config back so the Optional attribute round-trips cleanly.
 	state.NatName = config.NatName
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -189,11 +177,10 @@ type Model struct {
 // diagnostics so test cases can assert on the user-facing message without
 // constructing a full ReadRequest.
 //
-// natName is the optional NAT-augmentation knob. When non-empty, the
-// Go-side typed client passes it to get.ps1 which joins Get-NetNat +
-// Get-NetIPAddress with the underlying VMSwitch read. Empty natName
-// returns the bare VMSwitch shape (NAT-typed switches surface as
-// "Internal" with empty nat_* fields).
+// natName is the optional NAT-augmentation knob: non-empty joins
+// Get-NetNat + Get-NetIPAddress with the VMSwitch read; empty returns
+// the bare read, so a NAT-typed switch surfaces as "Internal" with
+// empty nat_* fields.
 func readVSwitch(ctx context.Context, c *hyperv.Client, name, natName string) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -218,10 +205,6 @@ func readVSwitch(ctx context.Context, c *hyperv.Client, name, natName string) (M
 		return Model{}, diags
 	}
 
-	// nat_name in state is set by the caller (Read echoes config.NatName
-	// back) so it round-trips cleanly with the Optional schema attribute.
-	// The other nat_* fields are populated from the host's joined read
-	// when natName triggered the augmentation -- empty otherwise.
 	natPrefix := types.StringNull()
 	if sw.NatInternalAddressPrefix != "" {
 		natPrefix = types.StringValue(sw.NatInternalAddressPrefix)
@@ -231,10 +214,7 @@ func readVSwitch(ctx context.Context, c *hyperv.Client, name, natName string) (M
 		natHost = types.StringValue(sw.NatHostAddress)
 	}
 
-	// NatName is left at its zero value here -- the caller (Read) echoes
-	// config.NatName back into state so the Optional input round-trips
-	// cleanly. readVSwitch's job is to populate everything the host
-	// actually reports.
+	// NatName is left at its zero value; Read echoes config.NatName back into state.
 	return Model{
 		Name:                           types.StringValue(sw.Name),
 		ID:                             types.StringValue(sw.Name),

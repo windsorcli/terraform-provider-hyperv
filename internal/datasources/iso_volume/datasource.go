@@ -1,16 +1,9 @@
-// Package iso_volume implements the data.hyperv_iso_volume data source.
-//
-// Pure runner-side synthesis: builds a deterministic ISO9660 volume from
-// (volume_label, files) inputs and exposes its bytes (base64), sha256,
-// and size. No Hyper-V client interaction; no host-side calls. The
-// caller composes with a placement primitive (most commonly
-// hyperv_image_file in literal_bytes mode, or local_file +
-// hyperv_image_file in local_path mode) to land the bytes on a host.
-//
-// Synthesis is not a Hyper-V concern -- it's a filesystem-image
-// operation. Keeping it separate from host placement makes both pieces
-// single-responsibility and keeps the host-mounted-file lock dance
-// scoped to the placement primitive where it belongs.
+// Package iso_volume implements the data.hyperv_iso_volume data source:
+// pure runner-side synthesis of a deterministic ISO9660 volume from
+// (volume_label, files) inputs, exposed as bytes (base64), sha256, and
+// size. No Hyper-V client interaction. The caller composes with a
+// placement primitive, most commonly hyperv_image_file, to land the
+// bytes on a host.
 package iso_volume //nolint:revive // underscore in package name mirrors the directory.
 
 import (
@@ -154,16 +147,10 @@ type Model struct {
 }
 
 // Read synthesizes the ISO from inputs and writes the four computed
-// attributes to state. Pure runner-side; never reaches the host.
-//
-// The framework defers Read when any required attribute is Unknown
-// (e.g. `volume_label` driven from another resource's not-yet-applied
-// computed attribute), so this function only runs with known inputs.
-// Per-element unknowns inside `files` are handled by the caller's
-// surrounding plan: if a value in the map is Unknown, the framework
-// itself surfaces the data source's outputs as Unknown until apply,
-// so consumers see `(known after apply)` for the bytes/hash and the
-// dependent placement resource's plan defers correctly.
+// attributes to state. Pure runner-side; never reaches the host. The
+// framework defers Read until every required attribute is known, and
+// surfaces the outputs as Unknown itself when a `files` element is
+// Unknown, so dependent resources' plans defer correctly.
 func (d *DataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var cfg Model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)

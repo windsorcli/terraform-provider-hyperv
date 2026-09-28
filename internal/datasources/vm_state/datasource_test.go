@@ -12,8 +12,8 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
-// TestDataSource_Schema pins the lookup key and the four-attribute read
-// shape; any drift here is a user-visible attribute rename.
+// TestDataSource_Schema pins the lookup key and the four-attribute
+// contract; any drift here is a user-visible attribute rename.
 func TestDataSource_Schema(t *testing.T) {
 	t.Parallel()
 
@@ -30,9 +30,7 @@ func TestDataSource_Schema(t *testing.T) {
 			t.Errorf("missing attribute %q", name)
 		}
 	}
-	// Deliberately narrow surface: callers needing the full read shape
-	// (memory, attachments, boot order) use the resource. Pins the
-	// "not on this data source" half of the design.
+	// Deliberately narrow: callers needing memory/attachments/boot order use the resource instead.
 	for _, omit := range []string{"memory", "cpu", "secure_boot", "hard_disk_drive", "boot_order"} {
 		if _, ok := resp.Schema.Attributes[omit]; ok {
 			t.Errorf("attribute %q should NOT be on the data source -- it's resource-only", omit)
@@ -98,9 +96,10 @@ func TestDataSource_Configure_WrongTypeIsClearError(t *testing.T) {
 	}
 }
 
-// TestReadVMState_HappyPath uses the canned Gen 2 fixture. Pins the
-// cmdlet-shape -> tfsdk-attribute mapping for current and ip_addresses.
-// The fixture has no NICs, so ip_addresses is a known empty list.
+// TestReadVMState_HappyPath uses the canned Gen 2 fixture to pin the
+// cmdlet-output -> tfsdk-attribute mapping for current and
+// ip_addresses. The fixture has no NICs, so ip_addresses is a known
+// empty list.
 func TestReadVMState_HappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -162,12 +161,7 @@ func TestReadVMState_FlattenIPAddresses(t *testing.T) {
 	if l := len(state.IPAddresses.Elements()); l != 3 {
 		t.Fatalf("IPAddresses len = %d, want 3", l)
 	}
-	// Order matters -- per-NIC then per-IP within a NIC, NICs in cmdlet
-	// order. A regression that lex-sorts would surface here. Uses
-	// types.String.ValueString() rather than attr.Value.String(): the
-	// former is the public contract for unwrapping a string value;
-	// the latter is debug-display and currently quotes its output,
-	// which couples the test to an undocumented format choice.
+	// ValueString(), not attr.Value.String(): the latter is debug-display and quotes its output.
 	got := make([]string, 0, 3)
 	for _, e := range state.IPAddresses.Elements() {
 		s, ok := e.(types.String)

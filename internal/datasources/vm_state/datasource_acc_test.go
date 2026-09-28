@@ -29,18 +29,12 @@ import (
 // satisfies Hyper-V Server's StartupBytes minimum.
 const vmStateMinMemoryBytes = 256 * 1024 * 1024
 
-// TestAcc_DataVMState_TracksResource pins the data source's read shape
-// against a live VM:
-//
-//  1. Create a VM with state.desired = "Off".  Data source reports
-//     current = "Off", ip_addresses = [].
-//  2. Flip the resource's state.desired to "Running". Data source's
-//     current refreshes to "Running" on the next plan.
-//
-// IP addresses stay empty across both steps -- our acc-test fixtures
-// boot to a UEFI no-boot-device screen, so the guest never reaches
-// the integration-services handshake. The contract being pinned is
-// the round-trip of the field, not a live IP allocation.
+// TestAcc_DataVMState_TracksResource pins the data source's read
+// against a live VM: create with state.desired = "Off" (current =
+// "Off", ip_addresses = []), then flip to "Running" and confirm
+// current refreshes on the next plan. ip_addresses stays empty
+// throughout, since the acc-test fixtures never reach the
+// integration-services handshake; the round-trip is what's pinned.
 func TestAcc_DataVMState_TracksResource(t *testing.T) {
 	name := acctest.RandomName("vm-state-data")
 	client := acctest.NewClient(t)
@@ -96,9 +90,7 @@ func TestAcc_DataVMState_TracksResource(t *testing.T) {
 // mapping breaks against actual cmdlet output (vs the canned
 // JSON envelope the fakeRunner emits).
 func TestAcc_DataVMState_NotFound(t *testing.T) {
-	// RandomName-prefixed lookup so a bench VM can't accidentally
-	// shadow the literal: a real Get-VM hit would mask the regression
-	// path with a confusing "expected error, got none" failure.
+	// RandomName-prefixed so a real bench VM can't shadow the literal and mask the regression as "expected error, got none".
 	missingName := acctest.RandomName("no-such-vm")
 
 	resource.Test(t, resource.TestCase{

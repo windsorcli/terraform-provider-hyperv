@@ -59,9 +59,8 @@ func TestDataSource_Metadata(t *testing.T) {
 	}
 }
 
-// content_base64, sha256, size_bytes, id are Computed and emit the
-// canonical shape iso.Build produces. Pins the data source's wire
-// promise -- byte-identical bytes for byte-identical inputs.
+// content_base64, sha256, size_bytes, id are Computed and emit what
+// iso.Build produces, pinning byte-identical bytes for byte-identical inputs.
 func TestDataSource_Read_HappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -78,11 +77,7 @@ func TestDataSource_Read_HappyPath(t *testing.T) {
 	wantB64 := base64.StdEncoding.EncodeToString(bytesBuilt)
 	wantSize := int64(len(bytesBuilt))
 
-	// Drive Read at the unit level via the helper that does not need
-	// a framework round-trip. The data source's Read body is a thin
-	// wrapper over (filesFromMap + iso.Build + base64/sha encoding);
-	// exercising that pipeline here gives us confidence without the
-	// acc-test machinery.
+	// Drive Read's pipeline (filesFromMap + iso.Build + base64/sha encoding) directly, without a framework round-trip.
 	filesMap, diags := types.MapValueFrom(context.Background(), types.StringType, map[string]string{
 		"meta-data": "instance-id: tfacc-basic\nlocal-hostname: tfacc\n",
 		"user-data": "#cloud-config\nhostname: tfacc\n",
@@ -231,9 +226,9 @@ func TestDataSource_Schema_RequiredVsComputed(t *testing.T) {
 	}
 }
 
-// Belt-and-suspenders: ensure schema.MapAttribute and StringAttribute
-// type assertions hold for the documented attributes. A schema-shape
-// drift (e.g. files becomes a SetAttribute) would surface here.
+// Ensures schema.MapAttribute and StringAttribute type assertions hold
+// for the documented attributes; a drift (e.g. files becomes a
+// SetAttribute) would surface here.
 func TestDataSource_Schema_AttributeTypes(t *testing.T) {
 	t.Parallel()
 

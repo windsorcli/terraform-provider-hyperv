@@ -41,13 +41,12 @@ func (d *DataSource) Metadata(_ context.Context, req datasource.MetadataRequest,
 	resp.TypeName = req.ProviderTypeName + "_vm_state"
 }
 
-// Schema declares the read shape: name is the lookup key (Required);
-// everything else is read-only Computed pulled from Get-VM.
-//
-// The deliberately narrow surface (current + ip_addresses) reflects the
-// data source's purpose: gate downstream HCL on power state. Callers
-// who need the full VM read shape (memory, attachments, boot order)
-// should use the hyperv_vm resource's state.
+// Schema declares name as the lookup key (Required); everything else
+// is read-only Computed pulled from Get-VM. The deliberately narrow
+// surface (current + ip_addresses) reflects the data source's
+// purpose: gate downstream HCL on power state. Callers who need the
+// full VM state (memory, attachments, boot order) should use the
+// hyperv_vm resource's state.
 func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** group on " +
@@ -116,10 +115,10 @@ func (d *DataSource) Configure(_ context.Context, req datasource.ConfigureReques
 	d.client = client
 }
 
-// Read fetches the VM via Get-VM and writes the typed state-only shape into
-// state. ErrNotFound surfaces as an attribute-anchored diagnostic so the
-// operator sees which `name` value didn't resolve. ErrUnavailable surfaces
-// with transient phrasing so a vmms blip during a plan doesn't read like
+// Read fetches the VM via Get-VM and writes the typed state-only view
+// into state. ErrNotFound surfaces as an attribute-anchored diagnostic
+// so the operator sees which `name` didn't resolve; ErrUnavailable
+// surfaces with transient phrasing so a vmms blip doesn't read like
 // "the VM is gone".
 func (d *DataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	if d.client == nil {

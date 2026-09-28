@@ -11,7 +11,7 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
 )
 
-// Schema must expose the lookup key and the cmdlet's read shape; any drift
+// Schema must expose the lookup key and the cmdlet's fields; any drift
 // here is a user-visible attribute rename.
 func TestDataSource_Schema(t *testing.T) {
 	t.Parallel()
@@ -39,8 +39,7 @@ func TestDataSource_Schema(t *testing.T) {
 			t.Errorf("missing attribute %q", name)
 		}
 	}
-	// net_adapter_names is intentionally absent on the data source; the
-	// resource preserves it as user intent but Get-VMSwitch can't reproduce it.
+	// Absent on the data source: Get-VMSwitch can't reproduce it.
 	if _, ok := resp.Schema.Attributes["net_adapter_names"]; ok {
 		t.Error("net_adapter_names should NOT be on the data-source schema -- the cmdlet doesn't return it")
 	}
@@ -103,7 +102,7 @@ func TestDataSource_Configure_WrongTypeIsClearError(t *testing.T) {
 }
 
 // Happy path: canned JSON from the fakeRunner becomes a fully-populated
-// Model. Pins the cmdlet-shape -> tfsdk-attribute mapping.
+// Model. Pins the cmdlet-output -> tfsdk-attribute mapping.
 func TestReadVSwitch_HappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -156,17 +155,14 @@ func TestReadVSwitch_NATAugmentedRead(t *testing.T) {
 	if state.NatHostAddress.ValueString() != "192.168.100.1" {
 		t.Errorf("NatHostAddress = %q", state.NatHostAddress.ValueString())
 	}
-	// readVSwitch leaves NatName at its zero value -- the caller (Read)
-	// echoes config.NatName back into state. Pin that here so a future
-	// refactor that populates NatName from the wire shape doesn't slip
-	// through the round-trip contract.
+	// readVSwitch leaves NatName at its zero value; Read echoes config.NatName back into state.
 	if !state.NatName.IsNull() {
 		t.Errorf("NatName should be null (echoed by Read, not readVSwitch); got %q",
 			state.NatName.ValueString())
 	}
 }
 
-// readVSwitch with empty natName returns the bare VMSwitch shape and
+// readVSwitch with empty natName returns the bare VMSwitch read and
 // leaves nat_* fields null. Locks the "non-NAT switches don't get
 // NAT augmentation" half of the contract.
 func TestReadVSwitch_NoNatNameLeavesNATFieldsNull(t *testing.T) {
