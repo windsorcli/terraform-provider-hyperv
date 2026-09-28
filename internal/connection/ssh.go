@@ -766,6 +766,9 @@ func waitForDone(ctx context.Context, done <-chan error, closeFn func()) error {
 		default:
 		}
 		closeFn()
+		// On a truly dead transport this goroutine leaks until the backend
+		// reconnects -- closing the shared client here instead would abort
+		// every other in-flight RunScript call sharing it.
 		go func() { <-done }()
 		return ctx.Err()
 	}
