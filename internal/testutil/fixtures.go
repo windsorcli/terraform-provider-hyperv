@@ -13,10 +13,11 @@ const VMHostFixtureJSON = `{
 	"VirtualHardDiskPath": "C:\\ProgramData\\Microsoft\\Windows\\Virtual Hard Disks"
 }`
 
-// VMSwitchExternalFixtureJSON is the canonical nine-field shape (six base
-// + three NAT) that vswitch/{get,new,set}.ps1 emit, locked by the Pester
-// contract tests. Single source of truth across the typed-client and
-// resource-layer suites. NAT fields are empty strings on non-NAT switches.
+// VMSwitchExternalFixtureJSON is the canonical nine-field structure
+// (six base + three NAT) that vswitch/{get,new,set}.ps1 emit, locked
+// by the Pester contract tests. Single source of truth across the
+// typed-client and resource-layer suites. NAT fields are empty
+// strings on non-NAT switches.
 const VMSwitchExternalFixtureJSON = `{
 	"Name": "external-switch",
 	"SwitchType": "External",
@@ -31,7 +32,7 @@ const VMSwitchExternalFixtureJSON = `{
 
 // VMSwitchPrivateFixtureJSON is the Private-switch variant -- no NIC
 // description, no AllowManagementOS toggle in practice (the cmdlet ignores
-// it). Useful for resource-layer tests that need a non-External shape.
+// it). Useful for resource-layer tests that need a non-External switch.
 const VMSwitchPrivateFixtureJSON = `{
 	"Name": "private-switch",
 	"SwitchType": "Private",
@@ -44,12 +45,12 @@ const VMSwitchPrivateFixtureJSON = `{
 	"NatHostAddress": ""
 }`
 
-// NatStaticMappingTCPFixtureJSON is the canonical eleven-field shape that
-// nat_static_mapping/{get,new,set}.ps1 emit. Locked by the Pester contract;
-// single source of truth across the typed-client and resource-layer
-// suites. Composite Id encodes (NatName:Protocol:ExternalIP:ExternalPort)
-// with lowercase protocol; the structured Protocol field is uppercase
-// because that's what Get-NetNatStaticMapping reports natively.
+// NatStaticMappingTCPFixtureJSON is the canonical eleven-field
+// structure that nat_static_mapping/{get,new,set}.ps1 emit, locked by
+// the Pester contract. Composite Id encodes
+// (NatName:Protocol:ExternalIP:ExternalPort) with lowercase protocol;
+// the structured Protocol field is uppercase because that's what
+// Get-NetNatStaticMapping reports natively.
 const NatStaticMappingTCPFixtureJSON = `{
 	"Id": "windsor-nat:tcp:0.0.0.0:80",
 	"StaticMappingId": 1,
@@ -68,7 +69,7 @@ const NatStaticMappingTCPFixtureJSON = `{
 // synthesized "NAT" string (not Hyper-V's underlying Internal enum value);
 // NatName / NatInternalAddressPrefix / NatHostAddress are populated. Used
 // by typed-client tests to lock the joined Get-VMSwitch + Get-NetNat +
-// Get-NetIPAddress shape get.ps1 emits when nat_name is supplied.
+// Get-NetIPAddress output get.ps1 emits when nat_name is supplied.
 const VMSwitchNATFixtureJSON = `{
 	"Name": "windsor-nat",
 	"SwitchType": "NAT",
@@ -81,7 +82,7 @@ const VMSwitchNATFixtureJSON = `{
 	"NatHostAddress": "192.168.100.1"
 }`
 
-// ImageFileFixtureJSON is the canonical three-field shape that
+// ImageFileFixtureJSON is the canonical three-field structure that
 // image_file/{get,new}.ps1 emit. SizeBytes is deliberately above 2^31
 // (5 GiB) so int64 round-tripping is exercised -- a default-precision
 // JSON number would land in float64 and lose precision above 2^53, but
@@ -92,13 +93,13 @@ const ImageFileFixtureJSON = `{
 	"Sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 }`
 
-// VHDDynamicFixtureJSON is the canonical eight-field shape vhd/{get,new,set}.ps1
-// emit for a sparse dynamic VHDX. Size is the declared 32 GiB; FileSize is
-// the actual sparse on-disk size after creation (tiny). ParentPath is empty
-// because dynamic disks have no parent. Format is uppercase "VHDX" because
-// that's what Get-VHD's VhdFormat enum's ToString() emits on a real host
-// (verified against Server 2019 in the M4 smoke test); the Pester _test_helpers
-// stub mirrors this.
+// VHDDynamicFixtureJSON is the canonical eight-field structure
+// vhd/{get,new,set}.ps1 emit for a sparse dynamic VHDX. Size is the
+// declared 32 GiB; FileSize is the actual sparse on-disk size after
+// creation (tiny). ParentPath is empty because dynamic disks have no
+// parent. Format is uppercase "VHDX", matching Get-VHD's VhdFormat
+// enum's ToString() as verified against a real Server 2019 host; the
+// Pester _test_helpers stub mirrors this.
 const VHDDynamicFixtureJSON = `{
 	"Path": "C:\\hyperv\\vhds\\my-vm-system.vhdx",
 	"VhdType": "Dynamic",
@@ -124,11 +125,11 @@ const VHDDifferencingFixtureJSON = `{
 	"Attached": false
 }`
 
-// VMGen2FixtureJSON is the canonical shape vm/{get,new,set}.ps1 emit for
+// VMGen2FixtureJSON is the canonical output vm/{get,new,set}.ps1 emit for
 // a small gen 2 VM. SecureBootEnabled is the gen-2-only field -- always
-// non-null here to exercise the *bool unmarshal. HardDiskDrives is the
-// always-array shape the script's @() wrapper guarantees on the wire,
-// so empty here decodes into an empty (non-nil) slice on the Go side.
+// non-null here to exercise the *bool unmarshal. HardDiskDrives is always
+// an array on the wire (the script's @() wrapper guarantees it), so empty
+// here decodes into an empty (non-nil) slice on the Go side.
 const VMGen2FixtureJSON = `{
 	"Name": "sample-vm",
 	"Id": "12345678-1234-5678-1234-567812345678",

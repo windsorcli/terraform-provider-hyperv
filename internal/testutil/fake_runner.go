@@ -12,27 +12,13 @@ import (
 )
 
 // FakeRunner is a deterministic, table-driven implementation of
-// connection.Runner. Tests register canned responses keyed by a script
-// identifier (typically the script's filename or a substring); RunScript
-// looks them up by substring match against the caller's `script` argument.
-//
-// Usage:
-//
-//	fr := testutil.NewFakeRunner().
-//	    On("vswitch/get.ps1").Return(`{"Name":"foo","SwitchType":"Internal"}`, "", 0).
-//	    On("vswitch/new.ps1").Return("", `{"category":"ResourceUnavailable"}`, 1)
-//
-//	client := hyperv.NewClient(fr)  // typed client takes a Runner
-//
-// Substring matching keeps tests resilient to script-content changes while
-// pinning to script identity. The `script` argument the typed client will
-// pass embeds the script's path as a header comment; see hyperv/script.go.
-//
-// StreamFile calls are recorded separately (see StreamCalls) and return
-// whatever error has been registered via SetStreamFileErr (default nil).
-// The fake never touches the local or remote filesystem -- tests asserting
-// "the resource asked to stream foo.iso to C:/iso/foo.iso" should inspect
-// the recorded StreamCall, not look on disk.
+// connection.Runner. Tests register canned responses keyed by a
+// script identifier (typically the script's filename or a
+// substring); RunScript looks them up by substring match against the
+// caller's `script` argument, which embeds the script's path as a
+// header comment (see hyperv/script.go), keeping matches resilient to
+// script-content changes. StreamFile calls are recorded separately
+// (see StreamCalls) rather than touching any real filesystem.
 type FakeRunner struct {
 	mu            sync.Mutex
 	responses     map[string]Response

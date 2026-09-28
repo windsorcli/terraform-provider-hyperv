@@ -132,8 +132,7 @@ func TestFakeRunner_StreamFile_ReturnsConfiguredErr(t *testing.T) {
 	if !errors.Is(err, want) {
 		t.Errorf("err = %v, want %v", err, want)
 	}
-	// The call is still recorded even when an error is returned -- tests
-	// asserting "the resource attempted the stream" need that signal.
+	// The call is still recorded even when an error is returned.
 	if len(fr.StreamCalls()) != 1 {
 		t.Errorf("StreamCalls = %d, want 1", len(fr.StreamCalls()))
 	}
