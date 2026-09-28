@@ -13,17 +13,11 @@ import (
 	pathtype "github.com/windsorcli/terraform-provider-hyperv/internal/types/path"
 )
 
-// priorModelV0 is the tfsdk-bound shape of hyperv_vm state files written under
-// schema version 0 (PR #20, the original "minimal first slice"). v0 was a
-// flat struct: vcpu and memory_bytes as top-level Int64s, state as a
-// top-level computed StringAttribute, and no inline attachment lists. v1
-// (this PR) renames vcpu -> cpu.count, memory_bytes -> memory.startup_bytes,
-// promotes state from a flat string to a {desired, current} nested block,
-// and adds inline hard_disk_drive[]/network_adapter[]/dvd_drive[]/boot_order[]
-// plus ip_addresses. The shape mismatch makes any v0 state file undecodable
-// against the v1 schema; this upgrader bridges the two.
-//
-// Field types here mirror v0 exactly. Tags align with priorSchemaV0.
+// priorModelV0 is the tfsdk-bound structure of hyperv_vm state files
+// written under schema version 0: a flat struct with vcpu and
+// memory_bytes as top-level Int64s, state as a top-level computed
+// StringAttribute, and no inline attachment lists. Field types here
+// mirror v0 exactly; tags align with priorSchemaV0.
 type priorModelV0 struct {
 	ID          types.String `tfsdk:"id"`
 	Name        types.String `tfsdk:"name"`
@@ -57,15 +51,12 @@ func priorSchemaV0() schema.Schema {
 }
 
 // UpgradeState bridges schema versions for hyperv_vm. Each entry maps
-// from a SOURCE version directly to the current (v4) shape; the
-// framework dispatches based on the on-disk version, NOT a chain.
-//
-// Each upgradeNToM helper returns the current Model, so a v0 state
-// file goes v0 -> Model in one hop (the helper handles every shape
-// change between v0 and v4 inline). When a new schema version
-// lands, add a new priorSchemaVX / priorModelVX / upgradeVXToV(X+1)
-// triple here and update the existing helpers to populate any new
-// fields with their defaulted-or-null v4 shape.
+// from a SOURCE version directly to the current schema; the framework
+// dispatches based on the on-disk version, not a chain, so each
+// upgradeNToM helper returns the current Model in one hop. When a new
+// schema version lands, add a new priorSchemaVX / priorModelVX /
+// upgradeVXToV(X+1) triple here and update the existing helpers to
+// populate any new fields.
 func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgrader {
 	return map[int64]resource.StateUpgrader{
 		0: {
@@ -131,28 +122,28 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 	}
 }
 
-// priorStateModelV1 is the v1 shape of the `state` nested block, before
-// shutdown_mode was added. priorModelV1 uses this for its State field
-// so the framework decodes v1 state files cleanly.
+// priorStateModelV1 is the v1 structure of the `state` nested block,
+// before shutdown_mode was added. priorModelV1 uses this for its
+// State field so the framework decodes v1 state files cleanly.
 type priorStateModelV1 struct {
 	Desired types.String `tfsdk:"desired"`
 	Current types.String `tfsdk:"current"`
 }
 
-// priorMemoryModelV1V2 is the shape of the `memory` nested block on v1
-// and v2 (before dynamic / min_bytes / max_bytes were added in v3).
-// Shared between priorModelV1 and priorModelV2.
+// priorMemoryModelV1V2 is the structure of the `memory` nested block
+// on v1 and v2, before dynamic / min_bytes / max_bytes were added in
+// v3. Shared between priorModelV1 and priorModelV2.
 type priorMemoryModelV1V2 struct {
 	StartupBytes types.Int64 `tfsdk:"startup_bytes"`
 }
 
-// priorNetworkAdapterModelV1V2V3 is the NIC shape on v1/v2/v3 -- before
-// ip_addresses was added to network_adapter[] in v4. Shared between
-// priorModelV1, priorModelV2, and priorModelV3 so each version's
-// stored state file decodes against a struct that exactly matches the
-// schema-of-record (extra struct fields against fewer schema attrs is
-// undocumented framework territory; the explicit per-version shape
-// keeps the contract honest).
+// priorNetworkAdapterModelV1V2V3 is the NIC structure on v1/v2/v3,
+// before ip_addresses was added to network_adapter[] in v4. Shared
+// between priorModelV1, priorModelV2, and priorModelV3 so each
+// version's stored state file decodes against a struct that exactly
+// matches the schema of record; extra struct fields against fewer
+// schema attributes is undocumented framework territory, so the
+// explicit per-version structure keeps the contract honest.
 type priorNetworkAdapterModelV1V2V3 struct {
 	Name       types.String `tfsdk:"name"`
 	SwitchName types.String `tfsdk:"switch_name"`
@@ -201,15 +192,11 @@ type priorModelV2 struct {
 	Path            types.String                     `tfsdk:"path"`
 }
 
-// priorSchemaV1 mirrors the v1 schema's structural shape -- attribute
-// names and types only. Defaults / validators / plan modifiers /
-// MarkdownDescription are intentionally omitted because the framework
-// only needs structural information to decode a stored state file.
-//
-// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
-// the v2-only state.shutdown_mode addition. If a future v2 -> v3
-// migration adds another attribute, snapshot the v2 shape here as a
-// new priorSchemaV2.
+// priorSchemaV1 mirrors the v1 schema's attribute names and types
+// only; defaults, validators, plan modifiers, and MarkdownDescription
+// are omitted since the framework only needs structure to decode a
+// stored state file. Keep in sync with resourceSchema(), minus the
+// v2-only state.shutdown_mode addition.
 func priorSchemaV1() schema.Schema {
 	return schema.Schema{
 		Attributes: map[string]schema.Attribute{
@@ -290,13 +277,10 @@ func priorSchemaV1() schema.Schema {
 	}
 }
 
-// priorSchemaV2 mirrors the v2 schema's structural shape: the v1 shape
-// plus the v2-only state.shutdown_mode field. Memory still has only
-// startup_bytes -- dynamic / min_bytes / max_bytes are the v3 addition.
-//
-// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
-// the v3-only memory.{dynamic, min_bytes, max_bytes} additions. Same
-// "structural-only" rule as priorSchemaV1.
+// priorSchemaV2 mirrors the v2 schema: the v1 attributes plus the
+// v2-only state.shutdown_mode field. Memory still has only
+// startup_bytes; dynamic / min_bytes / max_bytes are the v3 addition.
+// Same structure-only rule as priorSchemaV1.
 func priorSchemaV2() schema.Schema {
 	return schema.Schema{
 		Attributes: map[string]schema.Attribute{
@@ -400,13 +384,10 @@ type priorModelV3 struct {
 	Path            types.String                     `tfsdk:"path"`
 }
 
-// priorSchemaV3 mirrors the v3 schema's structural shape: the v2 shape
-// plus the v3 memory.{dynamic, min_bytes, max_bytes} additions.
-// network_adapter[] entries still have only {name, switch_name} --
-// the v4-only ip_addresses field is the lone v3 -> v4 change.
-//
-// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
-// the v4-only network_adapter[].ip_addresses addition.
+// priorSchemaV3 mirrors the v3 schema: the v2 attributes plus the v3
+// memory.{dynamic, min_bytes, max_bytes} additions. network_adapter[]
+// entries still have only {name, switch_name}; ip_addresses is the
+// lone v3 -> v4 change. Keep in sync with resourceSchema().
 func priorSchemaV3() schema.Schema {
 	return schema.Schema{
 		Attributes: map[string]schema.Attribute{
@@ -491,7 +472,7 @@ func priorSchemaV3() schema.Schema {
 	}
 }
 
-// priorNetworkAdapterModelV4 is the NIC shape on v4 -- after
+// priorNetworkAdapterModelV4 is the NIC structure on v4, after
 // ip_addresses landed but before mac_address and vlan_id were added
 // in v5. Used by priorModelV4 so a v4 state file decodes against a
 // struct that exactly matches the v4 schema.
@@ -521,13 +502,10 @@ type priorModelV4 struct {
 	Path            types.String                 `tfsdk:"path"`
 }
 
-// priorSchemaV4 mirrors the v4 schema's structural shape: the v3 shape
-// plus the v4-only network_adapter[].ip_addresses addition. NIC entries
-// still lack mac_address and vlan_id -- those are the v5 additions.
-//
-// Keep in sync with resourceSchema() ATTRIBUTE NAMES AND TYPES, MINUS
-// the v5-only network_adapter[].mac_address and network_adapter[].vlan_id
-// additions.
+// priorSchemaV4 mirrors the v4 schema: the v3 attributes plus the
+// v4-only network_adapter[].ip_addresses addition. NIC entries still
+// lack mac_address and vlan_id, the v5 additions. Keep in sync with
+// resourceSchema().
 func priorSchemaV4() schema.Schema {
 	return schema.Schema{
 		Attributes: map[string]schema.Attribute{
@@ -614,11 +592,9 @@ func priorSchemaV4() schema.Schema {
 }
 
 // upgradeV4ToV5 maps a v4 state struct into the v5 Model. The only
-// shape change is network_adapter[] gaining mac_address and vlan_id.
-// v4 state files don't carry per-NIC MAC or VLAN, so each NIC
-// migrates with both fields null. The next refresh populates them
-// from the host (mac_address only when the NIC has DynamicMacAddressEnabled
-// false; vlan_id only when AccessVlanId > 0).
+// change is network_adapter[] gaining mac_address and vlan_id; v4
+// state files carry neither, so each NIC migrates with both null,
+// and the next refresh populates them from the host.
 func upgradeV4ToV5(ctx context.Context, prior priorModelV4) Model {
 	return Model{
 		ID:              prior.ID,
@@ -680,12 +656,11 @@ func mustBootOrderListFromPrior(ctx context.Context, prior []BootOrderEntryModel
 	return list
 }
 
-// upgradeV3ToV5 maps a v3 state struct into the current Model. The
-// shape changes layered in are network_adapter[].ip_addresses (v4)
-// plus network_adapter[].mac_address and .vlan_id (v5). v3 state
-// files don't carry any of those, so each NIC migrates with an empty
-// ip_addresses list and null mac_address / vlan_id; the next refresh
-// populates from the host. Pure function for direct unit testing.
+// upgradeV3ToV5 maps a v3 state struct into the current Model,
+// layering in network_adapter[].ip_addresses (v4) and .mac_address /
+// .vlan_id (v5). v3 state files carry none of those, so each NIC
+// migrates with an empty ip_addresses list and null mac/vlan; the
+// next refresh populates from the host.
 func upgradeV3ToV5(ctx context.Context, prior priorModelV3) Model {
 	return Model{
 		ID:              prior.ID,
@@ -706,14 +681,11 @@ func upgradeV3ToV5(ctx context.Context, prior priorModelV3) Model {
 }
 
 // upgradeV1ToV2 maps a v1 state struct into the v2 Model. The only
-// shape change is state.shutdown_mode being added; v1 state values
-// migrate with ShutdownMode left null because v1 users never had
-// the option to manage it. The script's wire contract treats absent
-// shutdown_mode as the turn_off behavior (same as v1's implicit
-// behavior), so existing state files come up running the same path
-// without storing a phantom value the user never chose. The user
-// opts into "graceful" by editing the config. Pure function for
-// direct unit testing.
+// change is state.shutdown_mode being added; it migrates null since
+// v1 users never had the option to manage it. The script treats
+// absent shutdown_mode as turn_off (v1's implicit behavior), so
+// existing state runs the same path until the user opts into
+// "graceful" by editing the config.
 func upgradeV1ToV2(ctx context.Context, prior priorModelV1) Model {
 	var state *StateModel
 	if prior.State != nil {
@@ -741,10 +713,10 @@ func upgradeV1ToV2(ctx context.Context, prior priorModelV1) Model {
 	}
 }
 
-// expandPriorNICs maps the v1/v2/v3 NIC shape into v5 NetworkAdapterModel
-// entries by adding empty/null defaults for the v4-and-later fields:
-// ip_addresses (added v4) gets an empty list; mac_address and vlan_id
-// (added v5) get null. The next refresh fills them from the host.
+// expandPriorNICs maps the v1/v2/v3 NIC structure into v5
+// NetworkAdapterModel entries by adding empty/null defaults for the
+// v4-and-later fields: ip_addresses (v4) gets an empty list;
+// mac_address and vlan_id (v5) get null.
 func expandPriorNICs(prior []priorNetworkAdapterModelV1V2V3) []NetworkAdapterModel {
 	out := make([]NetworkAdapterModel, len(prior))
 	for i, n := range prior {
@@ -759,10 +731,10 @@ func expandPriorNICs(prior []priorNetworkAdapterModelV1V2V3) []NetworkAdapterMod
 	return out
 }
 
-// expandPriorNICsV4 maps the v4 NIC shape into v5 NetworkAdapterModel
-// entries by adding null defaults for the v5-only fields (mac_address,
-// vlan_id). IPAddresses carries through from the v4 state since that
-// field already existed there.
+// expandPriorNICsV4 maps the v4 NIC structure into v5
+// NetworkAdapterModel entries by adding null defaults for the
+// v5-only fields (mac_address, vlan_id). IPAddresses carries through
+// unchanged since that field already existed in v4.
 func expandPriorNICsV4(prior []priorNetworkAdapterModelV4) []NetworkAdapterModel {
 	out := make([]NetworkAdapterModel, len(prior))
 	for i, n := range prior {
@@ -777,11 +749,11 @@ func expandPriorNICsV4(prior []priorNetworkAdapterModelV4) []NetworkAdapterModel
 	return out
 }
 
-// expandPriorMemoryV1V2 maps the v1/v2 memory shape into the v3 model.
-// v1/v2 had only StartupBytes; v3 adds dynamic / min_bytes / max_bytes.
-// The new fields land null because pre-v3 users never had a chance to
-// choose values, and the script's wire contract treats absent
-// dynamic_memory as static (matches v1/v2 on-host behavior).
+// expandPriorMemoryV1V2 maps the v1/v2 memory structure into the v3
+// model. v1/v2 had only StartupBytes; v3 adds dynamic / min_bytes /
+// max_bytes, landing null since pre-v3 users never had a chance to
+// choose values, and absent dynamic_memory on the wire matches
+// v1/v2's static on-host behavior.
 func expandPriorMemoryV1V2(prior *priorMemoryModelV1V2) *MemoryModel {
 	if prior == nil {
 		return nil
@@ -795,10 +767,10 @@ func expandPriorMemoryV1V2(prior *priorMemoryModelV1V2) *MemoryModel {
 }
 
 // upgradeV2ToV3 maps a v2 state struct into the v3 Model. The only
-// shape change is memory.{dynamic, min_bytes, max_bytes} being added;
-// v2 state values migrate with the new fields null because v2 users
-// never had a chance to choose values, and absent dynamic_memory on
-// the wire is the same on-host behavior as v2.
+// change is memory.{dynamic, min_bytes, max_bytes} being added; v2
+// state migrates with the new fields null, since v2 users never had
+// a chance to choose values and absent dynamic_memory on the wire
+// matches v2's on-host behavior.
 func upgradeV2ToV3(ctx context.Context, prior priorModelV2) Model {
 	return Model{
 		ID:              prior.ID,
@@ -833,21 +805,14 @@ func upgradeV0ToV1(_ context.Context, prior priorModelV0) Model {
 		Notes:      prior.Notes,
 		Path:       prior.Path,
 
-		// New inline list attributes did not exist at v0. The next
-		// refresh fills them from the host; until then, empty (known)
-		// lists keep the post-upgrade state shape valid against the
-		// v1 schema.
+		// New list attributes didn't exist at v0; empty (known) lists keep post-upgrade state valid against the v1 schema.
 		HardDiskDrives:  types.ListValueMust(HardDiskDriveListElementType, []attr.Value{}),
 		NetworkAdapters: types.ListValueMust(NetworkAdapterListElementType, []attr.Value{}),
 		DvdDrives:       types.ListValueMust(DvdDriveListElementType, []attr.Value{}),
 		BootOrder:       types.ListValueMust(BootOrderEntryListElementType, []attr.Value{}),
 		IPAddresses:     types.ListNull(types.StringType),
 
-		// v0 state was a flat Computed StringAttribute -- users had
-		// no way to manage power state on this resource, so the v1
-		// state block is left null (Optional, "not managed"). The
-		// next refresh repopulates state.current; state.desired stays
-		// null until the user opts in.
+		// v0 state was flat and unmanaged, so the v1 state block is left null until the user opts in.
 		State: nil,
 	}
 }

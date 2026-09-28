@@ -57,20 +57,18 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 	}
 }
 
-// dynamicMemoryBoundsValidator enforces three rules on memory.{dynamic,
-// min_bytes, max_bytes}:
+// dynamicMemoryBoundsValidator enforces three rules on
+// memory.{dynamic, min_bytes, max_bytes}:
 //
-//  1. min_bytes / max_bytes set with dynamic unset or false -> reject.
-//     Set-VMMemory rejects MinimumBytes/MaximumBytes without
-//     DynamicMemoryEnabled=$true; catching at plan time gives a clean
-//     attribute-anchored diagnostic.
-//  2. min_bytes > startup_bytes -> reject. The cmdlet errors anyway,
-//     but plan-time rejection is clearer.
-//  3. max_bytes < startup_bytes -> reject. Same rationale.
+//  1. min_bytes / max_bytes set with dynamic unset or false -> reject
+//     (Set-VMMemory requires DynamicMemoryEnabled=$true for those).
+//  2. min_bytes > startup_bytes -> reject.
+//  3. max_bytes < startup_bytes -> reject.
 //
-// Skips validation when any participating attribute is unknown (deferred
-// dependency). Skips when dynamic is null and min/max are also null --
-// the no-op static path.
+// Skips validation when a participating attribute is unknown, or when
+// dynamic/min/max are all null (the no-op static path).
+//
+// lint:allow-long-comment
 type dynamicMemoryBoundsValidator struct{}
 
 // Description / MarkdownDescription surface in `terraform validate -json`
@@ -211,14 +209,11 @@ func (v secureBootRejectedForGen1Validator) validate(data Model) diag.Diagnostic
 
 // secureBootTemplateRejectedForGen1Validator is the sibling of
 // secureBootRejectedForGen1Validator for the secure_boot_template
-// attribute. Same shape, same one-directional rule -- gen 1 + template
-// set is rejected at plan time, gen 2 + omitted template uses Hyper-V's
-// default. Catching at plan keeps the operator out of the post-apply
-// "Provider produced inconsistent result" path: the script-side
-// Set-VMFirmware guard at new.ps1:97 silently skips on gen 1, the
-// read shape returns empty string, modelFromVM collapses to null, and
-// the framework rejects the planned-string vs returned-null mismatch
-// with a diagnostic that doesn't point at the actual misconfiguration.
+// attribute: gen 1 + template set is rejected at plan time, gen 2 +
+// omitted template uses Hyper-V's default. Catching at plan keeps the
+// operator out of the post-apply "Provider produced inconsistent
+// result" path, since the script-side guard silently skips on gen 1
+// and the read collapses to null.
 type secureBootTemplateRejectedForGen1Validator struct{}
 
 func (v secureBootTemplateRejectedForGen1Validator) Description(_ context.Context) string {
@@ -314,9 +309,9 @@ func (v networkAdapterUniqueNamesValidator) validate(ctx context.Context, data M
 }
 
 // bootOrderRejectedForGen1Validator enforces that boot_order is only
-// valid for gen 2 VMs. Same shape as secureBootRejectedForGen1Validator:
+// valid for gen 2 VMs, mirroring secureBootRejectedForGen1Validator:
 // gen 1 (BIOS) uses Set-VMBios -StartupOrder with category strings, a
-// fundamentally different schema that's deferred to a follow-up.
+// fundamentally different schema deferred to a follow-up.
 type bootOrderRejectedForGen1Validator struct{}
 
 func (v bootOrderRejectedForGen1Validator) Description(_ context.Context) string {
@@ -348,10 +343,7 @@ func (v bootOrderRejectedForGen1Validator) validate(data Model) diag.Diagnostics
 	if data.Generation.ValueInt64() == 2 {
 		return diags
 	}
-	// Skip validation when boot_order is null or unknown (no entries to
-	// reject) and when the list is known-empty (Default applied or user
-	// explicitly set []). Only a non-empty boot_order on gen 1 trips
-	// the rule.
+	// Only a non-empty boot_order on gen 1 trips the rule.
 	if data.BootOrder.IsNull() || data.BootOrder.IsUnknown() {
 		return diags
 	}
@@ -387,8 +379,8 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 	r.client = client
 }
 
-// Create runs new.ps1 with the plan's attributes and writes the post-create
-// read shape back to state.
+// Create runs new.ps1 with the plan's attributes and writes the
+// post-create read back to state.
 func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -402,10 +394,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 
-	// Decode the plan's typed list-shaped attributes before creating
-	// anything on the host. A decode failure here is a schema
-	// programming error, not a user action, but failing before NewVM
-	// keeps it from orphaning a VM Terraform never records in state.
+	// Decode before creating anything, so a schema programming error fails before NewVM can orphan an unrecorded VM.
 	planHdds, hddDiags := plan.HardDiskDriveModels(ctx)
 	resp.Diagnostics.Append(hddDiags...)
 	planNics, nicDiags := plan.NetworkAdapterModels(ctx)
@@ -423,21 +412,13 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		"name":       in.Name,
 		"generation": in.Generation,
 	})
-	// NewVM's script already runs Get-VM internally and returns the
-	// canonical shape, but we're going to refetch after attachments
-	// regardless -- so the discarded return here costs nothing.
+	// NewVM's return is discarded: attachments below force a refetch anyway.
 	if _, err := r.client.NewVM(ctx, in); err != nil {
 		resp.Diagnostics.AddError("Create hyperv_vm failed", err.Error())
 		return
 	}
 
-	// Attach hard disks after the VM exists. Each attachment is a
-	// separate cmdlet on the host (Add-VMHardDiskDrive); errors here
-	// leave the VM created but partially-configured -- next plan will
-	// reconcile the missing attachments. We don't roll back the VM on
-	// attach failure because the user's intent is "have this VM" and
-	// the half-configured state is recoverable; tearing it down would
-	// take us further from desired.
+	// An attach failure leaves the VM partially configured; the next plan reconciles rather than rolling back.
 	for _, h := range planHdds {
 		if err := r.client.AttachHardDisk(ctx, attachInputFor(plan.Name.ValueString(), h)); err != nil {
 			resp.Diagnostics.AddError("Attach hard disk failed", fmt.Sprintf(
@@ -452,9 +433,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	// Attach NICs after the VM exists. Same partial-failure semantics
-	// as HDD attachment -- if attach fails partway through, the next
-	// plan reconciles. We don't tear down the VM on attach failure.
+	// Same partial-failure semantics as HDD attachment above.
 	for _, n := range planNics {
 		if err := r.client.AttachNetworkAdapter(ctx, attachNICInputFor(plan.Name.ValueString(), n)); err != nil {
 			resp.Diagnostics.AddError("Attach network adapter failed", fmt.Sprintf(
@@ -467,10 +446,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	// Attach DVDs. Order rationale (NICs first, DVDs after): pure
-	// convenience; Hyper-V doesn't care which order attachments
-	// happen in. Keeping the order stable keeps tflog output
-	// predictable.
+	// Attachment order (HDD, NIC, DVD) is arbitrary; Hyper-V doesn't care, kept stable for predictable tflog output.
 	for _, d := range planDvds {
 		if err := r.client.AttachDvdDrive(ctx, attachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
 			resp.Diagnostics.AddError("Attach DVD drive failed", fmt.Sprintf(
@@ -485,11 +461,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	// Boot order is set last because each entry must reference an
-	// already-attached device. Skip when the user didn't supply
-	// boot_order (Default empty list applied; we treat empty as "do
-	// not manage") -- the VM keeps Hyper-V's default order in that
-	// case.
+	// Boot order is set last since each entry must reference an already-attached device.
 	if shouldApplyBootOrder(planBoot) {
 		if err := r.client.SetBootOrder(ctx, setBootOrderInputFor(plan.Name.ValueString(), planBoot)); err != nil {
 			resp.Diagnostics.AddError("Set boot order failed", fmt.Sprintf(
@@ -498,11 +470,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
-	// Power transition is the very last step: each device the user
-	// asked for is now attached, boot order is set, and only now does
-	// it make sense to flip the VM on (if the user asked for that).
-	// SetVMState returns the post-transition VM read so we can skip
-	// the trailing GetVM call entirely.
+	// Power transition is last, after every device is attached and boot order is set; SetVMState's return skips a trailing GetVM.
 	var v *hyperv.VM
 	if shouldApplyState(plan.State) {
 		var err error
@@ -518,9 +486,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			return
 		}
 	} else {
-		// User didn't manage state -- pull the post-attachment read
-		// directly so the framework's "inconsistent result after
-		// apply" check sees the actual host shape.
+		// User didn't manage state; pull the post-attachment read directly so the consistency check sees the actual host state.
 		var err error
 		v, err = r.client.GetVM(ctx, plan.Name.ValueString())
 		if err != nil {
@@ -536,7 +502,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Read fetches the current shape via get.ps1 and reconciles state.
+// Read fetches the current state via get.ps1 and reconciles it.
 //
 // ErrNotFound -> RemoveResource so Terraform plans recreate.
 // Other errors -> AddError so a transient fault doesn't silently drop
@@ -593,9 +559,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	// Decode plan and state list-shaped attributes once at this
-	// boundary so every reconciliation block below stays slice-shaped
-	// and doesn't repeat the ElementsAs ceremony.
+	// Decode plan and state lists once here so reconciliation blocks below stay slices and skip the ElementsAs ceremony.
 	planHdds, hddPlanDiags := plan.HardDiskDriveModels(ctx)
 	resp.Diagnostics.Append(hddPlanDiags...)
 	stateHdds, hddStateDiags := state.HardDiskDriveModels(ctx)
@@ -616,17 +580,11 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	// Reconcile hard-disk attachments first. Order rationale: most
-	// attachment changes are SCSI hot-plug (gen 2) which doesn't
-	// require power-off, while scalar mutations (vcpu, memory_bytes,
-	// secure_boot) generally do. Doing attachments first keeps the
-	// "VM must be off for scalar updates" error path from blocking
-	// attachment changes the user could do online.
+	// Attachments go first: most are SCSI hot-plug that needs no power-off, unlike the scalar mutations reconciled later.
 	hddAttach, hddDetach := diffHardDiskDrives(planHdds, stateHdds)
 	for _, h := range hddDetach {
 		if err := r.client.DetachHardDisk(ctx, detachInputFor(plan.Name.ValueString(), h)); err != nil {
-			// "Slot already empty" is ErrNotFound; treat as no-op
-			// since the desired state (empty) is met.
+			// "Slot already empty" is ErrNotFound; the desired state (empty) is already met.
 			if errors.Is(err, hyperv.ErrNotFound) {
 				continue
 			}
@@ -654,9 +612,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
-	// NIC reconciliation: same shape as HDD, keyed on Name. Detach
-	// first (frees the name) then attach so a switch swap at the
-	// same name resolves cleanly.
+	// NIC reconciliation, keyed on Name: detach first (frees the name) so a switch swap at the same name resolves cleanly.
 	nicAttach, nicDetach := diffNetworkAdapters(planNics, stateNics)
 	for _, n := range nicDetach {
 		if err := r.client.DetachNetworkAdapter(ctx, detachNICInputFor(plan.Name.ValueString(), n)); err != nil {
@@ -678,12 +634,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
-	// DVD reconciliation: same slot-tuple shape as HDD. ISO swap at
-	// the same slot resolves as detach + attach (Hyper-V has a Set-
-	// VMDvdDrive cmdlet for in-place swap but the detach+attach path
-	// is uniform with HDD reconciliation and works equally well
-	// when the VM is Off, which it generally must be for scalar
-	// updates anyway).
+	// DVD reconciliation, same slot tuple as HDD: an ISO swap resolves as detach + attach, uniform with HDD handling.
 	dvdAttach, dvdDetach := diffDvdDrives(planDvds, stateDvds)
 	for _, d := range dvdDetach {
 		if err := r.client.DetachDvdDrive(ctx, detachDvdInputFor(plan.Name.ValueString(), d)); err != nil {
@@ -714,13 +665,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
-	// Boot order reconciliation. Compare plan vs state; on any
-	// difference, replace the whole list. The cmdlet semantics are
-	// wholesale-replacement so there's no per-entry diff to do --
-	// either we skip the call or we send the full planned list.
-	// Order matters: boot_order follows attachment reconciliation so
-	// every device a planned entry references is guaranteed to
-	// exist on the host before we resolve it.
+	// boot_order follows attachment reconciliation so every referenced device already exists; the cmdlet replaces wholesale.
 	bootOrderChanged := shouldApplyBootOrder(planBoot) &&
 		!bootOrderSemanticEquals(planBoot, stateBoot)
 	if bootOrderChanged {
@@ -731,24 +676,12 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		}
 	}
 
-	// State transition is the very last reconciliation -- VM-must-be-Off
-	// scalar updates (cpu/memory/secure_boot) need to happen FIRST,
-	// then we transition to Running if the user wants. Going the
-	// other direction (Running -> Off) is also fine here because the
-	// scalar updates don't fire when the VM is already Off.
+	// State transition is last: VM-must-be-Off scalar updates need to happen before transitioning to Running.
 	stateChanged := shouldApplyState(plan.State) && stateDesiredChanged(plan.State, state.State)
 
 	in := buildSetInput(plan, state)
 	if !setInputHasChanges(in) {
-		// No scalar change. Always fall through to a fresh GetVM rather
-		// than short-circuiting with `Set(ctx, &plan)` -- when the user
-		// has a `state` block in config, plan.State.Current is Unknown
-		// (Computed without UseStateForUnknown by design, because current
-		// reflects live host state and can drift). Writing that Unknown
-		// to state would trip the framework's "provider produced unknown
-		// value in state" error on every second-and-beyond apply.
-		// One SSH round-trip per genuine no-op is the cost of a stable
-		// apply.
+		// No scalar change, but still refetch rather than `Set(ctx, &plan)`: plan.State.Current is Unknown and would trip the framework's unknown-value check.
 		var v *hyperv.VM
 		if stateChanged {
 			var err error
@@ -785,8 +718,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	// Scalar update succeeded; if the user also wants a state
-	// transition this turn, do it now and re-read.
+	// Scalar update succeeded; apply a requested state transition now, in the same turn.
 	if stateChanged {
 		v, err = r.client.SetVMState(ctx, hyperv.SetVMStateInput{
 			Name:         plan.Name.ValueString(),
@@ -860,8 +792,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 // from the JSON entirely (matches the Pester contract that treats absent
 // and null as equivalent but standardizes on absent).
 func buildNewInput(plan Model) hyperv.NewVMInput {
-	// CPU and Memory are Required nested blocks (model.go), so the inner
-	// fields are guaranteed populated here -- no IsNull guard needed.
+	// CPU and Memory are Required nested blocks, so their inner fields are guaranteed populated here.
 	in := hyperv.NewVMInput{
 		Name:        plan.Name.ValueString(),
 		Generation:  int(plan.Generation.ValueInt64()),
@@ -931,20 +862,7 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		v := plan.Memory.MaxBytes.ValueInt64()
 		in.MaxMemoryBytes = &v
 	}
-	// If ANY memory field changed but the dynamic flag itself didn't,
-	// still forward the current dynamic flag so the script has full
-	// context. Two reasons:
-	//
-	//   1. Set-VMMemory's Min/Max parameters require DynamicMemoryEnabled
-	//      to be specified in the same call when min/max are present;
-	//      the script gates Min/Max forwarding on the flag being in the
-	//      splatting hashtable.
-	//   2. When ONLY startup_bytes changes on a VM the user has set
-	//      `dynamic = true`, omitting dynamic_memory from the wire would
-	//      let set.ps1's "lock static" elseif fire (DynamicMemoryEnabled
-	//      = $false), silently flipping the VM to static memory. Keep
-	//      the dynamic flag pinned through any memory mutation so the
-	//      script keeps the user's mode.
+	// Pin the current dynamic flag through any memory mutation: omitting it would let set.ps1's static-lock branch fire and silently flip the VM to static memory.
 	if in.DynamicMemory == nil &&
 		(in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil || in.MemoryBytes != nil) &&
 		!plan.Memory.Dynamic.IsNull() && !plan.Memory.Dynamic.IsUnknown() {
@@ -964,13 +882,10 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 	return in
 }
 
-// memoryModelFromVM builds the nested MemoryModel from the VM read
-// shape. The script's read-result emits null Min/Max when
-// MemoryDynamicEnabled is false (the host's stored values aren't in
-// effect); we translate the *int64 wire representation back to
-// types.Int64Null() / types.Int64Value(). Dynamic is types.BoolValue
-// directly (the wire field is a non-pointer bool so it always has a
-// known value -- false means "not enabled" rather than "unknown").
+// memoryModelFromVM builds the nested MemoryModel from a VM read. The
+// script emits null Min/Max when MemoryDynamicEnabled is false, since
+// the host's stored values aren't in effect; Dynamic is a direct
+// types.BoolValue since the wire field is a non-pointer bool.
 func memoryModelFromVM(v *hyperv.VM) *MemoryModel {
 	m := &MemoryModel{
 		StartupBytes: types.Int64Value(v.MemoryStartupBytes),
@@ -987,28 +902,16 @@ func memoryModelFromVM(v *hyperv.VM) *MemoryModel {
 	return m
 }
 
-// modelFromVM hydrates a Model from a typed VM DTO. Two collapse rules:
-//
-//   - SecureBootEnabled=null on the wire (gen 1) maps to types.BoolNull()
-//     so the schema's Optional+Computed semantics work on gen 1 (user
-//     omits, state has null, plan stays clean).
-//   - Empty Notes collapses to types.StringNull() so omitting `notes` from
-//     config is stable across plans. Setting `notes = ""` to explicitly
-//     clear would loop; document this in schema.go.
-//
-// HardDiskDrives is a List on the schema side. The cmdlet's emission
-// order isn't guaranteed to match user HCL order, and a List's diff
-// is index-based -- so we sort canonically by slot tuple before
-// storing. A user who writes disks in slot-tuple order in HCL will
-// see no diff against state; a user who doesn't will see a one-time
-// rewrite to canonical order on first apply.
+// modelFromVM hydrates a Model from a typed VM DTO. SecureBootEnabled
+// null on the wire (gen 1) maps to types.BoolNull so Optional+Computed
+// semantics work on gen 1; empty Notes collapses to types.StringNull
+// so omitting `notes` stays stable across plans.
 func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 	secureBoot := types.BoolNull()
 	if v.SecureBootEnabled != nil {
 		secureBoot = types.BoolValue(*v.SecureBootEnabled)
 	}
-	// Empty string from the wire (gen 1 path) collapses to null so omit-
-	// from-config is a stable no-diff state. Gen 2 always populates.
+	// Empty string from the wire (gen 1) collapses to null so omit-from-config is a stable no-diff state.
 	secureBootTemplate := types.StringNull()
 	if v.SecureBootTemplate != "" {
 		secureBootTemplate = types.StringValue(v.SecureBootTemplate)
@@ -1018,8 +921,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		notes = types.StringNull()
 	}
 
-	// Sort the cmdlet's HDD output by slot tuple. Stable order means
-	// state and plan compare cleanly across refresh cycles.
+	// Sort by slot tuple: a List's diff is index-based, so canonical order keeps state and plan comparing cleanly.
 	sortedHDDs := make([]hyperv.HardDiskDrive, len(v.HardDiskDrives))
 	copy(sortedHDDs, v.HardDiskDrives)
 	sort.Slice(sortedHDDs, func(i, j int) bool {
@@ -1053,27 +955,17 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		for _, ip := range n.IPAddresses {
 			ipElems = append(ipElems, types.StringValue(ip))
 		}
-		// MacAddress: the script emits an empty string when Hyper-V
-		// has DynamicMacAddressEnabled=true (auto-assigned MAC). State
-		// stores null in that case so a refresh doesn't surface a
-		// phantom diff against an empty config. A non-empty value
-		// means a user-set static MAC; the mac.MAC custom type handles
-		// the colon-vs-hyphen-vs-unsigned representation folding so a
-		// user-written "AA:BB:CC:DD:EE:01" rounds-trips against the
-		// "AABBCCDDEE01" form Hyper-V echoes back on Read.
+		// Empty string means Hyper-V auto-assigned the MAC; stores null so a refresh doesn't diff against an empty config.
 		macVal := mactype.NewMACNull()
 		if n.MacAddress != "" {
 			macVal = mactype.NewMACValue(n.MacAddress)
 		}
-		// VlanID: the script emits 0 for untagged NICs. Same null-on-
-		// untagged rationale -- unset config matches unset state.
+		// The script emits 0 for untagged NICs; null keeps unset config matching unset state.
 		vlan := types.Int64Null()
 		if n.VlanID > 0 {
 			vlan = types.Int64Value(int64(n.VlanID))
 		}
-		// types.ListValueMust panics only on element-type mismatch, and
-		// we just built every element as types.String. Same pattern the
-		// schema uses for its empty-list defaults.
+		// types.ListValueMust panics only on element-type mismatch, and every element here is types.String.
 		nics = append(nics, NetworkAdapterModel{
 			Name:        types.StringValue(n.Name),
 			SwitchName:  types.StringValue(n.SwitchName),
@@ -1083,7 +975,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		})
 	}
 
-	// DVDs sorted by slot tuple, same shape as HDDs.
+	// DVDs sorted by slot tuple, same structure as HDDs.
 	sortedDvds := make([]hyperv.DvdDrive, len(v.DvdDrives))
 	copy(sortedDvds, v.DvdDrives)
 	sort.Slice(sortedDvds, func(i, j int) bool {
@@ -1097,9 +989,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 	})
 	dvds := make([]DvdDriveModel, 0, len(sortedDvds))
 	for _, d := range sortedDvds {
-		// Empty Path on the wire (the cmdlet's "" for a drive with no
-		// medium loaded) collapses to schema-null IsoPath so the
-		// user's plan that omits iso_path matches state cleanly.
+		// Empty Path (no medium loaded) collapses to null so a plan that omits iso_path matches state cleanly.
 		isoPath := pathtype.NewPathValue(d.Path)
 		if d.Path == "" {
 			isoPath = pathtype.NewPathNull()
@@ -1112,15 +1002,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		})
 	}
 
-	// Boot order is stored in wire order (Hyper-V's actual sequence) --
-	// it's an ordered list, not slot-keyed, so no canonical sort.
-	// Per-entry shape is type-discriminated: hard_disk_drive / dvd_drive
-	// entries surface the slot tuple and null Name; network_adapter
-	// entries surface Name and null slot fields. The Go side decodes
-	// the same five-field BootOrderEntry struct regardless of type --
-	// fields not relevant to a given Type just hold zero values on the
-	// wire, which we collapse to schema-null here so plan-vs-state
-	// equality has a single source of truth.
+	// Stored in wire order (Hyper-V's actual sequence, not slot-keyed); zero-value fields not relevant to Type collapse to null here.
 	bootOrder := make([]BootOrderEntryModel, 0, len(v.BootOrder))
 	for _, e := range v.BootOrder {
 		entry := BootOrderEntryModel{
@@ -1141,14 +1023,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		bootOrder = append(bootOrder, entry)
 	}
 
-	// DvdDrives and BootOrder are types.List on the schema side -- the
-	// framework's reflect path can't represent "the whole list is
-	// unknown" in a Go []Struct, so the Model fields are typed as
-	// types.List and the wire shape is rebuilt here from the
-	// canonical-sorted slices. ListValueFrom can fail only on element-
-	// type mismatch (a programming error, not a runtime fault); panic
-	// rather than threading diags through the modelFromVM signature
-	// since callers can't recover from a static-type bug at runtime.
+	// ListValueFrom can fail only on element-type mismatch, a programming error the caller can't recover from; panic instead of threading diags.
 	hddList, hddDiags := HardDiskDriveListFromSlice(ctx, hdds)
 	if hddDiags.HasError() {
 		panic(fmt.Sprintf("HardDiskDriveListFromSlice: %v", hddDiags))
@@ -1186,16 +1061,10 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 }
 
 // reconcileBootOrderInState wraps reconcileBootOrderState with the
-// types.List <-> []BootOrderEntryModel boilerplate so each Create/
-// Read/Update site can keep one line of plumbing. Decodes the prior
-// list (caller-supplied) and the just-built model's BootOrder, hands
-// the two slices to reconcileBootOrderState, and re-encodes the
-// reconciled slice back into m.BootOrder.
-//
-// Returns whatever decode/encode diags fire so callers append to
-// resp.Diagnostics. Programming errors aside, decode of a known list
-// of objects with matching attr-types doesn't fail; the diag plumbing
-// is for completeness rather than expected-failure paths.
+// types.List <-> []BootOrderEntryModel boilerplate, decoding prior and
+// the just-built model's BootOrder, reconciling, and re-encoding back
+// into m.BootOrder. Returns decode/encode diags for callers to append;
+// a known list with matching attr-types doesn't actually fail here.
 func reconcileBootOrderInState(ctx context.Context, m *Model, prior types.List) diag.Diagnostics {
 	var diags diag.Diagnostics
 
@@ -1270,9 +1139,7 @@ func diffHardDiskDrives(plan, state []HardDiskDriveModel) (toAttach, toDetach []
 			toAttach = append(toAttach, planH)
 			continue
 		}
-		// Same slot: compare path under the custom type's
-		// semantic-equals so slash-style differences don't
-		// trigger a spurious detach+attach.
+		// Compare path under semantic-equals so slash-style differences don't trigger a spurious detach+attach.
 		eq, _ := planH.Path.StringSemanticEquals(context.Background(), stateH.Path)
 		if !eq {
 			toDetach = append(toDetach, stateH)
@@ -1339,19 +1206,7 @@ func diffNetworkAdapters(plan, state []NetworkAdapterModel) (toAttach, toDetach 
 			toAttach = append(toAttach, planN)
 			continue
 		}
-		// Same name: if any of switch_name / mac_address / vlan_id
-		// differ, detach + attach. Hyper-V doesn't expose a single
-		// in-place "change everything" cmdlet, and the existing
-		// switch_name path already accepts the brief NIC-down window
-		// during scalar updates -- the same trade-off carries over to
-		// the new fields.
-		//
-		// MAC address comparison uses mactype.Normalize so a config-
-		// vs-state representation difference (user wrote
-		// "AA:BB:CC:DD:EE:01", state stores Hyper-V's "AABBCCDDEE01")
-		// doesn't trigger a spurious detach+reattach when something
-		// else on the VM actually changed. SwitchName / VlanID stay on
-		// strict Equal -- those have no representation ambiguity.
+		// mactype.Normalize avoids a spurious detach+reattach from MAC representation differences alone.
 		macsDiffer := mactype.Normalize(planN.MacAddress.ValueString()) !=
 			mactype.Normalize(stateN.MacAddress.ValueString())
 		if planN.MacAddress.IsNull() != stateN.MacAddress.IsNull() {
@@ -1441,8 +1296,7 @@ func diffDvdDrives(plan, state []DvdDriveModel) (toAttach, toDetach []DvdDriveMo
 			toAttach = append(toAttach, planD)
 			continue
 		}
-		// Same slot: compare iso_path. Null/null is equal (both empty
-		// drives). Otherwise, semantic-equals on the path.
+		// Null/null is equal (both empty drives); otherwise compare via semantic-equals on the path.
 		planNull := planD.IsoPath.IsNull() || planD.IsoPath.IsUnknown()
 		stateNull := stateD.IsoPath.IsNull() || stateD.IsoPath.IsUnknown()
 		if planNull && stateNull {
@@ -1504,18 +1358,11 @@ func detachDvdInputFor(vmName string, d DvdDriveModel) hyperv.DetachDvdDriveInpu
 	}
 }
 
-// shouldApplyBootOrder decides whether the user has actually requested
-// boot-order management on this apply. The schema is Optional+Computed
-// with a Default empty list, so the planner gives us:
-//
-//   - empty slice (default) -- user omitted boot_order; we leave
-//     Hyper-V's default in place (don't call Set-VMFirmware
-//     -BootOrder, which can't be set to empty anyway).
-//   - non-empty slice -- user explicitly listed entries; apply them.
-//
-// Drift handling (manual reorder on the host) bubbles through the
-// regular plan-vs-state compare in Update; this helper's job is only
-// to gate the cmdlet call on having something to set.
+// shouldApplyBootOrder decides whether the user has actually
+// requested boot-order management: the schema is Optional+Computed
+// with a Default empty list, so an empty slice means "not managed"
+// and Set-VMFirmware isn't called. Drift handling happens elsewhere,
+// in Update's regular plan-vs-state compare.
 func shouldApplyBootOrder(entries []BootOrderEntryModel) bool {
 	return len(entries) > 0
 }
@@ -1537,16 +1384,10 @@ func shouldApplyState(s *StateModel) bool {
 }
 
 // stateDesiredChanged returns true when the planned Desired differs
-// from the host's actual Current state -- i.e., when SetVMState
-// actually needs to fire. Treats null Desired (user didn't manage)
-// as "no change". Used both to gate the cmdlet call and to keep the
-// same-shape short-circuit in Update accurate.
-//
-// Plan vs state Current isn't just an equality check: the user might
-// have written `Off` while the VM is in a transient `Stopping`
-// state from a prior interrupted apply. In that case the next
-// SetVMState('Off') is a no-op for the cmdlet and a fresh GetVM
-// confirms the steady state.
+// from the host's actual Current, meaning SetVMState needs to fire;
+// null Desired (unmanaged) counts as no change. A transient state
+// like `Stopping` from an interrupted apply still resolves cleanly:
+// SetVMState is a no-op for the cmdlet and a fresh GetVM settles it.
 func stateDesiredChanged(planState, stateState *StateModel) bool {
 	if planState == nil || planState.Desired.IsNull() || planState.Desired.IsUnknown() {
 		return false
@@ -1558,24 +1399,16 @@ func stateDesiredChanged(planState, stateState *StateModel) bool {
 }
 
 // reconcileMemoryBlock picks what to write to Model.Memory after a
-// Create / Update / Read, parallel to reconcileStateBlock. Three-rule
-// shape:
+// Create / Update / Read, parallel to reconcileStateBlock:
 //
-//   - StartupBytes always comes from the host -- it's the post-apply
-//     truth (cmdlet may have applied the value verbatim, but reading
-//     back is the safe source).
-//   - Dynamic / MinBytes / MaxBytes default to the host's value, BUT
-//     when the user writes the attribute explicitly as null in config,
-//     prefer null. This mirrors the shutdown_mode escape hatch from
-//     PR #33: "writing null means stop managing this attribute, even
-//     if the host has a concrete value." Without this rule, a user
-//     who writes `dynamic = null` after `dynamic = true` would see a
-//     "Provider produced inconsistent result after apply" diagnostic
-//     because plan = null but state = true (host's actual).
-//   - Plan modifiers (UseStateForUnknown) handle the omit case
-//     transparently before this function runs, so an unknown plan
-//     value here means "Create with omitted attribute and no prior
-//     state to fall back on" -- the host's value is the right answer.
+//   - StartupBytes always comes from the host, the post-apply truth.
+//   - Dynamic / MinBytes / MaxBytes default to the host's value, but
+//     an explicit null in config wins, so "stop managing this
+//     attribute" survives even when the host still has a value.
+//   - An unknown plan value means Create with the attribute omitted
+//     and no prior state, so the host's value is the right answer.
+//
+// lint:allow-long-comment
 func reconcileMemoryBlock(planMem, hostMem *MemoryModel) *MemoryModel {
 	if hostMem == nil {
 		return planMem
@@ -1602,38 +1435,27 @@ func reconcileMemoryBlock(planMem, hostMem *MemoryModel) *MemoryModel {
 }
 
 // reconcileStateBlock picks what to write to Model.State after a
-// Create / Update / Read, mirroring reconcileBootOrderState's two-rule
-// shape. The framework would otherwise complain about plan/state
-// shape mismatches when the user omits the block entirely:
+// Create / Update / Read, mirroring reconcileBootOrderState:
 //
 //   - User omitted `state` (planState == nil): collapse hostState to
-//     nil so plan == state == null. Drift detection on power state is
-//     forgone in exchange.
-//   - User set `state.desired`: keep hostState's Current and overwrite
-//     Desired with what the user wrote (Optional attribute -- state
-//     value must match config value).
-//   - User wrote `state = {}` (planState non-nil, Desired null): keep
-//     Current from host, Desired stays null on both sides.
+//     nil so plan == state == null, forgoing power-state drift detection.
+//   - User set `state.desired`: keep hostState's Current, overwrite
+//     Desired with what the user wrote.
+//   - User wrote `state = {}`: keep Current from host, Desired stays
+//     null on both sides.
+//
+// lint:allow-long-comment
 func reconcileStateBlock(planState, hostState *StateModel) *StateModel {
 	if planState == nil {
 		return nil
 	}
-	// shutdown_mode is config-only -- the host has no notion of it.
-	// On Create with the attribute omitted, the framework leaves
-	// planState.ShutdownMode unknown (Optional+Computed +
-	// UseStateForUnknown, no prior state to fall back to). Resolve
-	// unknown to null at write-time so the framework's "must be known
-	// after apply" check passes; null encodes the "user didn't manage"
-	// semantic, and on the next Update UseStateForUnknown sees null in
-	// state and preserves whatever the user writes (or doesn't).
+	// shutdown_mode is config-only; resolve unknown (Create, attribute omitted) to null so the "must be known" check passes.
 	mode := planState.ShutdownMode
 	if mode.IsUnknown() {
 		mode = types.StringNull()
 	}
 	if hostState == nil {
-		// Defensive: Read might have produced a nil state even though
-		// plan has one. Synthesize a current-null block so the plan
-		// shape matches.
+		// Defensive: synthesize a current-null block so it matches the plan even if Read produced no state.
 		return &StateModel{
 			Desired:      planState.Desired,
 			Current:      types.StringNull(),
@@ -1648,33 +1470,23 @@ func reconcileStateBlock(planState, hostState *StateModel) *StateModel {
 }
 
 // reconcileBootOrderState picks what BootOrder to write to state after
-// Create / Update / Read. Three-rule semantics:
+// Create / Update / Read:
 //
-//   - When the user is not managing (plan empty -- Default applied),
-//     state matches plan (also empty). Without this collapse, the
-//     framework's "inconsistent result after apply" check would fire:
-//     plan = [] but the host always has a non-empty order, so the
-//     fresh modelFromVM result would mismatch.
-//   - When managing, state gets the host's entries filtered to those
-//     that semantically match an entry the user planned. Filtering by
-//     plan (not by raw host) avoids the "Provider produced inconsistent
-//     result after apply" diagnostic on `.boot_order: new element N has
-//     appeared`: Hyper-V's Get-VMFirmware can return Drive/Network
-//     entries we never set (auto-enumerated boot devices, residual
-//     entries the cmdlet didn't drop, or entries added by the guest
-//     firmware on first boot).
+//   - Not managing (plan empty): state matches plan (also empty),
+//     since the host always has a non-empty order and a fresh
+//     modelFromVM result would otherwise mismatch.
+//   - Managing: state gets the host's entries filtered to those that
+//     semantically match a planned entry, since Get-VMFirmware can
+//     return auto-enumerated or residual entries the config never set.
 //   - Host order is preserved among the kept entries, so a manual
-//     reorder on the host surfaces as drift on the next refresh; a
-//     user-listed entry that vanished from the host gets dropped from
-//     state (next plan re-adds it from config).
+//     reorder surfaces as drift; a planned entry missing from the
+//     host is dropped from state and re-added by the next apply.
 //
-// The cost: when not managing, terraform refresh / plan don't surface
-// the actual host order. Acceptable trade-off given the cmdlet
-// requires a non-empty list anyway, and most users either manage
-// boot_order or don't care about it. Out-of-band entries the user
-// didn't declare are also ignored -- they're not the user's to
-// manage and conflating them with state would re-introduce the
-// inconsistent-result failure.
+// Cost: while not managing, refresh/plan don't surface the actual
+// host order; accepted since the cmdlet requires a non-empty list
+// regardless.
+//
+// lint:allow-long-comment
 func reconcileBootOrderState(planBootOrder, hostBootOrder []BootOrderEntryModel) []BootOrderEntryModel {
 	if !shouldApplyBootOrder(planBootOrder) {
 		return planBootOrder
@@ -1692,18 +1504,12 @@ func reconcileBootOrderState(planBootOrder, hostBootOrder []BootOrderEntryModel)
 }
 
 // setBootOrderInputFor projects the planned BootOrder list into the
-// wire shape the script expects. The Type discriminator decides which
-// fields are meaningful:
-//
-//   - hard_disk_drive / dvd_drive: controller_type / number / location.
-//     ControllerType defaults to SCSI when null/unknown (mirrors how
-//     attachDvdInputFor / attachHddInputFor handle the same default).
-//   - network_adapter: name only.
-//
-// Unused fields are emitted as zero values; the script's switch on
-// type ignores them. The wire JSON is the same regardless of source
-// shape -- the script + Go-side decode round-trip via the unified
-// SetBootOrderEntryInput struct.
+// wire structure the script expects. The Type discriminator decides
+// which fields are meaningful: hard_disk_drive / dvd_drive carry
+// controller_type / number / location (ControllerType defaults to
+// SCSI when null/unknown, mirroring attachHddInputFor); network_adapter
+// carries name only. Unused fields are emitted as zero values, which
+// the script's switch on type ignores.
 func setBootOrderInputFor(vmName string, entries []BootOrderEntryModel) hyperv.SetBootOrderInput {
 	out := make([]hyperv.SetBootOrderEntryInput, 0, len(entries))
 	for _, e := range entries {
@@ -1731,10 +1537,10 @@ func setBootOrderInputFor(vmName string, entries []BootOrderEntryModel) hyperv.S
 }
 
 // bootOrderSemanticEquals compares plan vs state element-wise, taking
-// the Type-driven shape into account: HDD/DVD entries match on the
+// the Type discriminator into account: HDD/DVD entries match on the
 // slot tuple (treating null/unknown ControllerType as the SCSI
-// default); NIC entries match on Name. Order matters -- this is the
-// boot SEQUENCE, not a set.
+// default); NIC entries match on Name. Order matters, since this is
+// the boot SEQUENCE, not a set.
 //
 // Returns true when no Set-VMFirmware -BootOrder call is needed.
 // Conservatively returns false on any unknown values so the apply

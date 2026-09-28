@@ -1,24 +1,10 @@
 package vm_test
 
-// Acceptance tests for hyperv_vm. Two scenarios in this initial cut,
-// matching M4 progress so far:
-//
-//   - TestAcc_VM_basic: minimal VM (cpu + memory + notes). Proves the
-//     cpu/memory nested-block reshape works against the real bench.
-//   - TestAcc_VM_withHardDisk: VM + chained hyperv_vhd. Proves the
-//     inline hard_disk_drive set, with the slot-tuple-keyed Update
-//     reconciliation, works against real Hyper-V.
-//
-// Future commits in feat/vm-completion add acc coverage as each
-// attachment type ships: NIC (TestAcc_VM_withNetworkAdapter), DVD
-// (TestAcc_VM_withDvdDrive), state (TestAcc_VM_powerOn), and finally
-// the Flow B end-to-end test that composes everything.
-//
-// Bench notes: VM creation uses Hyper-V's default storage path
-// (Get-VMHost.VirtualMachinePath -- typically C:\ProgramData\
-// Microsoft\Windows\Hyper-V\Virtual Machines), so no path env var is
-// needed for the VM resource itself. The VHD chain test uses
-// HYPERV_TEST_VHD_DIR.
+// Acceptance tests for hyperv_vm, covering the scalar attributes and
+// each attachment type (hard disk, DVD, NIC, boot order) against a
+// real bench. VM creation uses Hyper-V's default storage path
+// (Get-VMHost.VirtualMachinePath), so no path env var is needed for
+// the VM resource itself; the hard-disk tests use HYPERV_TEST_VHD_DIR.
 
 import (
 	"context"
@@ -100,8 +86,7 @@ func TestAcc_VM_basic(t *testing.T) {
 						tfjsonpath.New("notes"),
 						knownvalue.StringExact("updated notes"),
 					),
-					// Name immutable (RequiresReplace); confirm it
-					// survived the update unchanged.
+					// Name immutable (RequiresReplace); confirm it survived the update unchanged.
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
 						tfjsonpath.New("name"),
@@ -114,29 +99,18 @@ func TestAcc_VM_basic(t *testing.T) {
 				ImportState:       true,
 				ImportStateId:     name,
 				ImportStateVerify: true,
-				// Computed `state` is "Off" right after creation; on
-				// import the cmdlet returns the same value. No need
-				// to ImportStateVerifyIgnore here.
+				// Computed `state` is "Off" right after creation; import returns the same value, so no ImportStateVerifyIgnore is needed.
 			},
 		},
 	})
 }
 
 // TestAcc_VM_withDvdDrive exercises the inline dvd_drive list across
-// the three transitions that matter:
-//
-//  1. Attach a DVD drive with an ISO loaded.
-//  2. Eject the ISO (drive stays at the same slot, iso_path goes from
-//     set to null) -- the Talos / OpenBSD "remove install media after
-//     install" pattern.
-//  3. Remove the DVD drive entirely.
-//
-// Reads HYPERV_TEST_ISO_FILE for the ISO path. Hyper-V's
-// Add-VMDvdDrive validates the file extension is .iso (a .txt
-// fixture is rejected with "The specified path for the drive is not
-// valid"), but doesn't validate ISO contents -- a 0-byte
-// fixture.iso suffices for the attach/detach lifecycle. A real boot
-// test that needs a valid ISO is for a future Flow A/C acc test.
+// three transitions: attach a DVD with an ISO loaded, eject the ISO
+// at the same slot (iso_path goes from set to null, the "remove
+// install media after install" pattern), then remove the drive
+// entirely. Add-VMDvdDrive validates the file extension but not ISO
+// contents, so a 0-byte HYPERV_TEST_ISO_FILE fixture suffices.
 func TestAcc_VM_withDvdDrive(t *testing.T) {
 	isoFile := acctest.RequireEnv(t, "HYPERV_TEST_ISO_FILE")
 	name := acctest.RandomName("vm-dvd")
@@ -201,7 +175,7 @@ func TestAcc_VM_withDvdDrive(t *testing.T) {
 	})
 }
 
-// dvdBlock is the input shape for vmWithDvdConfig.
+// dvdBlock is the input structure for vmWithDvdConfig.
 type dvdBlock struct {
 	IsoPath  string // empty string = empty drive (omits iso_path key)
 	Number   int
@@ -269,13 +243,7 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("name"),
 						knownvalue.StringExact("primary"),
 					),
-					// Per-NIC ip_addresses is Computed and populated by Read.
-					// The bench's test fixtures boot to a UEFI no-boot-device
-					// screen, so no integration services run and the list is
-					// empty -- the assertion pins the framework contract
-					// (known empty list, not null/unknown) regardless. A
-					// future bench with real-guest fixtures would need to
-					// relax this to ListSizeAtLeast(0) or similar.
+					// The bench's fixtures boot to a no-boot-device screen, so ip_addresses is a known empty list, not null/unknown.
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
 						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("ip_addresses"),
@@ -298,9 +266,7 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 						tfjsonpath.New("network_adapter"),
 						knownvalue.ListSizeExact(2),
 					),
-					// ip_addresses populated as known empty list on each
-					// NIC -- pin both slots so a regression in the flatten
-					// loop doesn't slip through on the multi-NIC path.
+					// Pin both slots so a regression in the flatten loop doesn't slip through on the multi-NIC path.
 					statecheck.ExpectKnownValue(
 						"hyperv_vm.test",
 						tfjsonpath.New("network_adapter").AtSliceIndex(0).AtMapKey("ip_addresses"),
@@ -314,9 +280,7 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: remove the original NIC, keep the second.
-				// Tests detach-without-affecting-the-survivor, the
-				// harder reconciliation case.
+				// Step 3: remove the original NIC, keep the second (the harder detach-without-affecting-the-survivor case).
 				Config: vmWithNICConfig(name, []nicBlock{
 					{Name: "secondary", SwitchRef: "hyperv_virtual_switch.secondary"},
 				}, []switchBlock{
@@ -339,41 +303,20 @@ func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 	})
 }
 
-// TestAcc_VM_withNetworkAdapter_VlanAndMac pins the v5-only NIC fields
-// across the three user-facing transitions:
-//
-//  1. Create the NIC with mac_address = "AA:BB:CC:DD:EE:01" and
-//     vlan_id = 100. State asserts that the user's written MAC form
-//     (colon-separated) round-trips through the mac.Type custom
-//     string semantic-equality unchanged -- Hyper-V echoes back
-//     unsigned-12-hex ("AABBCCDDEE01"), but the framework recognizes
-//     it as semantically equal to the planned colon form and keeps
-//     the user's value in state. State also asserts the integer
-//     VLAN ID surfaces as-written.
-//  2. Change both attributes to new values (different MAC, different
-//     VLAN). diffNetworkAdapters sees both fields change and triggers
-//     detach + reattach; the plancheck asserts the action is
-//     classified as in-place Update, not destroy-and-recreate.
-//  3. Revert both attributes to dynamic / untagged via the explicit
-//     `attr = null` form. Both schema attributes are Optional-only
-//     (no Computed), so the framework requires plan to track config
-//     exactly. Both `attr = null` and omitting the line entirely
-//     produce a null planned value that surfaces as a diff against
-//     the prior state; the test pins `= null` because it's the more
-//     explicit form. State after this step asserts both fields are
-//     null again, matching what a never-set NIC looks like.
+// TestAcc_VM_withNetworkAdapter_VlanAndMac pins mac_address and
+// vlan_id across three transitions: create with a static MAC and a
+// VLAN, asserting the user's colon-separated MAC form is kept in
+// state via semantic-equality against Hyper-V's unsigned-12-hex echo;
+// change both to new values, asserting the plan classifies it as an
+// in-place Update rather than a destroy-and-recreate; then revert
+// both to `= null`, asserting state returns to a never-set NIC.
 func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 	name := acctest.RandomName("vm-nic-vlan")
 	switchName := acctest.RandomName("nic-sw-vlan")
 	client := acctest.NewClient(t)
 
 	staticMAC := "AA:BB:CC:DD:EE:01"
-	// The mac.Type custom string type preserves the USER'S written
-	// form in state -- only equality comparisons normalize. So even
-	// though Hyper-V's Get-VMNetworkAdapter echoes back unsigned-12-hex
-	// ("AABBCCDDEE01"), the framework keeps the planned (user-written)
-	// value when it semantic-equals the post-apply value. Asserting
-	// the user's form pins this contract.
+	// mac.Type keeps the user's written form in state; only equality comparisons normalize against Hyper-V's echoed form.
 	staticMACStored := staticMAC
 
 	resource.Test(t, resource.TestCase{
@@ -404,16 +347,7 @@ func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 				},
 			},
 			{
-				// Step 2: change both attributes to new values.
-				// Detach + reattach happens because
-				// diffNetworkAdapters sees both fields change.
-				//
-				// The plancheck pin asserts the change is classified
-				// as an in-place Update, not a destroy-and-recreate.
-				// A regression flipping mac_address or vlan_id to
-				// RequiresReplace would silently roll the whole VM,
-				// and the post-apply state checks would still pass
-				// against the fresh resource.
+				// Step 2: change both attributes; diffNetworkAdapters detaches + reattaches, and the plancheck pins it as Update.
 				Config: vmWithNICVlanMacConfig(name, switchName,
 					nicWithVlanMacBlock{
 						Name:       "primary",
@@ -443,14 +377,7 @@ func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: revert both attributes to their unset
-				// (dynamic MAC / untagged) state via `= null`.
-				// Removing the lines from config alone wouldn't
-				// surface a change because Optional+Computed copies
-				// state into plan; only an explicit null tells the
-				// framework "I want this cleared". Both fields land
-				// at null in state again, matching a never-set NIC.
-				// The plancheck pins this as an in-place Update.
+				// Step 3: `= null` reverts both attributes; omitting the lines instead would let Optional+Computed keep the prior value.
 				Config: vmWithNICVlanMacConfig(name, switchName,
 					nicWithVlanMacBlock{
 						Name:           "primary",
@@ -483,7 +410,7 @@ func TestAcc_VM_withNetworkAdapter_VlanAndMac(t *testing.T) {
 	})
 }
 
-// nicWithVlanMacBlock is the shape vmWithNICVlanMacConfig consumes.
+// nicWithVlanMacBlock is the input structure vmWithNICVlanMacConfig consumes.
 // MacAddress empty / VlanID zero means "omit the attribute" entirely;
 // MacAddressNull / VlanIDNull true renders the attribute as the
 // literal `null` (which is how a user explicitly reverts an
@@ -501,8 +428,8 @@ type nicWithVlanMacBlock struct {
 
 // vmWithNICVlanMacConfig renders a single-NIC + single-switch config
 // with optional mac_address and vlan_id. Distinct from
-// vmWithNICConfig because that helper is shared with the basic NIC
-// test and has a different shape (multiple NICs, no per-NIC extras).
+// vmWithNICConfig, which is shared with the basic NIC test and
+// supports multiple NICs but no per-NIC extras.
 func vmWithNICVlanMacConfig(vmName, switchName string, n nicWithVlanMacBlock) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `
@@ -575,26 +502,17 @@ resource "hyperv_vm" "test" {
 }
 
 // TestAcc_VM_withHardDisk chains a hyperv_vhd to a hyperv_vm via the
-// inline hard_disk_drive set. Exercises the slot-tuple-keyed Update
-// reconciliation by:
-//
-//  1. Creating with one disk at SCSI 0:0.
-//  2. Updating to add a second disk at SCSI 0:1 (tests "attach
-//     additional slot, leave existing slot alone").
-//  3. Updating to remove the original disk at 0:0 (tests "detach
-//     existing slot, leave new slot alone").
-//
-// Each step asserts the count of HDDs in state. CheckDestroy verifies
-// the VM is gone (which cascades attachment removal); the VHD files
-// are removed by their own resource's Destroy.
+// inline hard_disk_drive set, exercising slot-tuple-keyed Update
+// reconciliation: create with one disk at SCSI 0:0, add a second at
+// 0:1, then remove the original and keep 0:1. CheckDestroy verifies
+// the VM is gone; the VHD files are removed by their own resource's
+// Destroy.
 func TestAcc_VM_withHardDisk(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
 	name := acctest.RandomName("vm-hdd")
 	client := acctest.NewClient(t)
 
-	// Forward-slash form throughout to exercise pathtype.Path's
-	// semantic-equals across the whole chain (vhd path -> hard_disk_drive
-	// path on the vm).
+	// Forward-slash form throughout exercises pathtype.Path's semantic-equals across the vhd -> hard_disk_drive chain.
 	vhdRootPath := toForwardSlash(joinHostPath(dir, name+"-root.vhdx"))
 	vhdDataPath := toForwardSlash(joinHostPath(dir, name+"-data.vhdx"))
 
@@ -636,10 +554,7 @@ func TestAcc_VM_withHardDisk(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: remove the disk at SCSI 0:0, keep 0:1.
-				// Tests detach-the-original-but-not-the-second, which
-				// is the harder reconciliation case (a naive impl
-				// might detach both and re-attach the survivor).
+				// Step 3: remove the disk at SCSI 0:0, keep 0:1 (a naive impl might detach both and re-attach the survivor).
 				Config: vmWithHardDiskConfig(name, []hardDiskBlock{
 					{Path: vhdDataPath, Number: 0, Location: 1, Source: "hyperv_vhd.data"},
 				}, []vhdBlock{
@@ -657,20 +572,11 @@ func TestAcc_VM_withHardDisk(t *testing.T) {
 	})
 }
 
-// TestAcc_VM_withBootOrder exercises the gen-2 boot_order feature
-// against the bench. Models the "Talos / OpenBSD install" flow: boot
-// from ISO once, install the OS to disk, reorder to boot from disk,
-// then eject the install media.
-//
-//  1. Create with a DVD (ISO loaded), a HDD, and boot_order = [dvd, hdd].
-//     This is the "first boot from install media" config.
-//  2. Update boot_order to [hdd, dvd] -- "post-install, boot from disk first."
-//  3. Update to remove the DVD entirely and boot_order = [hdd].
-//     This is the "install media ejected, steady state" config.
-//
-// boot_order is wholesale-replacement on the wire (Set-VMFirmware
-// -BootOrder takes the full list), so each step's transition is one
-// round-trip and the assertions just verify the resulting list shape.
+// TestAcc_VM_withBootOrder exercises the gen-2 boot_order feature,
+// modeling an install flow: create with boot_order = [dvd, hdd] (boot
+// from install media), reorder to [hdd, dvd] (post-install), then
+// remove the DVD and shrink to [hdd] (steady state). boot_order is
+// wholesale-replacement on the wire, so each step is one round-trip.
 func TestAcc_VM_withBootOrder(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
 	isoFile := acctest.RequireEnv(t, "HYPERV_TEST_ISO_FILE")
@@ -710,8 +616,7 @@ func TestAcc_VM_withBootOrder(t *testing.T) {
 				},
 			},
 			{
-				// Step 2: post-install reorder. Same attachments, just
-				// flipped boot_order.
+				// Step 2: post-install reorder; same attachments, just flipped boot_order.
 				Config: vmWithBootOrderConfig(name, vhdPath, &isoPath, []bootOrderBlock{
 					{Type: "hard_disk_drive", Number: 0, Location: 0},
 					{Type: "dvd_drive", Number: 0, Location: 1},
@@ -730,10 +635,7 @@ func TestAcc_VM_withBootOrder(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: eject install media. DVD removed from the
-				// dvd_drive list and the boot_order entry that
-				// referenced it goes too. Tests that detach +
-				// boot_order shrink in the same apply works.
+				// Step 3: DVD removed from dvd_drive and its boot_order entry both, in the same apply.
 				Config: vmWithBootOrderConfig(name, vhdPath, nil, []bootOrderBlock{
 					{Type: "hard_disk_drive", Number: 0, Location: 0},
 				}),
@@ -756,8 +658,8 @@ func TestAcc_VM_withBootOrder(t *testing.T) {
 
 // bootOrderBlock is the test-side input for a single boot_order entry.
 // Only HDD/DVD entries (slot-tuple) are exercised here; NIC entries
-// follow the same wire shape but their bench setup needs a switch +
-// network adapter, which is covered by TestAcc_VM_withNetworkAdapter.
+// follow the same wire structure but their bench setup needs a switch
+// + network adapter, covered by TestAcc_VM_withNetworkAdapter.
 type bootOrderBlock struct {
 	Type     string // "hard_disk_drive" | "dvd_drive" | "network_adapter"
 	Number   int
@@ -811,27 +713,12 @@ resource "hyperv_vm" "test" {
 	return b.String()
 }
 
-// TestAcc_VM_withState exercises the inline state block: Off -> Running
-// -> Off toggle, plus a refresh that confirms state.current re-reads
-// the host's actual state and the top-level ip_addresses Computed
-// list surfaces (empty here because an attachment-less VM reaches
-// Running but never gets past the UEFI no-boot-device screen, so
-// integration services never come up).
-//
-// Three steps:
-//
-//  1. Create with state.desired = "Off". Asserts the VM lands at
-//     Off and ip_addresses is the empty list.
-//  2. Update to state.desired = "Running". Asserts state.current
-//     transitions to Running.
-//  3. Update to state.desired = "Off". Asserts the hard-power-off
-//     transition completes.
-//
-// No attachments on the test VM: a 0-byte fixture.iso fails the
-// cmdlet's "ISO can be opened" check at Start-VM (corrupt-attachment
-// error), and a real bootable image isn't worth committing to the
-// test bench. Gen 2 + UEFI is happy to boot a no-attachment VM --
-// it shows the firmware no-boot-device screen but reaches Running.
+// TestAcc_VM_withState exercises the inline state block through an
+// Off -> Running -> Off toggle, asserting state.current re-reads the
+// host's actual state at each step. The test VM has no attachments:
+// a 0-byte fixture.iso fails Start-VM's "ISO can be opened" check, but
+// gen 2 + UEFI happily reaches Running with no boot device, which
+// also means ip_addresses stays an empty list throughout.
 func TestAcc_VM_withState(t *testing.T) {
 	name := acctest.RandomName("vm-state")
 	client := acctest.NewClient(t)
@@ -842,9 +729,7 @@ func TestAcc_VM_withState(t *testing.T) {
 		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
 		Steps: []resource.TestStep{
 			{
-				// Step 1: Off (matches Hyper-V's default for a new VM
-				// but exercised explicitly so refresh sees the state
-				// block populated rather than null).
+				// Step 1: Off, exercised explicitly so refresh sees the state block populated rather than null.
 				Config: vmWithStateConfig(name, "Off"),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -860,8 +745,7 @@ func TestAcc_VM_withState(t *testing.T) {
 				},
 			},
 			{
-				// Step 2: power on. The VM hits the UEFI no-boot-device
-				// screen but stays Running.
+				// Step 2: power on; the VM hits the UEFI no-boot-device screen but stays Running.
 				Config: vmWithStateConfig(name, "Running"),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -877,8 +761,7 @@ func TestAcc_VM_withState(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: hard power-off. Verifies the destroy-style
-				// transition works as a configured Update too.
+				// Step 3: hard power-off, verifying the destroy-style transition also works as a configured Update.
 				Config: vmWithStateConfig(name, "Off"),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -908,8 +791,8 @@ resource "hyperv_vm" "test" {
 `, vmName, vmMinimumMemoryBytes, desired)
 }
 
-// vmBasicConfig is the minimum-shape HCL for a no-attachment hyperv_vm.
-// Generation 2, 2 vcpus, 256 MiB memory.
+// vmBasicConfig is the minimal HCL for a no-attachment hyperv_vm:
+// generation 2, 2 vcpus, 256 MiB memory.
 func vmBasicConfig(name, notes string) string {
 	return fmt.Sprintf(`
 resource "hyperv_vm" "test" {
@@ -982,25 +865,13 @@ func toForwardSlash(p string) string {
 	return strings.ReplaceAll(p, `\`, `/`)
 }
 
-// TestAcc_VM_shutdownModeRoundTrip exercises state.shutdown_mode
-// configuration round-trip without actually firing the graceful path.
-// The graceful path requires Hyper-V integration services running in
-// the guest -- our acc-test fixtures (no-OS VMs) would hang Stop-VM
-// indefinitely. Pester locks the script's dispatch; this test pins
-// the schema-layer plumbing: Default, UseStateForUnknown, Optional+
-// Computed semantics, and reconcileStateBlock carrying the value
-// through.
-//
-// Three steps:
-//
-//  1. Create with state.desired = "Off" only. Asserts shutdown_mode
-//     stays null -- omit means "don't manage" (the script defaults
-//     to turn_off internally on absent input; nothing lands in
-//     state to leak into Hyper-V or surface a phantom diff).
-//  2. Update to add shutdown_mode = "graceful" (still desired = Off,
-//     so no power transition fires). Asserts the value round-trips
-//     into state.
-//  3. Update back to shutdown_mode = "turn_off". Asserts the flip.
+// TestAcc_VM_shutdownModeRoundTrip pins the schema-layer plumbing for
+// state.shutdown_mode (Default, UseStateForUnknown, Optional+Computed,
+// and reconcileStateBlock) without ever firing the graceful path,
+// since that needs guest integration services our no-OS acc fixtures
+// don't have: create with desired = "Off" only (shutdown_mode stays
+// null), add shutdown_mode = "graceful" while desired stays Off (no
+// power transition fires), then flip to "turn_off".
 func TestAcc_VM_shutdownModeRoundTrip(t *testing.T) {
 	name := acctest.RandomName("vm-shutdown")
 	client := acctest.NewClient(t)
@@ -1011,9 +882,7 @@ func TestAcc_VM_shutdownModeRoundTrip(t *testing.T) {
 		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
 		Steps: []resource.TestStep{
 			{
-				// Step 1: shutdown_mode omitted -- "don't manage"
-				// semantics. The script treats absent as turn_off;
-				// state stores null.
+				// Step 1: shutdown_mode omitted; the script treats absent as turn_off, and state stores null.
 				Config: vmShutdownModeConfig(name, "Off", ""),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1024,10 +893,7 @@ func TestAcc_VM_shutdownModeRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 2: explicit graceful. No power transition (desired
-				// is already Off), so set-state.ps1 doesn't fire and the
-				// dangerous graceful Stop-VM never runs against a no-OS
-				// guest.
+				// Step 2: explicit graceful, but desired stays Off, so set-state.ps1 never runs the graceful Stop-VM.
 				Config: vmShutdownModeConfig(name, "Off", "graceful"),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1038,8 +904,7 @@ func TestAcc_VM_shutdownModeRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 3: flip back. Confirms shutdown_mode is mutable
-				// without RequiresReplace.
+				// Step 3: flip back, confirming shutdown_mode is mutable without RequiresReplace.
 				Config: vmShutdownModeConfig(name, "Off", "turn_off"),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1076,23 +941,11 @@ resource "hyperv_vm" "test" {
 }
 
 // TestAcc_VM_dynamicMemoryRoundTrip exercises memory.{dynamic,
-// min_bytes, max_bytes} round-trip against a real Hyper-V host:
-//
-//  1. Create with static memory only (dynamic omitted). State has
-//     dynamic=false (host's actual reading), min_bytes/max_bytes null.
-//  2. Flip to dynamic = true with explicit min/max bounds. State
-//     reflects the cmdlet-applied values verbatim.
-//  3. Update min_bytes upward (still inside startup<=max). Confirms
-//     in-place mutability without RequiresReplace.
-//  4. Flip back to static (dynamic = false). State drops to
-//     dynamic=false; null min/max again because the read-back gates
-//     them on dynamic=true.
-//
-// The VM stays Off throughout; Hyper-V applies dynamic memory config
-// even on an Off VM, so the cmdlet path is exercised without booting
-// a guest. (The actual ACPI-driven memory rebalance only happens when
-// the guest is Running with integration services -- but the schema/
-// wire/cmdlet path is all we need to validate here.)
+// min_bytes, max_bytes} against a real Hyper-V host: create with
+// static memory only, flip to dynamic with explicit bounds, bump
+// startup_bytes and then min_bytes in place, then flip back to
+// static. The VM stays Off throughout; Hyper-V applies dynamic memory
+// config even on an Off VM, so the cmdlet path needs no guest boot.
 func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 	name := acctest.RandomName("vm-dynmem")
 	client := acctest.NewClient(t)
@@ -1103,8 +956,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
 		Steps: []resource.TestStep{
 			{
-				// Step 1: static memory, dynamic omitted -> state shows
-				// dynamic=false (read from host) and null min/max.
+				// Step 1: dynamic omitted -> state shows dynamic=false (read from host) and null min/max.
 				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "", 0, 0),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1125,9 +977,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 2: opt in to dynamic memory with explicit bounds.
-				// startup_bytes (256 MiB) must fall inside [min, max] --
-				// 128 MiB / 512 MiB brackets it.
+				// Step 2: opt in to dynamic memory; 128/512 MiB brackets the 256 MiB startup_bytes.
 				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "true", 134217728, 536870912),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1148,13 +998,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 3 (regression for #36 review): bump startup_bytes
-				// only (256 -> 384 MiB) on a dynamic-enabled VM, leaving
-				// dynamic / min / max unchanged. Without buildSetInput's
-				// MemoryBytes co-forwarding guard, the script-side "lock
-				// static" elseif would fire (DynamicMemoryEnabled = $false)
-				// and silently flip the VM to static memory; the next plan
-				// would detect drift back. dynamic must stay true.
+				// Bump startup_bytes only on a dynamic VM; without buildSetInput's co-forwarding guard this would silently flip to static.
 				Config: vmDynamicMemoryConfig(name, 402653184, "true", 134217728, 536870912),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1170,8 +1014,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 4: bump min_bytes (still <= startup_bytes). Pins
-				// in-place mutation without RequiresReplace.
+				// Step 4: bump min_bytes (still <= startup_bytes), pinning in-place mutation without RequiresReplace.
 				Config: vmDynamicMemoryConfig(name, 402653184, "true", 209715200, 536870912),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1182,10 +1025,7 @@ func TestAcc_VM_dynamicMemoryRoundTrip(t *testing.T) {
 				},
 			},
 			{
-				// Step 5: flip dynamic = false. min/max go null on
-				// read-back (the host still stores them but they're not
-				// in effect, and the script's wire emission gates them
-				// on dynamic=true).
+				// Step 5: flip dynamic = false; min/max go null since the script's wire emission gates them on dynamic=true.
 				Config: vmDynamicMemoryConfig(name, vmMinimumMemoryBytes, "false", 0, 0),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
@@ -1267,11 +1107,7 @@ func TestAcc_VM_hardDiskDriveAndNetworkAdapterDrivenByVariable(t *testing.T) {
 				},
 			},
 			{
-				// Empty object -> both optional fields resolve to null,
-				// exercising the conditional's null branch the first
-				// step never takes. Read still reports "no attachments"
-				// as an empty collection, not null -- same as every
-				// other test in this file.
+				// Empty object exercises the conditional's null branch; Read still reports "no attachments" as empty, not null.
 				Config: vmHardDiskAndNetworkAdapterDrivenByVariableConfig(name, diskPath, switchName),
 				ConfigVariables: config.Variables{
 					"vm": config.ObjectVariable(map[string]config.Variable{}),
@@ -1383,9 +1219,7 @@ func TestAcc_VM_checkpointAvhdxResolvesToBaseDisk(t *testing.T) {
 				RefreshState: true,
 			},
 			{
-				// Merge the checkpoint back before resource.Test's own
-				// final destroy runs -- t.Cleanup fires only after this
-				// call returns, by which point the VM is already gone.
+				// Merge the checkpoint back before resource.Test's final destroy, since t.Cleanup fires after the VM is already gone.
 				PreConfig: func() { removeVMCheckpoints(t, client, name) },
 				Config:    hdConfig,
 			},

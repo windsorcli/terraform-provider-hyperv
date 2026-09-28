@@ -17,7 +17,7 @@ import (
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
-// package-qualified name contains `keyword`. Same helper shape as the
+// package-qualified name contains `keyword`. Same helper as the
 // vswitch / image_file / vhd resource tests use.
 func hasPlanModifier[M any](mods []M, keyword string) bool {
 	for _, pm := range mods {
@@ -102,8 +102,7 @@ func TestResource_Schema_CPUAndMemoryAreInPlaceMutable(t *testing.T) {
 		if !ok {
 			t.Fatalf("%q is not a SingleNestedAttribute (got %T)", tc.block, resp.Schema.Attributes[tc.block])
 		}
-		// Block-level RequiresReplace would propagate through the whole
-		// thing, so check it doesn't carry one either.
+		// Block-level RequiresReplace would propagate through the whole thing, so check it doesn't carry one either.
 		if hasPlanModifier(blockAttr.PlanModifiers, "RequiresReplace") {
 			t.Errorf("%q (block) must NOT carry RequiresReplace", tc.block)
 		}
@@ -142,11 +141,7 @@ func TestResource_Schema_UseStateForUnknownOnComputedAttrs(t *testing.T) {
 	checkString("id")
 	checkString("notes")
 	checkString("path")
-	// `state` is intentionally NOT in this list -- the nested
-	// `state.current` Computed attribute deliberately omits
-	// UseStateForUnknown so plan vs apply doesn't lock in a stale
-	// value across desired-state transitions. See its
-	// MarkdownDescription for the trade-off.
+	// `state` is intentionally excluded: state.current omits UseStateForUnknown on purpose (see its MarkdownDescription).
 
 	if boolAttr, ok := resp.Schema.Attributes["secure_boot"].(schema.BoolAttribute); ok {
 		if !hasPlanModifier(boolAttr.PlanModifiers, "UseStateForUnknown") {
@@ -337,8 +332,8 @@ func TestSecureBootValidator(t *testing.T) {
 
 // TestSecureBootTemplateValidator exercises the sibling rule for the
 // secure_boot_template attribute: gen 1 + template-set is rejected.
-// Same shape as TestSecureBootValidator -- catches the misconfig at
-// plan time before it becomes a "Provider produced inconsistent
+// Same structure as TestSecureBootValidator, catching the misconfig
+// at plan time before it becomes a "Provider produced inconsistent
 // result after apply" error.
 func TestSecureBootTemplateValidator(t *testing.T) {
 	t.Parallel()
@@ -443,7 +438,7 @@ func TestMacAddressRegex(t *testing.T) {
 	}
 }
 
-// assertValidatorDiags is the shared assertion shape for validator-table
+// assertValidatorDiags is the shared assertion for validator-table
 // tests. Verifies presence/absence of an error and, when expected, that
 // the error is anchored to the right attribute path via the
 // DiagnosticWithPath interface (matches Terraform's plan-output highlight
@@ -560,11 +555,7 @@ func TestBuildSetInput_OnlyChangedFieldsForwarded(t *testing.T) {
 func TestBuildSetInput_GenerationSourcedFromState(t *testing.T) {
 	t.Parallel()
 
-	// CPU and Memory are *CPUModel/*MemoryModel pointers per the
-	// import-time null requirement; tests must populate them since
-	// buildSetInput dereferences both unconditionally (the schema's
-	// Required guarantee makes that safe in production but not in
-	// hand-built test literals).
+	// buildSetInput dereferences CPU/Memory unconditionally, so hand-built test literals must populate both.
 	state := Model{
 		Name:       types.StringValue("vm01"),
 		Generation: types.Int64Value(2),
@@ -800,9 +791,7 @@ func TestDiffHardDiskDrives_AddsRemovesAndPathSwaps(t *testing.T) {
 
 	t.Run("same slot, slash-style differs -> no-op (semantic equals)", func(t *testing.T) {
 		t.Parallel()
-		// pathtype.Path's StringSemanticEquals folds slash style;
-		// without that, the change here would falsely look like a
-		// path swap and trigger detach+attach on every plan.
+		// pathtype.Path's StringSemanticEquals folds slash style, so this doesn't falsely look like a path swap.
 		add, rm := diffHardDiskDrives(
 			[]HardDiskDriveModel{hdd("C:/foo/disk.vhdx", "SCSI", 0, 0)},
 			[]HardDiskDriveModel{hdd("C:\\foo\\disk.vhdx", "SCSI", 0, 0)},
@@ -853,10 +842,7 @@ func TestDetachInputFor_OmitsPath(t *testing.T) {
 	if got.Name != "vm01" || got.ControllerType != "SCSI" {
 		t.Errorf("detach input wrong: %+v", got)
 	}
-	// Compile-time check: DetachHardDiskInput has no Path field. If
-	// someone adds one, this test still passes -- but its existence
-	// is the schema-level invariant we care about; the JSON-tag
-	// pinning test in internal/hyperv/vm_test.go enforces wire shape.
+	// The JSON-tag pinning test in internal/hyperv/vm_test.go enforces that DetachHardDiskInput stays pathless.
 }
 
 // TestModelFromVM_PopulatesHardDiskDrives confirms the cmdlet's
@@ -980,9 +966,9 @@ func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
 	}
 }
 
-// TestDiffNetworkAdapters mirrors the HDD diff test shape: same name +
-// same switch is no-op; same name + different switch is detach +
-// attach; new name is attach; removed name is detach.
+// TestDiffNetworkAdapters mirrors the HDD diff test structure: same
+// name + same switch is no-op; same name + different switch is
+// detach + attach; new name is attach; removed name is detach.
 func TestDiffNetworkAdapters(t *testing.T) {
 	t.Parallel()
 
@@ -1123,10 +1109,7 @@ func TestDiffDvdDrives(t *testing.T) {
 	})
 	t.Run("same slot, plan ejects ISO -> detach + attach (Talos pattern)", func(t *testing.T) {
 		t.Parallel()
-		// This is the Flow C eject-after-install case: the user
-		// declared the DVD with an ISO, install completes, on the
-		// next apply they remove iso_path. Reconciliation detaches
-		// the loaded drive, attaches an empty one at the same slot.
+		// Eject-after-install: removing iso_path detaches the loaded drive and attaches an empty one at the same slot.
 		add, rm := diffDvdDrives(
 			[]DvdDriveModel{dvd(nil, "SCSI", 0, 1)},
 			[]DvdDriveModel{dvd(str("C:\\boot.iso"), "SCSI", 0, 1)},
@@ -1185,23 +1168,11 @@ func TestAttachDvdInputFor_SetIsoPath(t *testing.T) {
 
 // TestModelFromVM_BootOrderRoundTrip pins the BootOrder path through
 // modelFromVM's BootOrderListFromSlice -> types.List -> BootOrderEntries
-// reconstruction. Two roles:
-//
-//  1. **Drift detection.** Adding a field to BootOrderEntryModel without
-//     also extending BootOrderEntryAttrTypes would compile, but
-//     types.ListValueFrom would surface the mismatch as a panic at
-//     resource.go's modelFromVM call. This test fires that panic at
-//     unit-test time instead of the first live `terraform apply` against
-//     a VM with a configured boot order. Mirrors the role
-//     TestModelFromVM_DvdDrivesEmptyPathBecomesNull plays for the
-//     DvdDriveListFromSlice path.
-//  2. **Type-discriminator coverage.** modelFromVM's per-entry switch
-//     on Type populates either the controller-tuple fields (for
-//     `hard_disk_drive` and `dvd_drive` entries) or the Name field
-//     (for `network_adapter` entries) and leaves the other half null.
-//     Exercising all three discriminators in one test catches a
-//     regression that would surface otherwise only on VMs whose boot
-//     order happens to mix entry types.
+// reconstruction. It catches two regressions: a field added to
+// BootOrderEntryModel without a matching BootOrderEntryAttrTypes entry,
+// which would otherwise only panic on a live apply against a VM with a
+// boot order; and a broken Type discriminator switch, which would
+// otherwise only surface on a VM whose boot order mixes entry types.
 func TestModelFromVM_BootOrderRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -1238,9 +1209,7 @@ func TestModelFromVM_BootOrderRoundTrip(t *testing.T) {
 		t.Errorf("entries[0].Name = %v, want null for hard_disk_drive type", entries[0].Name)
 	}
 
-	// Entry 1: dvd_drive — same shape as hard_disk_drive on the slot
-	// fields; the discriminator just steers how Hyper-V resolves the
-	// device. Slot tuple set, Name null.
+	// Entry 1: dvd_drive, same slot-tuple fields as hard_disk_drive; the discriminator only steers device resolution.
 	if entries[1].Type.ValueString() != "dvd_drive" {
 		t.Errorf("entries[1].Type = %q, want dvd_drive", entries[1].Type.ValueString())
 	}
@@ -1251,11 +1220,7 @@ func TestModelFromVM_BootOrderRoundTrip(t *testing.T) {
 		t.Errorf("entries[1].Name = %v, want null for dvd_drive type", entries[1].Name)
 	}
 
-	// Entry 2: network_adapter — Name set, slot tuple null. The Go-side
-	// switch in modelFromVM (resource.go:1084-1091) is the only place
-	// that distinguishes these two field-population paths; without
-	// network_adapter coverage here a future change that flattens the
-	// switch would not be caught.
+	// Entry 2: network_adapter, Name set and slot tuple null, the other branch of modelFromVM's discriminator switch.
 	if entries[2].Type.ValueString() != "network_adapter" {
 		t.Errorf("entries[2].Type = %q, want network_adapter", entries[2].Type.ValueString())
 	}

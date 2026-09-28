@@ -22,32 +22,21 @@ import (
 )
 
 // macAddressRegex accepts the three forms Hyper-V's
-// Add/Set-VMNetworkAdapter cmdlets accept:
-//
-//   - colon-separated: AA:BB:CC:DD:EE:FF
-//   - hyphen-separated: AA-BB-CC-DD-EE-FF
-//   - unsigned 12-hex: AABBCCDDEEFF
-//
-// Case-insensitive. The separator must be uniform within a single
-// address -- mixed forms like AA:BB-CC:DD-EE:FF parse as valid hex
-// but Set-VMNetworkAdapter -StaticMacAddress rejects them mid-apply,
-// so the schema validator rejects them at plan time instead. A custom
-// type with StringSemanticEquals (mactype.Type) folds separator and
-// case so a refresh against Hyper-V's canonical unsigned-12-hex echo
-// doesn't surface a phantom diff.
+// Add/Set-VMNetworkAdapter cmdlets accept: colon-separated
+// (AA:BB:CC:DD:EE:FF), hyphen-separated (AA-BB-CC-DD-EE-FF), and
+// unsigned 12-hex (AABBCCDDEEFF), case-insensitive but with a uniform
+// separator within one address. Set-VMNetworkAdapter rejects mixed
+// forms mid-apply, so the validator rejects them at plan time
+// instead; mactype.Type's StringSemanticEquals folds separator and
+// case so a refresh against Hyper-V's canonical echo doesn't diff.
 var macAddressRegex = regexp.MustCompile(`(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$|^[0-9a-f]{2}(-[0-9a-f]{2}){5}$|^[0-9a-f]{12}$`)
 
 // hardDiskObjectAttrTypes is the framework's attr.Type representation
-// of one element in the `hard_disk_drive` list. Used to construct the
-// schema-level Default (empty list of this object type), which keeps
-// the attribute from being "unknown" during plan when the user omits
-// it -- decoding into []HardDiskDriveModel can't represent unknown,
-// and without the Default the framework's tftypes -> Go reflect path
-// errors at apply time with "Suggested Type: basetypes.ListValue".
-//
-// Delegates to HardDiskDriveAttrTypes (model.go) so the schema and the
-// tfsdk model share one source of truth instead of two maps that can
-// silently drift.
+// of one element in the `hard_disk_drive` list, for constructing the
+// schema-level Default (an empty list of this type) that keeps the
+// attribute from being unknown during plan when omitted. It delegates
+// to HardDiskDriveAttrTypes (model.go) so schema and model share one
+// source of truth.
 func hardDiskObjectAttrTypes() map[string]attr.Type {
 	return HardDiskDriveAttrTypes
 }
@@ -76,20 +65,18 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 //
 // Schema versions:
 //
-//	v0 (PR #20): flat vcpu / memory_bytes / state(string).
+//	v0: flat vcpu / memory_bytes / state(string).
 //	v1: vcpu -> cpu.count; memory_bytes -> memory.startup_bytes; state
 //	    promoted to {desired, current}; inline attachment lists added.
 //	v2: state.shutdown_mode added (Optional+Computed, no Default;
-//	    UseStateForUnknown plan modifier preserves the prior value when
-//	    the user omits the attribute, matching notes / secure_boot).
-//	v3: memory.dynamic / memory.min_bytes / memory.max_bytes added
-//	    (Optional+Computed, no Default; same omit-preserves shape as
-//	    state.shutdown_mode). Adding fields to a SingleNestedAttribute
-//	    changes the nested object's tftype, so v2 state files are
-//	    bridged by a v2->v3 upgrader in upgrade.go that fills the new
-//	    fields with null -- v2 users never had a chance to choose
-//	    values, and the script's wire contract treats absent
-//	    dynamic_memory as static (same on-host behavior as v2).
+//	    UseStateForUnknown preserves the prior value when the user
+//	    omits the attribute, matching notes / secure_boot).
+//	v3: memory.dynamic / memory.min_bytes / memory.max_bytes added the
+//	    same way. Adding fields to a SingleNestedAttribute changes the
+//	    nested object's tftype, so a v2->v3 upgrader in upgrade.go
+//	    bridges old state by filling the new fields with null.
+//
+// lint:allow-long-comment
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		Version: 5,
@@ -249,11 +236,7 @@ func resourceSchema() schema.Schema {
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
-				// Default empty list keeps the attribute from being
-				// "unknown" during plan when the user omits it. See
-				// hardDiskObjectAttrTypes above for the rationale --
-				// without this, the framework's tftypes -> Go reflect
-				// path errors at apply time on a no-disk VM.
+				// Empty-list Default keeps the attribute from being unknown during plan when omitted (see hardDiskObjectAttrTypes).
 				Default: listdefault.StaticValue(
 					types.ListValueMust(
 						types.ObjectType{AttrTypes: hardDiskObjectAttrTypes()},
@@ -322,9 +305,7 @@ func resourceSchema() schema.Schema {
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
-				// Default empty list -- same rationale as hard_disk_drive
-				// above. Without it, the framework's reflect path errors
-				// when the user omits the attribute.
+				// Default empty list, same rationale as hard_disk_drive above.
 				Default: listdefault.StaticValue(
 					types.ListValueMust(
 						types.ObjectType{AttrTypes: networkAdapterObjectAttrTypes()},
@@ -360,24 +341,7 @@ func resourceSchema() schema.Schema {
 								"Order within a single NIC remains host-driven (a DHCP renewal " +
 								"can shuffle IPv4 vs IPv6 priority), but pinning the NIC " +
 								"selector eliminates the cross-NIC ordering ambiguity.",
-							// No UseStateForUnknown plan modifier here. Empirically
-							// verified against the bench (TestAcc_VM_withNetworkAdapter
-							// step 2, adding a second NIC): with the modifier in
-							// place, the framework leaves the new NIC slot's
-							// ip_addresses as `null` at plan time (not unknown,
-							// despite the modifier's nominal "leave unknown alone"
-							// docstring), and the empty list our Read populates
-							// post-apply trips the framework's "Provider produced
-							// inconsistent result" check (was null, now
-							// cty.ListValEmpty(cty.String)).
-							//
-							// Without the modifier, the framework defaults
-							// Computed-only attrs to unknown at plan time, which
-							// accepts any post-apply value -- and on subsequent
-							// plans where nothing has changed, the framework
-							// preserves the state value naturally (state -> plan
-							// for unchanged Computed fields is the default
-							// behavior). Plan-stability is not actually lost.
+							// No UseStateForUnknown: on a new NIC slot it leaves ip_addresses null, tripping the post-apply consistency check.
 						},
 						"mac_address": schema.StringAttribute{
 							CustomType: mactype.Type,

@@ -60,18 +60,12 @@ func TestUpgradeV0ToV1(t *testing.T) {
 		t.Errorf("Memory.StartupBytes: got %d, want 4294967296", got.Memory.StartupBytes.ValueInt64())
 	}
 
-	// Promoted: flat state string -> nested block, but left null
-	// because v0 users had no way to manage power state.
+	// Promoted to a nested block but left null: v0 users had no way to manage power state.
 	if got.State != nil {
 		t.Errorf("State: got %+v, want nil (block left unmanaged)", got.State)
 	}
 
-	// New inline lists initialized empty (known, not null) so the
-	// v1 state-shape constraint holds until the next refresh.
-	// HardDiskDrives, NetworkAdapters, DvdDrives, and BootOrder are all
-	// types.List on the latest schema. Upgraders return a known empty
-	// list so the post-upgrade state shape matches the schema's
-	// Default empty-list value.
+	// New inline lists come out known-empty, matching the schema's Default empty-list value.
 	if got.HardDiskDrives.IsNull() || got.HardDiskDrives.IsUnknown() || len(got.HardDiskDrives.Elements()) != 0 {
 		t.Errorf("HardDiskDrives: got %+v, want known empty list", got.HardDiskDrives)
 	}
@@ -147,12 +141,10 @@ func keysOf[V any](m map[int64]V) []int64 {
 }
 
 // TestUpgradeV1ToV2_LeavesShutdownModeNull locks the only v1 -> v2
-// shape change: state.shutdown_mode is added to the nested state
-// block but populated with null (not a "turn_off" placeholder).
-// v1 users never had a chance to choose a value; storing null after
-// upgrade preserves the "user didn't manage" semantic, and the
-// script defaults to turn_off on absent input -- same on-host
-// behavior as v1.
+// schema change: state.shutdown_mode is added but populated with
+// null, not a "turn_off" placeholder, since v1 users never had a
+// chance to choose a value; the script defaults to turn_off on
+// absent input, preserving v1's on-host behavior.
 func TestUpgradeV1ToV2_LeavesShutdownModeNull(t *testing.T) {
 	prior := priorModelV1{
 		ID:         types.StringValue("vm01"),
@@ -228,10 +220,10 @@ func TestUpgradeStateRegistration_V1Entry(t *testing.T) {
 }
 
 // TestUpgradeV2ToV3_AddsDynamicMemoryNullFields locks the v2 -> v3
-// shape change: memory.{dynamic, min_bytes, max_bytes} land null on
-// migration. v2 users never had a chance to choose values; the script's
-// wire contract treats absent dynamic_memory as the static path,
-// preserving on-host behavior.
+// schema change: memory.{dynamic, min_bytes, max_bytes} land null on
+// migration, since v2 users never had a chance to choose values; the
+// script treats absent dynamic_memory as the static path, preserving
+// on-host behavior.
 func TestUpgradeV2ToV3_AddsDynamicMemoryNullFields(t *testing.T) {
 	prior := priorModelV2{
 		ID:         types.StringValue("vm01"),
@@ -291,13 +283,11 @@ func TestUpgradeStateRegistration_V2Entry(t *testing.T) {
 }
 
 // TestUpgradeV3ToV5_PopulatesEmptyIPAddresses pins the v3 -> v5
-// shape changes: each network_adapter[] entry grows an ip_addresses
+// schema changes: each network_adapter[] entry grows an ip_addresses
 // list (v4) plus null mac_address / vlan_id (v5). v3 state files
-// don't carry any of those, so each NIC migrates with an empty
-// (known) ip_addresses list and null mac/vlan -- the next refresh
-// fills them from the host. Empty (not null) for ip_addresses keeps
-// the post-upgrade state shape valid against the schema's Computed
-// contract.
+// carry none of those, so each NIC migrates with an empty (known)
+// ip_addresses list and null mac/vlan; the next refresh fills them
+// from the host.
 func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 	prior := priorModelV3{
 		ID:         types.StringValue("vm01"),
@@ -334,12 +324,7 @@ func TestUpgradeV3ToV5_PopulatesEmptyIPAddresses(t *testing.T) {
 			t.Errorf("NIC[%d].IPAddresses len = %d, want %d (next refresh populates from host)",
 				i, got, want)
 		}
-		// MacAddress and VlanID didn't exist in the v3 shape; the
-		// upgrader must surface them as null so the v5 schema's
-		// Optional+Computed contract holds. A regression in
-		// expandPriorNICs that left them as zero-value would slip
-		// past the IPAddresses-only loop above and surface as a
-		// state-shape mismatch on the first post-upgrade refresh.
+		// MacAddress and VlanID didn't exist in v3; the upgrader must surface them as null for the v5 Optional+Computed contract.
 		if !n.MacAddress.IsNull() {
 			t.Errorf("NIC[%d].MacAddress = %q; want null (v3 had no MAC)",
 				i, n.MacAddress.ValueString())
@@ -375,12 +360,10 @@ func TestUpgradeStateRegistration_V3Entry(t *testing.T) {
 }
 
 // TestUpgradeV4ToV5_PopulatesNullMacAndVlan pins the only v4 -> v5
-// shape change: each network_adapter[] entry grows mac_address and
-// vlan_id. v4 state files don't carry either, so each NIC migrates
-// with both fields null -- the next refresh fills them from the
-// host (mac_address only when DynamicMacAddressEnabled is false;
-// vlan_id only when AccessVlanId > 0). IPAddresses (added in v4)
-// carries through unchanged.
+// schema change: each network_adapter[] entry grows mac_address and
+// vlan_id, both null after migration since v4 state files carry
+// neither; the next refresh fills them from the host. IPAddresses
+// (added in v4) carries through unchanged.
 func TestUpgradeV4ToV5_PopulatesNullMacAndVlan(t *testing.T) {
 	ipsPrimary := types.ListValueMust(types.StringType, []attr.Value{
 		types.StringValue("10.0.0.5"),
@@ -421,8 +404,7 @@ func TestUpgradeV4ToV5_PopulatesNullMacAndVlan(t *testing.T) {
 				i, n.VlanID)
 		}
 	}
-	// IPAddresses carries through unchanged: v4 state already had
-	// the field, so v5 just preserves the values.
+	// IPAddresses carries through unchanged: v4 state already had the field.
 	if got, want := len(nics[0].IPAddresses.Elements()), 2; got != want {
 		t.Errorf("NIC[0].IPAddresses len = %d, want %d (carries through from v4)", got, want)
 	}

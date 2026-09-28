@@ -8,29 +8,15 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
 )
 
-// TestValidate_DvdDriveAndBootOrderDrivenByVariable nails the
-// regression that motivated switching the model's DvdDrives and
-// BootOrder fields from []Struct to types.List.
-//
-// Before the switch, `terraform validate` against this exact config
-// (Optional list-nested-attributes driven from `each.value.dvd_drive`
-// of an `optional(list(object(...)))`-typed variable) failed with:
-//
-//	Error: Value Conversion Error
-//	Path: dvd_drive
-//	Target Type: []vm.DvdDriveModel
-//	Suggested Type: basetypes.ListValue
-//
-// (and the same shape on boot_order). The framework can represent
-// null with a nil slice but has no shape for unknown -- and unknown is
-// what the framework marshals when a parent variable hasn't fully
-// resolved (the for_each-with-empty-default pattern below). Switching
-// the fields to types.List closes this gap. Same fix shape PR #70
-// applied to URLConfig on hyperv_image_file.
-//
-// Uses resource.UnitTest rather than resource.Test so this protective
-// test runs without TF_ACC -- it does not touch a Hyper-V bench. The
-// only external dependency is the Terraform CLI being on PATH.
+// TestValidate_DvdDriveAndBootOrderDrivenByVariable pins why
+// Model.DvdDrives and Model.BootOrder must stay types.List rather than
+// []Struct: a nil slice can represent null but not unknown, and
+// unknown is exactly what the framework marshals when these values
+// are driven from an unresolved parent variable. A regression back to
+// []Struct surfaces here as a Value Conversion Error during terraform
+// validate, which resource.UnitTest exercises via the plan-only step
+// below. UnitTest, not Test, runs this without TF_ACC; the only
+// dependency is the Terraform CLI on PATH.
 func TestValidate_DvdDriveAndBootOrderDrivenByVariable(t *testing.T) {
 	t.Parallel()
 
@@ -38,14 +24,7 @@ func TestValidate_DvdDriveAndBootOrderDrivenByVariable(t *testing.T) {
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				// Empty default map means no resources are actually
-				// planned -- the framework still validates the resource
-				// schema against the typed variable, which is where the
-				// broken shape used to fire. Both dvd_drive and
-				// boot_order are wired through `optional(list(object))`
-				// + null-vs-populated conditional, mirroring the
-				// "compute/hyperv driving Talos VMs from a map of
-				// instance specs" pattern that surfaced the bug.
+				// Empty default map plans no resources; the framework still validates the schema against the typed variable.
 				Config: `
 variable "vms" {
   type = map(object({
