@@ -1,44 +1,7 @@
-// Package path provides a custom Terraform attribute type for Windows
-// file paths used by the Hyper-V provider. The custom type's purpose is
-// to suppress spurious diffs and "inconsistent result after apply"
-// failures arising from path-representation mismatches between user
-// input and what Hyper-V cmdlets emit on Read.
-//
-// Two kinds of mismatch are handled:
-//
-//   - Slash style. Users may write `C:/hyperv/vhds/disk.vhdx` (forward
-//     slashes -- HCL-friendly, no escaping needed) but Hyper-V cmdlets
-//     return paths with backslashes. Without semantic equality, the
-//     framework's plan-vs-apply consistency check fires and rejects
-//     the apply with "Provider produced inconsistent result after
-//     apply" -- a real bug surfaced by the M1d acceptance tests.
-//   - Casing. Windows file systems are case-insensitive (NTFS exposes
-//     a stable casing for each file, but `c:\foo` and `C:\foo` refer
-//     to the same path). Users who write `c:\foo` and read back `C:\foo`
-//     would otherwise see a phantom diff on every plan.
-//
-// The stored attribute value preserves the user's original form -- only
-// equality comparison (StringSemanticEquals) normalizes. This keeps
-// plan output readable in the user's chosen style while keeping the
-// provider's plan/apply contract honest.
-//
-// Usage:
-//
-//	"destination_path": schema.StringAttribute{
-//	    CustomType: path.Type,
-//	    Required:   true,
-//	    ...
-//	}
-//
-// And in the model struct:
-//
-//	type Model struct {
-//	    DestinationPath path.Path `tfsdk:"destination_path"`
-//	    ...
-//	}
-//
-// Path embeds basetypes.StringValue, so existing call sites that use
-// .ValueString() / .IsNull() / .IsUnknown() continue to work unchanged.
+// Package path provides a Terraform attribute type for Windows file
+// paths that suppresses spurious plan-vs-apply diffs from cosmetic
+// representation differences. See Path.StringSemanticEquals for the
+// normalization it applies.
 package path
 
 import (
@@ -145,17 +108,12 @@ func (p Path) Equal(o attr.Value) bool {
 	return p.StringValue.Equal(other.StringValue)
 }
 
-// StringSemanticEquals is the load-bearing method. The framework calls
-// this when comparing planned vs applied (or stored vs refreshed)
-// values; if it returns true, the framework treats the values as the
-// same and suppresses the diff. Returning true here is what bridges
-// "user wrote C:/foo, Hyper-V returned C:\foo" without losing the
-// strict-equality guarantees the framework needs elsewhere.
-//
-// Both values are normalized (slash-folded + lowercased) before
-// comparison. Null/unknown handling is left to the framework's
-// pre-check: StringSemanticEquals is only invoked when both sides are
-// known and non-null.
+// StringSemanticEquals normalizes both sides (slashes folded to
+// backslash, lowercased) before comparing, so a user-written C:/foo
+// and Hyper-V's echoed C:\foo compare equal and the framework
+// suppresses the diff. The framework only calls this when both sides
+// are known and non-null; null/unknown handling happens before this
+// method runs.
 func (p Path) StringSemanticEquals(_ context.Context, newValuable basetypes.StringValuable) (bool, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -175,14 +133,11 @@ func (p Path) StringSemanticEquals(_ context.Context, newValuable basetypes.Stri
 
 // normalize folds the two cosmetic differences (slash style + case)
 // that Windows file systems treat as identical. Used only for equality
-// comparison; the stored value preserves the original.
-//
-// Why no further canonicalization (Clean / removing trailing slashes
-// / collapsing doubled separators): well-formed Hyper-V paths don't
-// hit those cases, and aggressive normalization risks false equality
-// for genuinely different paths. If we discover a real-world path
-// shape that needs more canonicalization, extend this function and
-// add the case to path_test.go.
+// comparison; the stored value preserves the original. No further
+// canonicalization (Clean, trailing slashes, doubled separators):
+// well-formed Hyper-V paths don't hit those cases, and normalizing
+// further risks false equality for genuinely different paths. Extend
+// this function, and path_test.go, if a real path needs more.
 func normalize(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "/", `\`))
 }

@@ -1,44 +1,7 @@
-// Package mac provides a custom Terraform attribute type for MAC
-// addresses used by the Hyper-V provider. The custom type's purpose is
-// to suppress spurious diffs and "Provider produced inconsistent result
-// after apply" failures arising from MAC-representation mismatches
-// between user input and what Hyper-V cmdlets emit on Read.
-//
-// The mismatch is purely cosmetic: Hyper-V's Set-VMNetworkAdapter
-// accepts MACs in any of three forms (`AA:BB:CC:DD:EE:FF`,
-// `AA-BB-CC-DD-EE-FF`, or `AABBCCDDEEFF`) but Get-VMNetworkAdapter
-// always echoes back the unsigned-12-hex form. Without semantic
-// equality, the framework's plan-vs-apply consistency check fires when
-// a user writes `AA:BB:CC:DD:EE:FF` and the post-apply Read returns
-// `AABBCCDDEEFF` -- a real bug surfaced by the v5 acceptance tests.
-//
-// Casing is also folded for comparison: Hyper-V normalizes to
-// uppercase, but a user who writes lowercase shouldn't see a phantom
-// diff on the next refresh.
-//
-// The stored attribute value preserves the user's original form -- only
-// equality comparison (StringSemanticEquals) normalizes. This keeps
-// plan output readable in the user's chosen style while keeping the
-// provider's plan/apply contract honest.
-//
-// Usage:
-//
-//	"mac_address": schema.StringAttribute{
-//	    CustomType: mac.Type,
-//	    Optional:   true,
-//	    Computed:   true,
-//	    ...
-//	}
-//
-// And in the model struct:
-//
-//	type NetworkAdapterModel struct {
-//	    MacAddress mac.MAC `tfsdk:"mac_address"`
-//	    ...
-//	}
-//
-// MAC embeds basetypes.StringValue, so existing call sites that use
-// .ValueString() / .IsNull() / .IsUnknown() continue to work unchanged.
+// Package mac provides a Terraform attribute type for MAC addresses
+// that suppresses spurious plan-vs-apply diffs from cosmetic
+// representation differences. See MAC.StringSemanticEquals for the
+// normalization it applies.
 package mac
 
 import (
@@ -137,17 +100,12 @@ func (m MAC) Equal(o attr.Value) bool {
 	return m.StringValue.Equal(other.StringValue)
 }
 
-// StringSemanticEquals is the load-bearing method. The framework calls
-// this when comparing planned vs applied (or stored vs refreshed)
-// values; if it returns true, the framework treats the values as the
-// same and suppresses the diff. Returning true here is what bridges
-// "user wrote AA:BB:CC:DD:EE:01, Hyper-V returned AABBCCDDEE01" without
-// losing the strict-equality guarantees the framework needs elsewhere.
-//
-// Both values are normalized (separators stripped + uppercased) before
-// comparison. Null/unknown handling is left to the framework's pre-
-// check: StringSemanticEquals is only invoked when both sides are
-// known and non-null.
+// StringSemanticEquals normalizes both sides (colons/hyphens stripped,
+// uppercased) before comparing, so Set-VMNetworkAdapter's
+// AA:BB:CC:DD:EE:01 and Get-VMNetworkAdapter's echoed AABBCCDDEE01
+// compare equal and the framework suppresses the diff. The framework
+// only calls this when both sides are known and non-null; null/unknown
+// handling happens before this method runs.
 func (m MAC) StringSemanticEquals(_ context.Context, newValuable basetypes.StringValuable) (bool, diag.Diagnostics) {
 	var diags diag.Diagnostics
 

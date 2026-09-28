@@ -38,10 +38,7 @@ func TestPath_StringSemanticEquals_equivalent(t *testing.T) {
 				t.Errorf("StringSemanticEquals(%q, %q) = false, want true", tc.a, tc.b)
 			}
 
-			// Symmetry: the framework can invoke this in either
-			// direction depending on which side is the "current"
-			// value. A normalize that's not symmetric would silently
-			// flip behaviour at refresh time vs apply time.
+			// Symmetry: the framework can invoke this from either side, so both directions must agree.
 			got, diags = pb.StringSemanticEquals(context.Background(), pa)
 			if diags.HasError() {
 				t.Fatalf("unexpected diags (reverse): %v", diags)
@@ -100,8 +97,7 @@ func TestPath_StringSemanticEquals_typeMismatch(t *testing.T) {
 	if !diags.HasError() {
 		t.Fatal("StringSemanticEquals returned no diagnostic on type mismatch")
 	}
-	// Don't pin the exact message text -- match on the load-bearing
-	// pieces ("type mismatch", the offending types).
+	// Don't pin the exact message text, just that a summary exists.
 	summary := diags.Errors()[0].Summary()
 	if summary == "" {
 		t.Error("expected non-empty diagnostic summary")
