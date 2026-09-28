@@ -1,13 +1,10 @@
-// Package typeflatten holds small helpers that translate the typed
-// hyperv-client DTO shape into terraform-plugin-framework types.List /
-// types.Object values. Lives in its own package so both the vm resource
-// (internal/resources/vm) and the vm_state data source
-// (internal/datasources/vm_state) can share a single implementation
-// without one taking a dependency on the other's package.
-//
-// Keep functions in here narrow and free of resource-layer concerns
-// (no plan-modifier knowledge, no schema awareness). They take typed
-// hyperv DTOs and return framework types -- nothing else.
+// Package typeflatten holds small helpers that translate typed
+// hyperv-client DTOs into terraform-plugin-framework types.List /
+// types.Object values. It lives in its own package so both the vm
+// resource and the vm_state data source can share one implementation
+// without either depending on the other's package. Functions here
+// stay free of resource-layer concerns (no plan-modifier knowledge,
+// no schema awareness).
 package typeflatten
 
 import (
@@ -18,15 +15,11 @@ import (
 )
 
 // IPAddresses unions the per-NIC IPAddresses arrays from
-// Get-VMNetworkAdapter into a single flat types.List of strings.
-// Order is preserved: NICs in cmdlet order, IPs in cmdlet order
-// within each NIC. Hyper-V reports a stable per-boot order; we
-// don't re-sort because that would mask drift for downstream
-// consumers that key off `ip_addresses[0]`.
-//
-// Returns a known empty list (not null) when no IPs are present.
-// The schema layer's ListAttribute decode requires a known value,
-// and an empty Off-VM is the steady state for most acc-test fixtures.
+// Get-VMNetworkAdapter into a single flat types.List of strings,
+// preserving cmdlet order rather than re-sorting so downstream
+// consumers keying off `ip_addresses[0]` still see real drift. Returns
+// a known empty list, not null, since the schema's ListAttribute
+// decode requires a known value.
 func IPAddresses(nics []hyperv.NetworkAdapter) types.List {
 	var ips []attr.Value
 	for _, n := range nics {
