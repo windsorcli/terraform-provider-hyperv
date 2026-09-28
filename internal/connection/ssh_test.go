@@ -599,7 +599,8 @@ func TestSSH_NewSSHZerosCredentialBytes(t *testing.T) {
 func TestWaitForDone_ReturnsOnCtxCancelEvenIfDoneNeverFires(t *testing.T) {
 	t.Parallel()
 
-	done := make(chan error) // never sent to
+	done := make(chan error)
+	defer close(done) // unblocks waitForDone's background drain goroutine
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
