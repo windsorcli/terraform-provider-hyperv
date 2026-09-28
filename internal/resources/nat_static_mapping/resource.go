@@ -59,7 +59,7 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 }
 
 // Create runs new.ps1 with the plan's attributes and writes the
-// post-create read shape back to state.
+// post-create read result back to state.
 func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -98,7 +98,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Read fetches the current shape via get.ps1 and reconciles state.
+// Read fetches the current state via get.ps1 and reconciles it.
 //
 // ErrNotFound -> RemoveResource so Terraform plans recreate.
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -149,10 +149,9 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 
 // Update runs set.ps1 with the plan's mutable attributes (internal_ip,
 // internal_port, firewall_rule.{enabled, profile}) and writes the
-// post-update read shape back. The lookup tuple (nat_name, protocol,
-// external_ip, external_port, firewall_rule.name) is RequiresReplace
-// at the schema layer, so any change there forces destroy+recreate
-// rather than reaching Update.
+// post-update read result back. The lookup tuple (nat_name, protocol,
+// external_ip, external_port, firewall_rule.name) is RequiresReplace at
+// the schema layer, so a change there forces destroy+recreate instead.
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -227,23 +226,15 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 }
 
 // ImportState parses the composite identifier and seeds the lookup
-// tuple in state. Two forms are accepted:
+// tuple in state:
 //
 //	<nat_name>:<protocol>:<external_ip>:<external_port>
 //	<nat_name>:<protocol>:<external_ip>:<external_port>:<firewall_rule_name>
 //
-// The 5-segment form lets users adopt an existing netnat-static-mapping whose
-// firewall rule has a non-default DisplayName -- without it, `Read`
-// can't locate the rule (it keys on the name) and `firewall_rule.name`
-// in state lands as the derived default; any later config that sets a
-// different name then trips `RequiresReplace` on the first plan. The
-// 4-segment form falls back to `derivedFirewallRuleName(...)` so users
-// who created their resource via this provider (or with the same naming
-// convention) can import without knowing the rule name.
-//
-// The composite `id` attribute keeps its 4-segment form regardless --
-// it's the resource's stable identifier, not a re-export of the
-// import-only firewall name.
+// The 5-segment form is for a non-default firewall rule name, since
+// Read can't locate a rule without already knowing it; the 4-segment
+// form derives it instead. The stored `id` always keeps the 4-segment
+// form: a stable identifier, not the import-only firewall name.
 func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, ":")
 	if len(parts) != 4 && len(parts) != 5 {
@@ -269,13 +260,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	}
 	compositeID := fmt.Sprintf("%s:%s:%s:%s", natName, proto, externalIP, externalPortStr)
 
-	// Seed the firewall_rule object with the resolved name plus
-	// schema defaults so the framework's "Computed value drift" guard
-	// doesn't trip when Read lands its own values. The first Read
-	// after import will overwrite enabled / profile from the host's
-	// joined NatStaticMapping + NetFirewallRule view; the name is
-	// the load-bearing import input because the firewall rule is
-	// keyed by DisplayName.
+	// Seeds defaults so the framework's drift guard doesn't trip before the first post-import Read overwrites enabled/profile.
 	fwModel := FirewallRuleModel{
 		Enabled: types.BoolValue(true),
 		Name:    types.StringValue(fwName),
@@ -330,11 +315,7 @@ func buildNewInput(ctx context.Context, plan Model) (hyperv.NewNatStaticMappingI
 		return hyperv.NewNatStaticMappingInput{}, "", diags
 	}
 
-	// Apply runtime defaults for any sub-attribute that's still
-	// null/unknown after the schema-level defaults pass. firewall.name
-	// is the one the framework can't statically default (it's derived
-	// from protocol + external_port); enabled and profile have static
-	// defaults via the schema's Default plan modifier.
+	// firewall.name needs a runtime default (derived from protocol+port); enabled/profile already have static schema defaults.
 	enabled := true
 	if !fw.Enabled.IsNull() && !fw.Enabled.IsUnknown() {
 		enabled = fw.Enabled.ValueBool()
@@ -377,11 +358,7 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetNatStaticM
 		return hyperv.SetNatStaticMappingInput{}, "", diags
 	}
 
-	// firewall.name is RequiresReplace, so it's stable across Update.
-	// Source from state so a planmodifier-induced unknown in plan
-	// doesn't accidentally null-out the name -- the framework's
-	// UseStateForUnknown should catch this, but defending here keeps
-	// the contract explicit.
+	// Sourced from state, not plan, so a planmodifier-induced unknown can't null out this RequiresReplace field.
 	stateFw, stateFwDiags := unpackFirewallRule(ctx, state.FirewallRule)
 	diags.Append(stateFwDiags...)
 	if diags.HasError() {
@@ -425,9 +402,7 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetNatStaticM
 func modelFromNatStaticMapping(ctx context.Context, pf *hyperv.NatStaticMapping, fwName string) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	// Protocol is uppercase on the wire (Get-NetNatStaticMapping native
-	// shape) but lowercase in schema (the user's `protocol` config).
-	// Lowercase here so state matches plan.
+	// Protocol is uppercase on the wire but lowercase in schema; lowercase here so state matches plan.
 	proto := strings.ToLower(pf.Protocol)
 
 	fwModel := FirewallRuleModel{

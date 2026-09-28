@@ -40,10 +40,7 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// Two CheckDestroys run in sequence: the nat_static_mapping must be
-		// gone first (its destroy depends on the NAT switch still
-		// being there for the lookup tuple to resolve), then the
-		// NAT switch.
+		// nat_static_mapping's CheckDestroy runs first: its destroy needs the NAT switch still present to resolve the lookup tuple.
 		CheckDestroy: resource.ComposeAggregateTestCheckFunc(
 			acctest.CheckResourceGone("hyperv_nat_static_mapping",
 				func(ctx context.Context, _ string) (*hyperv.NatStaticMapping, error) {
@@ -82,9 +79,7 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 				},
 			},
 			{
-				// In-place update: internal_port mutates via Remove + Add.
-				// StaticMappingID changes (the cmdlet re-numbers the mapping
-				// on Add), but the resource ID stays stable.
+				// In-place update: internal_port mutates via Remove+Add; StaticMappingID changes but the resource ID stays stable.
 				Config: netNatStaticMappingConfig(switchName, natName, 30090),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
@@ -104,13 +99,7 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 				},
 			},
 			{
-				// Import round-trip with the 5-segment form (explicit
-				// firewall rule name). ImportStateVerify asserts the
-				// imported state EQUALS the post-Apply state, which
-				// forces ImportState's seed of firewall_rule.name to
-				// match what Read returned -- the previous bug (4-seg
-				// only, no firewall_rule seed) would surface here as
-				// a missing-attribute mismatch.
+				// 5-segment import: ImportStateVerify requires the imported state to match post-Apply state, including firewall_rule.name.
 				ResourceName:      "hyperv_nat_static_mapping.test",
 				ImportState:       true,
 				ImportStateVerify: true,

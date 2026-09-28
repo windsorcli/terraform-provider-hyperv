@@ -17,7 +17,7 @@ import (
 // MarkdownDescription on each attribute drives the Registry-published
 // doc when `task generate` runs tfplugindocs.
 //
-// Mutability summary:
+// Mutability:
 //
 //	nat_name / protocol / external_ip / external_port  -> RequiresReplace
 //	  (lookup tuple; NatStaticMapping has no rename)
@@ -27,9 +27,10 @@ import (
 //	firewall_rule.name                                 -> RequiresReplace
 //	  (rename = NetFirewallRule recreate)
 //
-// Description handling: deferred for v1. The mapping has no native
-// description field on the host -- a registry-sidecar approach would
-// be needed for it to survive Read, which we haven't implemented.
+// No description attribute: the mapping has no native description
+// field on the host to survive Read.
+//
+// lint:allow-long-comment
 func resourceSchema() schema.Schema {
 	return schema.Schema{
 		MarkdownDescription: "**Requirements:** **Local Administrators** on the target host. " +
@@ -55,15 +56,7 @@ func resourceSchema() schema.Schema {
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			// static_mapping_id is intentionally NOT exposed: Hyper-V's
-			// NatStaticMapping ID is opaque, re-rolls on every
-			// internal_* update (Set is Remove + Add under the hood),
-			// and is never used as a foreign-key target by other
-			// resources. Exposing it in state forces a "known after
-			// apply" hop on every plan or trips the framework's
-			// inconsistent-result guard when Update changes it. The
-			// script paths (get/set/remove) do their own lookup-by-
-			// tuple internally and don't need state to carry the ID.
+			// static_mapping_id isn't exposed: it re-rolls on every internal_* update and nothing needs it as a foreign key.
 			"nat_name": schema.StringAttribute{
 				Required: true,
 				MarkdownDescription: "Name of the `NetNat` instance to bind this mapping to. Must already " +

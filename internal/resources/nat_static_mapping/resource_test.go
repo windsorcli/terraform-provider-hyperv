@@ -28,10 +28,7 @@ func TestResource_Schema(t *testing.T) {
 		"external_ip", "external_port", "internal_ip", "internal_port",
 		"firewall_rule",
 	}
-	// static_mapping_id is deliberately absent (the Hyper-V mapping ID
-	// re-rolls on internal_* updates; exposing it would force every plan
-	// to show "(known after apply)" or trip the framework's
-	// inconsistent-result guard on Update).
+	// Deliberately absent: it re-rolls on internal_* updates and isn't a foreign-key target.
 	if _, ok := resp.Schema.Attributes["static_mapping_id"]; ok {
 		t.Error("static_mapping_id should NOT be on the schema -- the ID re-rolls on Update and isn't a foreign-key target")
 	}
@@ -214,9 +211,9 @@ func TestBuildSetInput_SourcesLookupTupleFromState(t *testing.T) {
 }
 
 // modelFromNatStaticMapping hydrates a Model from a typed NatStaticMapping.
-// Locks the wire-shape -> tfsdk attribute mapping plus the
-// uppercase-protocol -> lowercase-state normalization (Get-NetNatStaticMapping
-// reports TCP/UDP; the schema's `protocol` attribute is lowercase).
+// Locks the wire-to-tfsdk attribute mapping plus the uppercase-protocol
+// to lowercase-state normalization (Get-NetNatStaticMapping reports
+// TCP/UDP; the schema's `protocol` attribute is lowercase).
 func TestModelFromNatStaticMapping_LowercasesProtocolAndPopulatesAllFields(t *testing.T) {
 	t.Parallel()
 
@@ -243,11 +240,7 @@ func TestModelFromNatStaticMapping_LowercasesProtocolAndPopulatesAllFields(t *te
 	if got.AddressFamily.ValueString() != "ipv4" {
 		t.Errorf("AddressFamily = %q, want 'ipv4'", got.AddressFamily.ValueString())
 	}
-	// static_mapping_id is intentionally NOT in state -- the schema
-	// drops it because it re-rolls on every internal_* update and
-	// no other resource consumes it. modelFromNatStaticMapping correspondingly
-	// has no field to populate; pinning the absence here keeps a future
-	// re-add from slipping in unnoticed.
+	// Pins the absence of static_mapping_id so a future re-add doesn't slip in unnoticed.
 	if got.ID.ValueString() != "windsor-nat:tcp:0.0.0.0:80" {
 		t.Errorf("ID = %q", got.ID.ValueString())
 	}

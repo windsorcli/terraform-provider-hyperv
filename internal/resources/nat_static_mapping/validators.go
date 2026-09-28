@@ -8,19 +8,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 )
 
-// ipv4Validator rejects non-IPv4 strings at plan time. Uses
-// netip.ParseAddr + Is4() rather than net.ParseIP + To4(): the latter
-// returns a non-nil 4-byte slice for IPv4-mapped IPv6 forms like
-// "::ffff:192.0.2.1", which Add-NetNatStaticMapping rejects opaquely
-// downstream. Is4 is strict -- only the canonical dotted-quad form
-// returns true -- so the plan-time diagnostic matches what the cmdlet
-// will actually accept.
-//
-// Skipping null and unknown follows framework convention: Required vs
-// Optional is enforced elsewhere; unknowns get re-validated when they
-// resolve to concrete strings.
-//
-// Used by external_ip and internal_ip on hyperv_nat_static_mapping.
+// ipv4Validator rejects non-IPv4 strings at plan time, used by
+// external_ip and internal_ip. netip.ParseAddr + Is4() is strict to
+// the canonical dotted-quad form, unlike net.ParseIP + To4(), which
+// also accepts IPv4-mapped IPv6 forms like "::ffff:192.0.2.1" that
+// Add-NetNatStaticMapping rejects opaquely downstream; this way the
+// plan-time diagnostic matches what the cmdlet actually accepts. Null
+// and unknown are skipped, since Required/Optional is enforced
+// elsewhere and unknowns re-validate once resolved.
 type ipv4Validator struct{}
 
 func (v ipv4Validator) Description(_ context.Context) string {
