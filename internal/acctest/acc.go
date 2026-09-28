@@ -1,17 +1,8 @@
 // Package acctest provides acceptance-test scaffolding shared across
-// resource packages. Lives outside internal/testutil because it imports
-// internal/provider, which transitively imports every resource package
-// -- a testutil-side import would create a cycle for any resource whose
-// unit tests already use the fixtures in testutil.
-//
-// Helpers here are only invoked from TestAcc_* functions, which the
-// terraform-plugin-testing framework gates on TF_ACC=1. Without TF_ACC,
-// `go test` skips the framework-managed bodies and these helpers are
-// never called -- meaning a developer running `task test:unit` on a
-// machine with no Hyper-V host pays nothing for their existence.
-//
-// See docs/contributing/acceptance-tests.md for the workbench setup
-// (env vars, pre-placed fixtures).
+// resource packages. It lives outside internal/testutil because it
+// imports internal/provider, which transitively imports every
+// resource package; a testutil-side import would create a cycle. See
+// docs/contributing/acceptance-tests.md for workbench setup.
 package acctest
 
 import (
@@ -60,18 +51,11 @@ var ProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, erro
 }
 
 // PreCheck fails fast with a readable error when the bench's HYPERV_*
-// env vars aren't set, instead of letting the framework spawn `terraform`
-// and surface an opaque Configure-time diagnostic. Called as the
-// PreCheck closure on every resource.TestCase.
-//
-// Two-tier check:
-//   - HYPERV_BACKEND must be set (no implicit default for acc tests --
-//     a missing value usually means .env.local wasn't loaded).
-//   - Per-backend dependent vars: ssh/winrm need host+username; local
-//     has no required vars beyond backend itself.
-//
-// TF_ACC gating is handled by the framework (resource.Test skips when
-// TF_ACC is unset), so we don't re-check it here.
+// env vars aren't set, instead of letting the framework spawn
+// `terraform` and surface an opaque Configure-time diagnostic. Called
+// as the PreCheck closure on every resource.TestCase. HYPERV_BACKEND
+// must always be set; ssh/winrm additionally need host+username. TF_ACC
+// gating is handled by the framework, so it isn't re-checked here.
 func PreCheck(t *testing.T) {
 	t.Helper()
 
@@ -84,8 +68,7 @@ func PreCheck(t *testing.T) {
 
 	switch backend {
 	case "local":
-		// No additional required vars; the local backend discovers
-		// pwsh/powershell.exe from PATH.
+		// No additional required vars; the local backend discovers pwsh/powershell.exe from PATH.
 	case "ssh", "winrm":
 		require(t, "HYPERV_HOST")
 		require(t, "HYPERV_USERNAME")
@@ -106,22 +89,11 @@ func require(t *testing.T, key string) {
 }
 
 // RequireEnv is the exported form of `require` for per-test fixtures
-// that aren't part of the common provider config. Resource acc tests
-// call this to assert HYPERV_TEST_VHD_DIR, HYPERV_TEST_HOST_FILE, etc.
-// before generating their HCL configs.
-//
-// Two-tier behavior, both required for clean `task test:unit` runs:
-//
-//   - TF_ACC unset → t.Skip. The framework's resource.Test() skips
-//     for the same reason, but it does so AFTER the test body has
-//     run -- if RequireEnv panicked or t.Fatal'd before that point,
-//     a non-acc run of `go test ./...` would fail. Skipping early
-//     keeps unit-only runs green even when bench-only env vars are
-//     unset.
-//   - TF_ACC set but `key` unset → t.Fatalf. A maintainer running
-//     acceptance tests with a misconfigured .env.local should see
-//     an immediate, actionable error instead of an opaque
-//     resource-creation failure on the bench.
+// that aren't part of the common provider config, e.g.
+// HYPERV_TEST_VHD_DIR. It skips early when TF_ACC is unset, rather
+// than waiting for resource.Test() to skip after the test body runs,
+// so a non-acc `go test ./...` stays green; with TF_ACC set but `key`
+// unset it fails loudly instead of surfacing an opaque resource error.
 func RequireEnv(t *testing.T, key string) string {
 	t.Helper()
 	if os.Getenv("TF_ACC") == "" {
@@ -164,21 +136,13 @@ func AccCtx(t *testing.T) context.Context {
 	return ctx
 }
 
-// RunnerIPForBench returns the local IP address the runner OS would
-// use as source when routing to benchHost. An httptest.Server bound
-// to that address is reachable from the bench (assuming a flat LAN
-// or at least symmetric routing).
-//
-// Implementation: UDP-"dial" the destination. net.Dial with UDP doesn't
-// actually send packets but does run the routing table lookup, so
-// LocalAddr after the dial reveals the source IP that would have been
-// used. Standard idiom -- the alternative (enumerate all interfaces
-// and guess) is fragile on multi-homed hosts (Wi-Fi + ethernet + VPN).
-//
-// For backend=local (benchHost is empty), returns "127.0.0.1": the
-// bench IS the runner, so the loopback address suffices.
-//
-// Port 80 in the dial target is arbitrary; only routing is consulted.
+// RunnerIPForBench returns the local IP the runner OS would use as
+// source when routing to benchHost, so an httptest.Server bound to it
+// is reachable from the bench. It UDP-"dials" the destination (no
+// packet sent, but the routing table lookup runs) and reads back
+// LocalAddr; enumerating interfaces and guessing is fragile on
+// multi-homed hosts. backend=local (empty benchHost) returns
+// "127.0.0.1" directly, since the bench is the runner.
 func RunnerIPForBench(benchHost string) (string, error) {
 	if strings.TrimSpace(benchHost) == "" {
 		return "127.0.0.1", nil
@@ -196,24 +160,13 @@ func RunnerIPForBench(benchHost string) (string, error) {
 	return addr.IP.String(), nil
 }
 
-// ServeFixture stands up an httptest.Server bound to ip:0 (random
-// free port) that serves body on every GET regardless of path. The
-// caller appends a cosmetic path suffix (e.g. "/fixture.bin") to the
-// returned URL for readability in HCL configs and Terraform diffs.
-//
-// t.Cleanup tears the server down at end-of-test; no defer in the
-// caller. The server runs concurrently with the test's apply step --
-// the bench downloads from the URL while the test thread waits in
-// terraform-plugin-testing's apply loop.
-//
-// Why bind to a specific IP rather than 0.0.0.0: keeps the firewall
-// surface tight and makes the URL the bench downloads from explicitly
-// the runner's LAN address. Binding to all interfaces would also work
-// but invites confusion about which path the bench actually takes.
-//
-// ReadHeaderTimeout is set to defend against the gosec G112 finding
-// that httptest.Server's defaults are unbounded. 5s is generous for
-// any sane HTTP client.
+// ServeFixture stands up an httptest.Server bound to ip:0 (random free
+// port) that serves body on every GET regardless of path; the caller
+// appends a cosmetic path suffix (e.g. "/fixture.bin") for readability
+// in HCL configs. t.Cleanup tears it down at end-of-test. Binding to a
+// specific IP, not 0.0.0.0, keeps the firewall surface tight and makes
+// the URL explicitly the runner's LAN address. ReadHeaderTimeout
+// defends against gosec G112's unbounded-default finding.
 func ServeFixture(t *testing.T, ip string, body []byte) *httptest.Server {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
@@ -262,23 +215,15 @@ func BenchCanReach(t *testing.T, client *hyperv.Client, url string) bool {
 	return strings.TrimSpace(string(res.Stdout)) == "ok"
 }
 
-// NewClient builds a *hyperv.Client from the bench's HYPERV_* env vars.
-// Used by CheckDestroy assertions that need to query Hyper-V directly --
-// the provider's own client is owned by the framework's per-test
-// providerserver and isn't reachable from outside the resource.Test
-// closure.
-//
-// Mirrors the resolution in internal/provider/backend_select.go but
-// stays inline here. We deliberately don't import provider/backend_select
-// because that path is exported through provider.Configure and threading
-// it through testutil for shared use would re-introduce the import-cycle
-// concern the acctest package was created to avoid.
-//
-// Two-tier behavior matching RequireEnv:
-//   - TF_ACC unset → t.Skip (not an acc run; nothing to build).
-//   - TF_ACC set, env misconfigured → t.Fatalf with the specific gap.
-//
-// Connection is opened on construction and Closed via t.Cleanup.
+// NewClient builds a *hyperv.Client from the bench's HYPERV_* env
+// vars, for CheckDestroy assertions that need to query Hyper-V
+// directly; the provider's own client is owned by the framework's
+// per-test providerserver and isn't reachable from outside the
+// resource.Test closure. Mirrors backend_select.go's resolution but
+// stays inline rather than importing it, to avoid reintroducing the
+// import cycle this package exists to dodge. TF_ACC-unset behavior
+// matches RequireEnv; the connection is opened here and Closed via
+// t.Cleanup.
 func NewClient(t *testing.T) *hyperv.Client {
 	t.Helper()
 	if os.Getenv("TF_ACC") == "" {
@@ -355,30 +300,15 @@ func NewClient(t *testing.T) *hyperv.Client {
 	return hyperv.NewClient(conn)
 }
 
-// CheckResourceGone returns a TestCheckFunc suitable for the
-// `CheckDestroy:` field of a resource.TestCase. For every state
-// resource of the given type, it calls `get(id)` against the bench
-// and expects ErrNotFound. Any other outcome (cmdlet error, or the
-// resource still existing) fails the test.
-//
-// Generic on the return type of the getter so callers can pass
-// `client.GetVMSwitch`, `client.GetVHD`, etc. without an adapter
-// closure -- the assertion only cares about the error path, not the
-// returned struct.
-//
-// Use the inverse pattern (`expect resource still exists`) for
-// resources whose Delete is documented as a no-op on the underlying
-// object -- e.g. hyperv_image_file in host_path mode. Those tests
-// inline a custom CheckDestroy rather than using this helper.
-//
-// Per-call context budget: 30 seconds. resource.TestCheckFunc's
-// signature has no *testing.T, so we can't piggyback on the
-// test-scoped context AccCtx provides. A bare context.Background
-// would let a dropped bench connection between Terraform's destroy
-// and this Get hang for the full process-level `go test -timeout`
-// (120 minutes per the Taskfile), turning a transient blip into a
-// two-hour wait with no intermediate signal. 30s is generous for
-// any single Get against a healthy bench and bounds the worst case.
+// CheckResourceGone returns a TestCheckFunc for a resource.TestCase's
+// `CheckDestroy:` field. For every state resource of the given type,
+// it calls `get(id)` against the bench and expects ErrNotFound; any
+// other outcome fails the test. Generic on the getter's return type so
+// callers pass `client.GetVMSwitch`, `client.GetVHD`, etc. directly.
+// Not for resources whose Delete is a documented no-op, like
+// hyperv_image_file in host_path mode; those inline their own
+// CheckDestroy. Each Get gets a bounded 30s context, since
+// TestCheckFunc has no *testing.T to piggyback AccCtx on.
 func CheckResourceGone[T any](resourceType string, get func(context.Context, string) (*T, error)) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		for _, rs := range s.RootModule().Resources {

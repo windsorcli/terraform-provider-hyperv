@@ -1,26 +1,12 @@
 // Sweeper registrations + the -sweep flag dispatcher for acceptance-test
-// orphan cleanup. All sweepers live here (not in their respective
-// internal/resources/* packages) for two load-bearing reasons:
-//
-//  1. resource.sweeperFuncs is per-test-binary. A sweeper registered
-//     in one package's test binary is invisible to another's. With
-//     per-package sweepers, `go test -sweep=local ./...` would run
-//     each package's sweepers in isolation against its own
-//     sweeperFuncs map, and any cross-resource Dependencies (e.g.,
-//     image_file depends on vm) would silently no-op because the
-//     dependee lives in a different binary.
-//
-//  2. `go test`'s default package execution order is alphabetical
-//     (image_file -> vhd -> vm -> vswitch), which is exactly wrong:
-//     VMs hold disks, so vm must sweep FIRST or the image_file /
-//     vhd Remove operations hit file-locked errors. Centralizing
-//     registration lets the framework's Dependencies graph do the
-//     ordering.
-//
-// The corresponding Taskfile entry scopes `task sweep` to
-// `./internal/acctest/...` so the -sweep flag is only dispatched to
-// the one test binary that knows what to do with it. Other test
-// packages don't see the flag.
+// orphan cleanup. All sweepers live here, not in their respective
+// internal/resources/* packages, since resource.sweeperFuncs is
+// per-test-binary: per-package sweepers would let cross-resource
+// Dependencies (e.g. image_file depends on vm) silently no-op across
+// binaries, and `go test`'s alphabetical package order would sweep
+// vm after image_file/vhd instead of before, hitting file-locked
+// errors on VMs that still hold their disks. `task sweep` scopes to
+// `./internal/acctest/...`, the one binary that dispatches -sweep.
 
 package acctest_test
 
@@ -54,16 +40,10 @@ func TestMain(m *testing.M) {
 const sweepBudget = 5 * time.Minute
 
 // init registers all resource sweepers with terraform-plugin-testing's
-// global sweeperFuncs map. Runs at test-binary load. The Dependencies
-// graph below encodes the ordering required by Hyper-V's locking
-// semantics:
-//
-//   - hyperv_vm sweeps FIRST (no Dependencies). VMs hold their disks
-//     by path; Remove-VHD / Remove-Item fail with file-locked errors
-//     while a VM still references the file.
-//
-// As sweepers for the other resources land in this file, their
-// Dependencies will list "hyperv_vm" so they run after vm has cleared.
+// global sweeperFuncs map, encoding Hyper-V's locking semantics via
+// the Dependencies graph: hyperv_vm has none and sweeps first, since
+// Remove-VHD / Remove-Item fail with file-locked errors while a VM
+// still references the file.
 func init() {
 	resource.AddTestSweepers("hyperv_vm", &resource.Sweeper{
 		Name: "hyperv_vm",
@@ -83,12 +63,7 @@ func init() {
 			}
 			log.Printf("[INFO] hyperv_vm sweeper: found %d orphan VMs under prefix %q", len(vms), acctest.SweepPrefix)
 
-			// Best-effort per-VM: log and continue on individual
-			// failures rather than aborting the whole sweep on the
-			// first stuck VM. A VM in a transitional state shouldn't
-			// block cleanup of the rest. Aggregate errors so the
-			// sweeper still reports non-nil at the end when anything
-			// failed -- the runner surfaces that as a non-zero exit.
+			// Best-effort: log and continue past individual failures, aggregating errors so a non-zero exit still surfaces.
 			var sweepErr error
 			for _, vm := range vms {
 				log.Printf("[INFO] hyperv_vm sweeper: removing %q", vm.Name)
@@ -101,21 +76,7 @@ func init() {
 		},
 	})
 
-	// hyperv_nat sweeps orphan NetNat instances before any NAT-switch
-	// sweep would try to Remove-VMSwitch. Windows allows exactly one
-	// NetNat per host, so a single stuck NetNat from a prior failed
-	// run blocks every subsequent NAT switch / nat_static_mapping acctest --
-	// the New-NetNat singleton precondition fires before the test can
-	// even create its own switch. SweepNetNats lists Get-NetNat and
-	// removes any tfacc-* match, decoupled from the VMSwitch sweep so
-	// it also catches the case where the NetNat outlives its parent
-	// switch (test died mid-destroy).
-	//
-	// Depends on hyperv_vm for the same defensive reason hyperv_vhd
-	// does: nothing in vm references NetNat directly, but ordering the
-	// vm sweep first means any nat_static_mapping-style resource we add in
-	// the future that DOES tie a VM to a NetNat would already have
-	// the right ordering.
+	// A single stuck NetNat blocks every subsequent NAT test, since Windows allows exactly one NetNat per host.
 	resource.AddTestSweepers("hyperv_nat", &resource.Sweeper{
 		Name:         "hyperv_nat",
 		Dependencies: []string{"hyperv_vm"},
@@ -138,13 +99,7 @@ func init() {
 		},
 	})
 
-	// hyperv_virtual_switch runs AFTER hyperv_vm AND hyperv_nat:
-	// Remove-VMSwitch fails while a VM still has a NIC bound to the
-	// switch (vm dependency), and on a NAT switch it also fails while
-	// the NetNat still references the switch's vNIC (nat dependency).
-	// Running the nat sweep first clears the NetNat so the bare
-	// Remove-VMSwitch path here completes cleanly even for NAT
-	// switches -- no NatName threading required.
+	// Runs after hyperv_vm and hyperv_nat: Remove-VMSwitch fails while a NIC or a NetNat still references the switch.
 	resource.AddTestSweepers("hyperv_virtual_switch", &resource.Sweeper{
 		Name:         "hyperv_virtual_switch",
 		Dependencies: []string{"hyperv_vm", "hyperv_nat"},
@@ -176,17 +131,7 @@ func init() {
 		},
 	})
 
-	// hyperv_vhd runs AFTER hyperv_vm: while a VM still references a
-	// VHD, Remove-Item / Remove-VHD on the file fails with a sharing
-	// violation (the VHD provider holds the handle until the VM
-	// releases it). Letting the vm sweeper clear first lets the disk
-	// files unlock.
-	//
-	// Parent dir comes from HYPERV_TEST_VHD_DIR rather than a hard-coded
-	// path because the bench layout differs per operator (some run
-	// C:\hyperv\tfacc, others a non-default ClusterSharedVolume path).
-	// Unset = no-op rather than an error: a host with no VHD-producing
-	// acctests run yet legitimately has nothing to sweep.
+	// Runs after hyperv_vm: while a VM still references a VHD, Remove-VHD fails with a sharing violation.
 	resource.AddTestSweepers("hyperv_vhd", &resource.Sweeper{
 		Name:         "hyperv_vhd",
 		Dependencies: []string{"hyperv_vm"},
@@ -224,11 +169,7 @@ func init() {
 		},
 	})
 
-	// hyperv_image_file sweeps non-VHD-family files (ISOs, .bin
-	// fixtures, etc.) under HYPERV_TEST_VHD_DIR. Depends on hyperv_vm
-	// for the same reason hyperv_vhd does: a VM dvd_drive can hold an
-	// ISO open until the VM releases it. The script's extension
-	// filter keeps it out of the hyperv_vhd sweeper's lane.
+	// Sweeps non-VHD-family files (ISOs, .bin fixtures) under HYPERV_TEST_VHD_DIR; depends on hyperv_vm for the same reason hyperv_vhd does.
 	resource.AddTestSweepers("hyperv_image_file", &resource.Sweeper{
 		Name:         "hyperv_image_file",
 		Dependencies: []string{"hyperv_vm"},

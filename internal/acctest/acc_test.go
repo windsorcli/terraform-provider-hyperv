@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestRandomName_Prefix locks in the tfacc-<scenario>-<8alnum> shape so
-// future sweeper logic can rely on a known prefix to enumerate orphans.
-// A regression that flipped to e.g. "tfacc_<scenario>" or randomized the
-// scenario position would silently break manual cleanup.
+// TestRandomName_Prefix locks in the tfacc-<scenario>-<8alnum>
+// format so sweeper logic can rely on a known prefix to enumerate
+// orphans. A regression that flipped to e.g. "tfacc_<scenario>" or
+// randomized the scenario position would silently break manual cleanup.
 func TestRandomName_Prefix(t *testing.T) {
 	for _, scenario := range []string{"vswitch-private", "vhd-dyn", "img-url"} {
 		name := RandomName(scenario)
@@ -18,9 +18,7 @@ func TestRandomName_Prefix(t *testing.T) {
 			t.Errorf("RandomName(%q) = %q, want prefix %q", scenario, name, want)
 		}
 
-		// 8-char random suffix per the contract; the scenario itself
-		// can contain dashes, so split off the prefix and assert the
-		// trailing segment.
+		// The scenario itself can contain dashes, so split off the known prefix rather than splitting on "-".
 		suffix := strings.TrimPrefix(name, want)
 		if len(suffix) != 8 {
 			t.Errorf("RandomName(%q) suffix = %q, want 8 chars, got %d",
