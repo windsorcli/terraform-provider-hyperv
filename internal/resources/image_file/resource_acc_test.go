@@ -52,14 +52,11 @@ import (
 // the actual value is derived from the bench's fixture file.
 var sha256Pattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
-// TestAcc_ImageFile_hostPath exercises the host_path mode -- the file
-// already exists on the bench and the resource is responsible only for
-// tracking it. Verifies destination_path round-trips and sha256 lands
-// in canonical format on create.
-//
-// Gates on HYPERV_TEST_HOST_FILE which must resolve to an existing
-// readable file on the bench. Bench setup (acceptance-tests.md) creates
-// a small text file at a stable path for this test.
+// TestAcc_ImageFile_hostPath exercises host_path mode, where the file
+// already exists on the bench and the resource only tracks it:
+// verifies destination_path round-trips and sha256 lands in canonical
+// format on create. Gates on HYPERV_TEST_HOST_FILE, which bench setup
+// (acceptance-tests.md) resolves to a stable small text file.
 func TestAcc_ImageFile_hostPath(t *testing.T) {
 	hostFile := acctest.RequireEnv(t, "HYPERV_TEST_HOST_FILE")
 	client := acctest.NewClient(t)
@@ -677,16 +674,13 @@ resource "hyperv_image_file" "test" {
 `, destPath, localPath, url, checksum)
 }
 
-// imageFileHostPathConfig is the smallest valid HCL for host_path mode.
-// `url` is omitted -- its absence is the discriminator that selects the
-// host_path branch in the resource's mode-detection logic.
-//
-// destPath is embedded verbatim in HCL; callers choose whether to pass
-// forward-slash form (to exercise pathtype.Path's StringSemanticEquals
-// against the bench) or backslash form. Whatever form they pass also
-// has to be the form they assert on, because the framework retains the
-// user's plan value as state when semantic-equals returns true (the
-// cmdlet's canonical backslash form is discarded post-apply).
+// imageFileHostPathConfig is the smallest valid HCL for host_path
+// mode; `url`'s absence is the discriminator that selects the
+// host_path branch. destPath is embedded verbatim, so callers choose
+// forward-slash form (to exercise StringSemanticEquals against the
+// bench) or backslash form, and must assert on whatever form they
+// passed, since the framework retains the plan value as state when
+// semantic-equals returns true.
 func imageFileHostPathConfig(destPath string) string {
 	return fmt.Sprintf(`
 resource "hyperv_image_file" "test" {
@@ -695,13 +689,10 @@ resource "hyperv_image_file" "test" {
 `, destPath)
 }
 
-// imageFileURLConfig drives a real download + checksum + atomic-rename.
-// Forwards the raw URL/checksum from the bench config so a maintainer
-// can swap in any sized fixture (a 5-byte text file is fine for a smoke
-// test; a 5 GiB VHDX would also work but burns bandwidth).
-//
-// destPath is embedded verbatim; same caller-controlled form as
-// imageFileHostPathConfig.
+// imageFileURLConfig drives a real download + checksum + atomic-rename,
+// forwarding the raw URL/checksum so a maintainer can swap in any
+// sized fixture. destPath is embedded verbatim, the same
+// caller-controlled form as imageFileHostPathConfig.
 func imageFileURLConfig(destPath, url, checksum string) string {
 	return fmt.Sprintf(`
 resource "hyperv_image_file" "test" {

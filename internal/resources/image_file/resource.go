@@ -93,15 +93,13 @@ func (v sourceModeExclusivityValidator) ValidateResource(ctx context.Context, re
 	resp.Diagnostics.Append(v.validate(ctx, data)...)
 }
 
-// validate is the pure-Go core. Anchors the diagnostic on the most-
-// recently-introduced surface among the conflicting attributes (the
-// user is most likely to be confused about its interaction with the
-// older ones), so the precedence runs
-// source_path -> content_base64 -> local_path.
-//
-// A source_path equal to destination_path is rejected separately: the
-// copy would rewrite the source through a staging file, and lose it
-// outright if the copy failed partway.
+// validate is the pure-Go core. Anchors the diagnostic on the
+// most-recently-introduced surface among the conflicting attributes,
+// since the user is most likely confused about its interaction with
+// the older ones, giving precedence source_path -> content_base64 ->
+// local_path. A source_path equal to destination_path is rejected
+// separately: the copy would rewrite the source through a staging
+// file, and lose it outright if the copy failed partway.
 func (v sourceModeExclusivityValidator) validate(ctx context.Context, data Model) diag.Diagnostics {
 	var diags diag.Diagnostics
 	urlSet := !data.URL.IsNull() && !data.URL.IsUnknown()
@@ -472,11 +470,10 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Read fetches the current state via get.ps1 and reconciles it.
-//
-// ErrNotFound -> RemoveResource so Terraform plans recreate.
-// ErrUnauthorized / ErrPSExecution -> AddError so a transient fault doesn't
-// silently drop the resource from state.
+// Read fetches the current state via get.ps1 and reconciles it:
+// ErrNotFound triggers RemoveResource so Terraform plans recreate;
+// ErrUnauthorized / ErrPSExecution call AddError so a transient fault
+// doesn't silently drop the resource from state.
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",

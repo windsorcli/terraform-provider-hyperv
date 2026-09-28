@@ -502,11 +502,10 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Read fetches the current state via get.ps1 and reconciles it.
-//
-// ErrNotFound -> RemoveResource so Terraform plans recreate.
-// Other errors -> AddError so a transient fault doesn't silently drop
-// the resource from state.
+// Read fetches the current state via get.ps1 and reconciles it:
+// ErrNotFound triggers RemoveResource so Terraform plans recreate;
+// other errors call AddError so a transient fault doesn't silently
+// drop the resource from state.
 func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -827,13 +826,12 @@ func buildNewInput(plan Model) hyperv.NewVMInput {
 }
 
 // buildSetInput translates an Update plan + state into a SetVMInput,
-// forwarding only the fields that genuinely changed. The script-side
-// "key present?" check then skips the corresponding Set-* cmdlet for
-// omitted fields -- critical because Set-VMMemory / Set-VMProcessor
-// error on a running VM even when called with the existing value.
-//
-// Generation is always forwarded as the script's gen-2-only SecureBoot
-// guard hint (mirrors vswitch's switch_type forwarding).
+// forwarding only fields that genuinely changed, since the script's
+// "key present?" check skips the Set-* cmdlet for omitted fields and
+// Set-VMMemory / Set-VMProcessor error on a running VM even when
+// called with the existing value. Generation is always forwarded as
+// the script's gen-2-only SecureBoot guard hint, mirroring vswitch's
+// switch_type forwarding.
 func buildSetInput(plan, state Model) hyperv.SetVMInput {
 	in := hyperv.SetVMInput{
 		Name:       plan.Name.ValueString(),
@@ -1114,15 +1112,13 @@ func hddSlotKeyOf(h HardDiskDriveModel) hddSlotKey {
 	}
 }
 
-// diffHardDiskDrives partitions plan vs state into the attach and detach
-// sets the Update reconciliation needs. A path swap at the same slot
-// produces both a detach (state's old) and an attach (plan's new); the
-// caller invokes the detach first so the slot is free when attach runs.
-//
-// Slot-tuple equality treats StringSemanticEquals on Path so a config
-// that wrote "C:/foo" against state of "C:\foo" doesn't trigger a
-// no-op detach + attach -- pathtype.Path's semantic-equals folds the
-// slash style.
+// diffHardDiskDrives partitions plan vs state into the attach and
+// detach sets Update reconciliation needs. A path swap at the same
+// slot produces both a detach (state's old) and an attach (plan's
+// new); the caller invokes the detach first so the slot is free when
+// attach runs. Slot-tuple equality treats Path via
+// StringSemanticEquals, so a config written as "C:/foo" against state
+// "C:\foo" doesn't trigger a spurious detach + attach.
 func diffHardDiskDrives(plan, state []HardDiskDriveModel) (toAttach, toDetach []HardDiskDriveModel) {
 	planBySlot := make(map[hddSlotKey]HardDiskDriveModel, len(plan))
 	for _, h := range plan {
@@ -1273,13 +1269,11 @@ func dvdSlotKeyOf(d DvdDriveModel) hddSlotKey {
 }
 
 // diffDvdDrives partitions plan vs state by slot tuple, mirroring
-// diffHardDiskDrives. Path comparison uses pathtype.Path's
-// StringSemanticEquals so slash-style differences in iso_path don't
-// trigger spurious detach+attach loops.
-//
-// IsoPath null vs null is equal (both empty drives, no swap).
-// IsoPath null vs set, or set vs null, triggers swap (eject or load).
-// IsoPath set vs set with semantic-equal paths is no-op.
+// diffHardDiskDrives: IsoPath null vs null is a no-op (both empty
+// drives); null vs set or set vs null triggers a swap (eject or
+// load); set vs set compares via pathtype.Path's StringSemanticEquals,
+// so slash-style differences in iso_path don't trigger spurious
+// detach+attach loops.
 func diffDvdDrives(plan, state []DvdDriveModel) (toAttach, toDetach []DvdDriveModel) {
 	planBySlot := make(map[hddSlotKey]DvdDriveModel, len(plan))
 	for _, d := range plan {
@@ -1540,11 +1534,9 @@ func setBootOrderInputFor(vmName string, entries []BootOrderEntryModel) hyperv.S
 // the Type discriminator into account: HDD/DVD entries match on the
 // slot tuple (treating null/unknown ControllerType as the SCSI
 // default); NIC entries match on Name. Order matters, since this is
-// the boot SEQUENCE, not a set.
-//
-// Returns true when no Set-VMFirmware -BootOrder call is needed.
-// Conservatively returns false on any unknown values so the apply
-// path defers the decision to the actual cmdlet call.
+// the boot SEQUENCE, not a set. Returns true when no Set-VMFirmware
+// -BootOrder call is needed, conservatively false on any unknown
+// value so the apply path defers to the actual cmdlet call.
 func bootOrderSemanticEquals(a, b []BootOrderEntryModel) bool {
 	if len(a) != len(b) {
 		return false

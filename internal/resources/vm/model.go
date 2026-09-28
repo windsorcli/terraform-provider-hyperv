@@ -58,14 +58,14 @@ type MemoryModel struct {
 	MaxBytes     types.Int64 `tfsdk:"max_bytes"`
 }
 
-// HardDiskDriveModel is one element of the `hard_disk_drive` nested set
-// on hyperv_vm. Identifies an attached VHD (Path) at a specific
-// controller slot (ControllerType + ControllerNumber + ControllerLocation).
-//
-// Path uses pathtype.Path for slash/case folding consistent with
-// hyperv_vhd.path and hyperv_image_file.destination_path -- a VHD path
-// the user wrote with forward slashes round-trips through the bench's
-// canonical backslash form without phantom diffs.
+// HardDiskDriveModel is one element of the `hard_disk_drive` nested
+// set on hyperv_vm, identifying an attached VHD (Path) at a specific
+// controller slot (ControllerType + ControllerNumber +
+// ControllerLocation). Path uses pathtype.Path for slash/case folding
+// consistent with hyperv_vhd.path and
+// hyperv_image_file.destination_path, so a forward-slash path
+// round-trips against the bench's canonical backslash form without
+// phantom diffs.
 type HardDiskDriveModel struct {
 	Path               pathtype.Path `tfsdk:"path"`
 	ControllerType     types.String  `tfsdk:"controller_type"`
@@ -157,13 +157,12 @@ type DvdDriveModel struct {
 	ControllerLocation types.Int64   `tfsdk:"controller_location"`
 }
 
-// BootOrderEntryModel is one element of the `boot_order` list on a gen 2
-// hyperv_vm. Type discriminates between hard_disk_drive / dvd_drive
-// entries (which carry the slot tuple) and network_adapter entries
-// (which carry Name). Unused fields for a given Type are null.
-//
-// Gen 1 BIOS startup order is a separate, deferred slice; the schema
-// validator rejects boot_order on gen 1 at plan time.
+// BootOrderEntryModel is one element of the `boot_order` list on a
+// gen 2 hyperv_vm. Type discriminates between hard_disk_drive /
+// dvd_drive entries, which carry the slot tuple, and network_adapter
+// entries, which carry Name; unused fields for a given Type are null.
+// Gen 1 BIOS startup order is a separate, deferred slice, and the
+// schema validator rejects boot_order on gen 1 at plan time.
 type BootOrderEntryModel struct {
 	Type               types.String `tfsdk:"type"`
 	ControllerType     types.String `tfsdk:"controller_type"`

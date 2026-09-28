@@ -1,12 +1,11 @@
-# _test_helpers.ps1 -- shared Pester setup for the image_file verb scripts.
-# Underscore prefix keeps it out of Pester's *.Tests.ps1 discovery glob.
-#
-# Stubs the cmdlets the image_file scripts call, for the same reason
-# vswitch stubs Hyper-V cmdlets: simple parameter sets sidestep the
-# parameter-binding/Pester-mock interaction that drops bound values on
-# PS 5.1. Save-HypervHttpFile isn't stubbed here since it's defined in
-# new.ps1 itself, wrapping the .NET HttpWebRequest call so Pester can
-# mock it (Pester can't intercept .NET method calls directly).
+# _test_helpers.ps1 -- shared Pester setup for the image_file verb
+# scripts, underscore-prefixed to stay out of Pester's *.Tests.ps1
+# discovery glob. Stubs the cmdlets the image_file scripts call, for
+# the same reason vswitch stubs Hyper-V cmdlets: simple parameter sets
+# sidestep the parameter-binding/Pester-mock interaction that drops
+# bound values on PS 5.1. Save-HypervHttpFile isn't stubbed here since
+# it's defined in new.ps1 itself, wrapping the .NET HttpWebRequest call
+# so Pester can mock it directly.
 
 function Get-FileHash {
     [CmdletBinding()]

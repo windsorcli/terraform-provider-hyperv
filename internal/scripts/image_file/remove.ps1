@@ -103,13 +103,10 @@ function New-HypervImageFileLockedError {
 
 # Invoke-HypervImageFileForceDetach walks a holders array and detaches
 # each DVD slot via Set-VMDvdDrive -Path $null. Errors from individual
-# detach calls propagate -- a partial detach is less useful than a
-# clean diagnostic naming the slot that failed, since the operator
-# needs to know whether to retry or escalate to the VM owner.
-#
-# Pulled out of Remove-HypervImageFile to keep the per-holder iteration
-# in one place; the function body would otherwise pile a third nested
-# loop into the catch block.
+# detach calls propagate, since a partial detach is less useful than a
+# clean diagnostic naming the slot that failed. Pulled out of
+# Remove-HypervImageFile to keep the per-holder iteration in one place,
+# rather than piling a third nested loop into its catch block.
 function Invoke-HypervImageFileForceDetach {
     [CmdletBinding()]
     param(

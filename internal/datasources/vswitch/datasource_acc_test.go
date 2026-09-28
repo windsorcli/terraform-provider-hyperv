@@ -93,11 +93,9 @@ func TestAcc_DataVirtualSwitch_NATAugmentedRead(t *testing.T) {
 // vswitchDataNATConfig renders a NAT-switch resource paired with a
 // data source query. When passNatName is true, the data source's
 // nat_name input is wired up; otherwise it's omitted, exercising the
-// "bare read" fallback path.
-//
-// The internal prefix is .222.0/24 (not /100/24 used in the resource
-// acc test) so a stale orphan from an earlier run can't accidentally
-// shadow this one's NetNat at the singleton check.
+// "bare read" fallback path. The internal prefix is .222.0/24, not
+// the resource acc test's .100/24, so a stale orphan from an earlier
+// run can't shadow this one's NetNat at the singleton check.
 func vswitchDataNATConfig(name, natName string, passNatName bool) string {
 	natNameAttr := ""
 	if passNatName {

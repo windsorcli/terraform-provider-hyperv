@@ -59,25 +59,22 @@ const (
 	pvdEffectiveOffset    = pvdOffset + 864
 )
 
-// systemIdentifier is the fixed 32-byte (space-padded) value written into
-// the PVD SystemIdentifier field. Replaces kdomanski's runtime.GOOS so
-// the output is stable regardless of where the runner runs.
-//
-// d-characters per ECMA-119 are A-Z, 0-9, and underscore; the field
-// type is a-characters (broader: also space and a few punctuation).
-// Both subsets accept this value.
+// systemIdentifier is the fixed 32-byte (space-padded) value written
+// into the PVD SystemIdentifier field, replacing kdomanski's
+// runtime.GOOS so the output is stable regardless of where the runner
+// runs. It's valid under both ECMA-119 d-characters (A-Z, 0-9,
+// underscore) and the field's actual a-characters type (broader:
+// space and a few punctuation marks too).
 var systemIdentifier = padToA([]byte("TF-PROVIDER-HYPERV"), pvdSystemIDLen)
 
-// File is one entry to embed at the root of the synthesized ISO.
-// Name is the filename as it appears on the volume; Content is the raw
+// File is one entry to embed at the root of the synthesized ISO. Name
+// is the filename as it appears on the volume; Content is the raw
 // bytes (UTF-8 for cidata YAMLs, XML for autounattend, arbitrary bytes
-// for any other use case).
-//
-// Subdirectories are deliberately not exposed: the canonical NoCloud
-// (cidata) and autounattend layouts both put files at the volume root,
-// and v1 of data.hyperv_iso_volume mirrors that. Adding a hierarchical
-// files map would force callers to think about path delimiters, depth
-// limits, and ECMA-119 8-level-deep restrictions for marginal benefit.
+// otherwise). Subdirectories are deliberately not exposed: the
+// canonical NoCloud (cidata) and autounattend layouts both put files
+// at the volume root, and a hierarchical files map would force callers
+// to think about path delimiters and ECMA-119's depth limit for
+// marginal benefit.
 type File struct {
 	Name    string
 	Content []byte
@@ -129,12 +126,11 @@ func Build(volumeLabel string, files []File) ([]byte, error) {
 }
 
 // stampDeterministicPVD overwrites the non-deterministic fields in the
-// PVD at sector 16 with fixed values. Mutates `iso` in place.
-//
-// Returns an error only when the buffer is too short to contain a PVD
-// (output not big enough to reach the timestamp fields), which can only
-// happen if kdomanski/iso9660's WriteTo silently truncated -- a sanity
-// check, not a user-visible failure mode.
+// PVD at sector 16 with fixed values, mutating `iso` in place. It
+// returns an error only when the buffer is too short to reach the
+// timestamp fields, which can only happen if kdomanski/iso9660's
+// WriteTo silently truncated -- a sanity check, not a user-visible
+// failure mode.
 func stampDeterministicPVD(iso []byte) error {
 	if len(iso) < pvdEffectiveOffset+pvdTimestampLen {
 		return fmt.Errorf("iso buffer too short (%d bytes) to contain a primary volume descriptor",
@@ -203,13 +199,11 @@ func validateVolumeLabel(label string) error {
 	return nil
 }
 
-// validateFiles rejects file lists that the synthesizer can't honor
-// cleanly: empty/duplicate names, names with path separators (this
-// resource only supports root-level files in v1).
-//
-// Empty content is allowed -- some autounattend variants embed
-// zero-byte sentinel files. Empty file *list* is also allowed; the
-// resulting ISO has a valid empty volume.
+// validateFiles rejects file lists the synthesizer can't honor
+// cleanly: empty/duplicate names, or names with path separators (only
+// root-level files are supported). Empty file content is allowed,
+// since some autounattend variants embed zero-byte sentinel files, and
+// an empty file list is allowed too, producing a valid empty volume.
 func validateFiles(files []File) error {
 	seen := make(map[string]struct{}, len(files))
 	for i, f := range files {

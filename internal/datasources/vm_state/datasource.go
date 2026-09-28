@@ -1,10 +1,9 @@
-// Package vm_state implements the hyperv_vm_state data source -- read-only
-// power-state plus IP-address lookup for an existing VM by name. Useful
-// for HCL conditionals and downstream resources that gate on the live
-// VM state without needing to manage the VM itself.
-//
-// Pairs with hyperv_vm.state.{desired, current, shutdown_mode}: the
-// resource manages the transition; this data source reports it.
+// Package vm_state implements the hyperv_vm_state data source:
+// read-only power-state plus IP-address lookup for an existing VM by
+// name, for HCL conditionals and downstream resources that gate on
+// live VM state without managing the VM. Pairs with
+// hyperv_vm.state.{desired, current, shutdown_mode}: the resource
+// manages the transition, this data source reports it.
 package vm_state //nolint:revive // underscore in package matches the resource directory naming pattern.
 
 import (

@@ -17,11 +17,9 @@ import (
 )
 
 // newConnection translates a HypervProviderModel into a configured
-// connection.Connection. Precedence: provider attribute > env var >
-// error/zero.
-//
-// This is the **only** place env vars are read. Resources never touch
-// os.Getenv directly.
+// connection.Connection, with precedence provider attribute > env var
+// > error/zero. This is the only place env vars are read; resources
+// never touch os.Getenv directly.
 func newConnection(_ context.Context, m HypervProviderModel) (connection.Connection, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -44,13 +42,12 @@ func newConnection(_ context.Context, m HypervProviderModel) (connection.Connect
 	}
 }
 
-// newSSHConnection translates a HypervProviderModel into a configured SSH
-// Connection. Resolves auth + host config from provider attributes with
-// HYPERV_SSH_* / HYPERV_HOST / etc. env-var fallbacks.
-//
-// Returns nil with attribute-anchored diagnostics on configuration errors so
-// the operator sees which knob to adjust. The dial itself happens in Open
-// (called from provider.Configure right after this function returns).
+// newSSHConnection translates a HypervProviderModel into a configured
+// SSH Connection, resolving auth + host config from provider
+// attributes with HYPERV_SSH_* / HYPERV_HOST / etc. env-var
+// fallbacks. Returns nil with attribute-anchored diagnostics on
+// configuration errors; the dial itself happens in Open, called from
+// provider.Configure right after this function returns.
 func newSSHConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
 	host := resolveString(m.Host, "HYPERV_HOST", "")
 	if host == "" {
@@ -147,14 +144,13 @@ func resolveDuration(attr types.String, envVar string) (time.Duration, error) {
 	return d, nil
 }
 
-// newWinRMConnection translates a HypervProviderModel into a configured WinRM
-// Connection. Resolves auth + transport config from provider attributes with
-// HYPERV_WINRM_* / HYPERV_HOST / etc. env-var fallbacks.
-//
-// Returns nil with attribute-anchored diagnostics on configuration errors so
-// the operator sees which knob to adjust. The HTTP client and the auth
-// round-trip happen in Open (called from provider.Configure right after this
-// function returns).
+// newWinRMConnection translates a HypervProviderModel into a
+// configured WinRM Connection, resolving auth + transport config from
+// provider attributes with HYPERV_WINRM_* / HYPERV_HOST / etc. env-var
+// fallbacks. Returns nil with attribute-anchored diagnostics on
+// configuration errors; the HTTP client and auth round-trip happen in
+// Open, called from provider.Configure right after this function
+// returns.
 func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connection.Connection {
 	host := resolveString(m.Host, "HYPERV_HOST", "")
 	if host == "" {
@@ -374,13 +370,11 @@ func newLocalConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 	return conn
 }
 
-// resolveInt returns the first set value among:
-//  1. the provider attribute (if known and non-null)
-//  2. the named env var (parsed as int)
-//  3. fallback
-//
-// Returns an error only when an env var is set to a non-integer value -- a
-// missing env var falls through cleanly to the fallback.
+// resolveInt returns the first set value among the provider attribute
+// (if known and non-null), the named env var (parsed as int), then
+// fallback. Returns an error only when an env var is set to a
+// non-integer value; a missing env var falls through cleanly to the
+// fallback.
 func resolveInt(attr types.Int64, envVar string, fallback int) (int, error) {
 	if !attr.IsNull() && !attr.IsUnknown() {
 		return int(attr.ValueInt64()), nil
@@ -395,16 +389,13 @@ func resolveInt(attr types.Int64, envVar string, fallback int) (int, error) {
 	return fallback, nil
 }
 
-// resolveBool returns the first set value among:
-//  1. the provider attribute (if known and non-null)
-//  2. the named env var (case-insensitive: true/false/1/0/t/f/yes/no)
-//  3. fallback
-//
-// An unrecognized env value (e.g. HYPERV_WINRM_USE_HTTPS=disabled) returns
-// an error rather than silently falling back -- matches resolveInt's
-// "fail loud on operator typos" behavior, so a misspelled value surfaces
-// at Configure time instead of producing a confusing TLS handshake error
-// later. An empty env var still falls through to the fallback cleanly.
+// resolveBool returns the first set value among the provider
+// attribute (if known and non-null), the named env var
+// (case-insensitive true/false/1/0/t/f/yes/no), then fallback. An
+// unrecognized env value, e.g. HYPERV_WINRM_USE_HTTPS=disabled,
+// returns an error rather than silently falling back, matching
+// resolveInt's fail-loud behavior; an empty env var still falls
+// through to the fallback cleanly.
 func resolveBool(attr types.Bool, envVar string, fallback bool) (bool, error) {
 	if !attr.IsNull() && !attr.IsUnknown() {
 		return attr.ValueBool(), nil

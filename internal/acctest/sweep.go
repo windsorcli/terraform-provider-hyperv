@@ -10,15 +10,13 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 )
 
-// SweepPrefix is the name prefix every acceptance-test resource carries
-// (see internal/acctest.RandomName). Sweepers enumerate resources
-// matching "SweepPrefix*" and delete them; any non-test resource on the
-// bench is invisible to the sweep by construction.
-//
-// Derived from AccTestPrefix rather than spelled as a literal so a
-// future rename of the canonical prefix can't desync the sweep pattern
-// from what RandomName actually emits -- a desync would silently match
-// nothing and let orphans accumulate with the sweeper still exiting 0.
+// SweepPrefix is the name prefix every acceptance-test resource
+// carries (see RandomName). Sweepers enumerate resources matching
+// "SweepPrefix*" and delete them, so any non-test resource on the
+// bench is invisible to the sweep by construction. Derived from
+// AccTestPrefix rather than spelled as a literal so a rename of the
+// canonical prefix can't desync the sweep pattern from what
+// RandomName actually emits.
 const SweepPrefix = AccTestPrefix + "-"
 
 // NewClientForSweep builds a hyperv.Client from the same HYPERV_* env

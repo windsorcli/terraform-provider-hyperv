@@ -250,14 +250,11 @@ function Invoke-HypervDvdSafeReplace {
 
 # New-HypervImageFileFromLocalPath verifies a file the Go-side StreamFile
 # primitive has just deposited at staging_path, then atomic-renames it to
-# destination_path on hash match. Same verify-then-rename structure as
-# url mode; only the origin of the staged bytes differs.
-#
-# ReplaceWhileMounted opts the Move-Item step into the
-# detach-write-attach dance via Invoke-HypervDvdSafeReplace. Callers that
-# place files which may be mounted as a Hyper-V DVD on a running VM
-# (currently only iso_volume seeds; image_file's vhdx workloads don't
-# hot-replace under a VM's HardDiskController) set this flag.
+# destination_path on hash match (same verify-then-rename structure as
+# url mode, only the origin of the staged bytes differs). ReplaceWhileMounted
+# opts the Move-Item step into the detach-write-attach dance via
+# Invoke-HypervDvdSafeReplace, for callers placing files that may be
+# mounted as a Hyper-V DVD on a running VM.
 function New-HypervImageFileFromLocalPath {
     [CmdletBinding()]
     param(

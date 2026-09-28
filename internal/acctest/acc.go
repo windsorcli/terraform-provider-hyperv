@@ -37,15 +37,10 @@ import (
 const AccTestPrefix = "tfacc"
 
 // ProtoV6ProviderFactories registers the in-process provider under the
-// short name `hyperv`. terraform-plugin-testing wires this factory into
-// the test-driven Terraform CLI invocations so acceptance test Steps
-// don't shell out to a real `terraform-provider-hyperv` binary -- they
-// run the same code we just compiled.
-//
-// The version "test" is what main.version receives at non-release builds;
-// keeping it consistent with `task install` (which uses "0.0.0-dev") is
-// not load-bearing here -- the framework only cares about the protocol
-// version (6) the factory advertises.
+// short name `hyperv`, so acceptance test Steps run the same compiled
+// code instead of shelling out to a real binary. The version "test" is
+// what main.version receives at non-release builds; the framework only
+// cares about the protocol version (6) the factory advertises.
 var ProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
 	"hyperv": providerserver.NewProtocol6WithError(provider.New("test")()),
 }
@@ -108,16 +103,12 @@ func RequireEnv(t *testing.T, key string) string {
 	return v
 }
 
-// RandomName returns a unique resource name that's identifiable as
-// belonging to an acc test run. Format: `tfacc-<scenario>-<8-random-lower>`.
-//
-// The `scenario` arg disambiguates across tests in the same package
-// (e.g. RandomName("vswitch-private") vs RandomName("vswitch-internal"))
-// so a partial-cleanup scenario doesn't conflate them.
-//
-// Lowercase alpha-numeric only -- Hyper-V switch and VM names tolerate
-// dashes but not underscores or spaces in some cmdlet contexts, and
-// uppercase complicates the case-insensitive sweep filter.
+// RandomName returns a unique resource name identifiable as belonging
+// to an acc test run: `tfacc-<scenario>-<8-random-lower>`. `scenario`
+// disambiguates across tests in the same package so a partial-cleanup
+// run doesn't conflate them; the suffix is lowercase alpha-numeric
+// since Hyper-V names tolerate dashes but not underscores or spaces in
+// some cmdlet contexts, and uppercase complicates the sweep filter.
 func RandomName(scenario string) string {
 	suffix := tfacctest.RandStringFromCharSet(8, tfacctest.CharSetAlphaNum)
 	return AccTestPrefix + "-" + scenario + "-" + strings.ToLower(suffix)

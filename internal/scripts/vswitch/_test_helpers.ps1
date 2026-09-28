@@ -1,12 +1,12 @@
-# _test_helpers.ps1 -- shared Pester setup for the vswitch verb scripts.
-# Underscore prefix keeps it out of Pester's *.Tests.ps1 discovery glob.
-#
-# Stubs the Hyper-V cmdlets unconditionally: the real module's Set-VMSwitch
-# parameter sets reject some bound-value combinations before Pester's mock
-# body runs (e.g. -Name + -NetAdapterName without -SwitchType on PS 5.1),
-# so these simplified stubs shadow them and let ParameterFilters see bound
-# values consistently. Production scripts run via -EncodedCommand in a
-# fresh runspace and never see this shadow.
+# _test_helpers.ps1 -- shared Pester setup for the vswitch verb
+# scripts, underscore-prefixed to stay out of Pester's *.Tests.ps1
+# discovery glob. Stubs the Hyper-V cmdlets unconditionally, since the
+# real module's Set-VMSwitch parameter sets reject some bound-value
+# combinations before Pester's mock body runs (e.g. -Name +
+# -NetAdapterName without -SwitchType on PS 5.1); these simplified
+# stubs shadow them so ParameterFilters see bound values consistently.
+# Production scripts run via -EncodedCommand in a fresh runspace and
+# never see this shadow.
 
 function Get-VMSwitch {
     [CmdletBinding()]

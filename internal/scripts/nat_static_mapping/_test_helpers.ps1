@@ -1,11 +1,11 @@
-# _test_helpers.ps1 -- shared Pester setup for the nat_static_mapping verb
-# scripts. Underscore prefix keeps it out of Pester's *.Tests.ps1 glob.
-#
-# Stubs the NetNat / NetFirewall cmdlets unconditionally: the real
-# modules' parameter sets reject some bound-value combinations before
-# Pester's mock body runs, so these simplified stubs shadow them and
-# let ParameterFilters see bound values consistently. Production
-# scripts run via -EncodedCommand in a fresh runspace and never see it.
+# _test_helpers.ps1 -- shared Pester setup for the nat_static_mapping
+# verb scripts, underscore-prefixed to stay out of Pester's
+# *.Tests.ps1 glob. Stubs the NetNat / NetFirewall cmdlets
+# unconditionally, since the real modules' parameter sets reject some
+# bound-value combinations before Pester's mock body runs; these
+# simplified stubs shadow them so ParameterFilters see bound values
+# consistently. Production scripts run via -EncodedCommand in a fresh
+# runspace and never see it.
 
 # NetNat singleton-resolution: nat_static_mapping references an existing NAT
 # by name (provider precondition). Get-NetNat is the cross-resource

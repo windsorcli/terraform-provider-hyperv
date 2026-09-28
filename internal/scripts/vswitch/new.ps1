@@ -85,14 +85,13 @@ function New-HypervSwitch {
         Write-HypervResult
 }
 
-# New-HypervNatSwitch provisions an Internal VMSwitch + NetIPAddress on the
-# host vNIC + NetNat tying the prefix to that vNIC.
-#
-# Idempotent adoption: if a NetNat with the planned name already exists
-# (re-apply or terraform import), New-NetNat is skipped and the existing
-# instance is reused. Prefix mismatch on the same-named NetNat throws --
-# RequiresReplace on the prefix attribute would otherwise loop, since
-# adoption locks state to the host's actual prefix.
+# New-HypervNatSwitch provisions an Internal VMSwitch + NetIPAddress on
+# the host vNIC + NetNat tying the prefix to that vNIC. Idempotent
+# adoption: if a NetNat with the planned name already exists (re-apply
+# or terraform import), New-NetNat is skipped and the existing instance
+# is reused; a prefix mismatch on the same-named NetNat throws, since
+# RequiresReplace on the prefix attribute would otherwise loop against
+# adoption locking state to the host's actual prefix.
 function New-HypervNatSwitch {
     [CmdletBinding()]
     param(

@@ -172,15 +172,14 @@ type Model struct {
 	NatHostAddress                 types.String `tfsdk:"nat_host_address"`
 }
 
-// readVSwitch is the framework-detached core: easy to unit-test against a
-// hyperv.Client backed by a fakeRunner. Maps client errors to anchored
-// diagnostics so test cases can assert on the user-facing message without
-// constructing a full ReadRequest.
-//
-// natName is the optional NAT-augmentation knob: non-empty joins
-// Get-NetNat + Get-NetIPAddress with the VMSwitch read; empty returns
-// the bare read, so a NAT-typed switch surfaces as "Internal" with
-// empty nat_* fields.
+// readVSwitch is the framework-detached core, easy to unit-test
+// against a hyperv.Client backed by a fakeRunner: it maps client
+// errors to anchored diagnostics so test cases can assert on the
+// user-facing message without constructing a full ReadRequest. natName
+// is the optional NAT-augmentation knob: non-empty joins Get-NetNat +
+// Get-NetIPAddress with the VMSwitch read; empty returns the bare
+// read, so a NAT-typed switch surfaces as "Internal" with empty
+// nat_* fields.
 func readVSwitch(ctx context.Context, c *hyperv.Client, name, natName string) (Model, diag.Diagnostics) {
 	var diags diag.Diagnostics
 

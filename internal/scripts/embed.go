@@ -106,11 +106,10 @@ func NetNatScript(verb string) ([]byte, error) {
 //go:embed vm/read-result.ps1
 var VM embed.FS
 
-// VMScript returns the contents of vm/<verb>.ps1.
-//
-// `verb` is the file name without extension. For multi-word verbs use the
-// hyphenated form ("add-hard-disk-drive"). The base verbs are
-// get/new/set/remove; attachment verbs add the specific cmdlet name.
+// VMScript returns the contents of vm/<verb>.ps1. `verb` is the file
+// name without extension: get/new/set/remove for the base verbs, or
+// the hyphenated cmdlet name for an attachment verb
+// ("add-hard-disk-drive").
 func VMScript(verb string) ([]byte, error) {
 	return VM.ReadFile("vm/" + verb + ".ps1")
 }

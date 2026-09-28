@@ -29,10 +29,9 @@ import (
 
 var _ datasource.DataSource = (*DataSource)(nil)
 
-// DataSource implements data.hyperv_iso_volume.
-//
-// Stateless -- no Configure, no client. Synthesis happens entirely on
-// the runner via internal/iso.Build.
+// DataSource implements data.hyperv_iso_volume. Stateless: no
+// Configure, no client, since synthesis happens entirely on the
+// runner via internal/iso.Build.
 type DataSource struct{}
 
 // New is the framework factory.
@@ -132,11 +131,10 @@ func (d *DataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp 
 	}
 }
 
-// Model is the tfsdk-bound state struct.
-//
-// Field tags align with schema attribute names. The user supplies
-// `volume_label` and `files`; the data source computes `content_base64`,
-// `sha256`, `size_bytes`, and `id` (mirror of sha256).
+// Model is the tfsdk-bound state struct, with tags aligned to the
+// schema attribute names. The user supplies `volume_label` and
+// `files`; the data source computes `content_base64`, `sha256`,
+// `size_bytes`, and `id` (a mirror of sha256).
 type Model struct {
 	VolumeLabel   types.String `tfsdk:"volume_label"`
 	Files         types.Map    `tfsdk:"files"`

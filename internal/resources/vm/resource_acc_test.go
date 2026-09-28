@@ -32,13 +32,11 @@ const (
 )
 
 // TestAcc_VM_basic exercises the no-attachment path: VM creation,
-// scalar (cpu/memory/notes) update, import, destroy.
-//
-// The notes update at step 2 doubles as a plan-action assertion that
-// scalar mutations stay in-place, not RequiresReplace -- a regression
-// flipping notes to RequiresReplace would silently destroy-and-recreate
-// the VM, and the state checks would still pass against the fresh
-// resource. The plancheck pin catches that explicitly.
+// scalar (cpu/memory/notes) update, import, destroy. The notes update
+// at step 2 doubles as a plancheck pin that scalar mutations stay
+// in-place, not RequiresReplace, since a regression there would
+// silently destroy-and-recreate the VM while the state checks still
+// passed against the fresh resource.
 func TestAcc_VM_basic(t *testing.T) {
 	name := acctest.RandomName("vm-basic")
 	client := acctest.NewClient(t)
@@ -210,10 +208,8 @@ resource "hyperv_vm" "test" {
 
 // TestAcc_VM_withNetworkAdapter chains a hyperv_virtual_switch to a
 // hyperv_vm via the inline network_adapter list. Three steps mirror
-// the HDD test pattern: attach one, add a second, remove the first.
-//
-// Uses Private switches throughout so no host NIC binding is needed
-// (matches what TestAcc_VirtualSwitch_basic exercises).
+// the HDD test pattern: attach one, add a second, remove the first,
+// using Private switches throughout so no host NIC binding is needed.
 func TestAcc_VM_withNetworkAdapter(t *testing.T) {
 	name := acctest.RandomName("vm-nic")
 	switchPrimary := acctest.RandomName("nic-sw-primary")
