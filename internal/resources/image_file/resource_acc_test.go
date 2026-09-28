@@ -1,30 +1,23 @@
 package image_file_test
 
-// Acceptance tests for hyperv_image_file. Four modes:
+// Acceptance tests for hyperv_image_file. Four modes, each hermetic
+// except host_path, which needs a pre-placed bench file:
 //
-//   - host_path: file is already on the bench; the resource verifies
-//     presence and tracks SHA-256 for drift. Cheapest to test (no I/O,
-//     no network) -- gated on HYPERV_TEST_HOST_FILE pointing at a
-//     pre-placed file on the bench.
-//   - url: provider downloads, checksum-verifies, atomic-renames into
-//     place. Real I/O against a real URL. Hermetic: the test stands up
-//     an httptest.Server bound to the runner's LAN-routable IP and the
-//     bench downloads from there. No external network dependency, no
-//     fixture-host coordination.
-//   - local_path: provider streams a runner-local file through the
-//     active connection backend (SSH or WinRM) to a sibling .part of
-//     destination_path, verifies the streamed bytes' SHA against the
-//     runner-computed value, atomic-renames into place. Hermetic too:
-//     the runner-side fixture is written in t.TempDir(); destination is
-//     a per-test path under HYPERV_TEST_VHD_DIR.
-//   - source_path: provider copies a file the bench already holds to a
-//     second path on the bench, verifies the copy against the SHA read
-//     from the source at plan time, atomic-renames into place. Hermetic:
-//     the source is staged out-of-band via the typed client under
-//     HYPERV_TEST_VHD_DIR, so no runner-to-bench transfer is involved.
+//   - host_path: verifies presence and tracks SHA-256 for an existing
+//     bench file. Gated on HYPERV_TEST_HOST_FILE.
+//   - url: downloads, checksum-verifies, and atomic-renames. An
+//     httptest.Server bound to the runner's LAN-routable IP stands in
+//     for the external URL, so no real network dependency.
+//   - local_path: streams a runner-local file (written to t.TempDir())
+//     through the active connection backend, verifies the streamed
+//     SHA, and atomic-renames to a path under HYPERV_TEST_VHD_DIR.
+//   - source_path: copies a file staged out-of-band via the typed
+//     client under HYPERV_TEST_VHD_DIR, verifying against the SHA read
+//     from the source at plan time.
 //
-// See docs/contributing/acceptance-tests.md for the bench setup that
-// stages a test fixture file at a stable path.
+// See docs/contributing/acceptance-tests.md for the bench setup.
+//
+// lint:allow-long-comment
 
 import (
 	"bytes"
@@ -71,28 +64,13 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 	hostFile := acctest.RequireEnv(t, "HYPERV_TEST_HOST_FILE")
 	client := acctest.NewClient(t)
 
-	// Use forward-slash form in HCL to exercise pathtype.Path's
-	// StringSemanticEquals path. The framework retains the user's plan
-	// representation in state when semantic-equals returns true, so
-	// state will hold the forward-slash form as well -- the same value
-	// is reused for the StringExact assertion below.
+	// Forward-slash form exercises StringSemanticEquals; state retains it, so the assertion below reuses the value.
 	hclPath := toForwardSlash(hostFile)
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// host_path mode: Delete is documented as a no-op on the
-		// underlying file -- the user attests the file exists, the
-		// provider just tracks it. CheckDestroy here asserts the
-		// inverse of CheckResourceGone: the file should STILL be
-		// readable on the bench after destroy. A regression that made
-		// host_path Delete remove the file would catch fire here.
-		//
-		// Per-Get timeout matches acctest.CheckResourceGone: a dropped
-		// bench connection between Terraform's destroy and this Get
-		// would otherwise block until the process-level go-test
-		// timeout (120 min per the Taskfile). 30s is generous against
-		// a healthy bench.
+		// Inverse of CheckResourceGone: host_path Delete is a no-op, so the file must still be readable after destroy.
 		CheckDestroy: func(s *terraform.State) error {
 			for _, rs := range s.RootModule().Resources {
 				if rs.Type != "hyperv_image_file" {
@@ -128,32 +106,7 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 			{
 				ResourceName: "hyperv_image_file.test",
 				ImportState:  true,
-				// Why hclPath (forward-slash) and not hostFile (backslash):
-				//
-				// terraform-plugin-testing's ImportStateVerify
-				// (helper/resource/testing_new_import_state.go ~line 418
-				// in v1.16) uses reflect.DeepEqual on flattened
-				// map[string]string state -- byte-for-byte, no
-				// StringSemanticEquals invocation at the verify layer.
-				// The comparison is between the prior TestStep's state
-				// and the post-import state.
-				//
-				// The Apply step retains the user's forward-slash form in
-				// state via pathtype.Path's StringSemanticEquals. Post-
-				// import, the framework runs Read, and modelFromImageFile
-				// writes the cmdlet's backslash form -- but the framework's
-				// resp.State.Set merges new values against the just-set
-				// passthrough value using SemanticEquals, so the prior
-				// (forward) is retained. Both pre- and post-import state
-				// end up forward; verify passes.
-				//
-				// Verified empirically (2026-04): swapping hclPath ->
-				// hostFile produces a clean ImportStateVerify failure
-				// with diff "destination_path: forward != backslash",
-				// confirming the reliance on resp.State.Set's semantic-
-				// merge path. If this test breaks after a
-				// terraform-plugin-framework upgrade, suspect a change to
-				// that merge behavior.
+				// Forward-slash ImportStateId is correct: Read's state merge via StringSemanticEquals retains it despite the cmdlet's backslash form.
 				ImportStateId:     hclPath,
 				ImportStateVerify: true,
 			},
@@ -162,26 +115,12 @@ func TestAcc_ImageFile_hostPath(t *testing.T) {
 }
 
 // TestAcc_ImageFile_url exercises url-mode end-to-end: download,
-// checksum verify, atomic rename. Hermetic -- no external network
-// dependency, no third-party fixture host. The test:
-//
-//  1. Computes the runner's LAN-routable IP for the bench (UDP-dial
-//     trick on HYPERV_HOST; falls back to 127.0.0.1 for local backend).
-//  2. Stands up an httptest.Server bound to that IP serving a few-byte
-//     in-test fixture. The bench's Invoke-WebRequest / Start-BitsTransfer
-//     downloads it like any other HTTP source.
-//  3. Computes the fixture's sha256 in-test so the checksum the resource
-//     verifies against is always exact for the bytes served.
-//  4. Asserts on destination_path (round-trip), sha256 (Computed equals
-//     the in-test hash), and size_bytes (Computed equals len(fixture)).
-//
-// Caveat: requires the bench to route back to the runner. Standard
-// flat-LAN setups work; NAT'd or asymmetrically-routed environments
-// will hang at apply time on the download. The UDP routing-table
-// lookup at the start can't detect that asymmetry -- it only knows
-// what *the runner* would use as source IP, not whether the bench
-// can reach back. If this becomes a problem, add a HEAD-from-bench
-// pre-check via the typed client.
+// checksum verify, atomic rename. An in-test httptest.Server bound to
+// the runner's LAN-routable IP serves a fixture the bench downloads
+// over HTTP, so the test needs no external network dependency.
+// Requires the bench to route back to the runner; NAT'd or
+// asymmetrically-routed setups skip via BenchCanReach below rather
+// than hang at apply time.
 func TestAcc_ImageFile_url(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
 	client := acctest.NewClient(t)
@@ -199,26 +138,18 @@ func TestAcc_ImageFile_url(t *testing.T) {
 	url := srv.URL + "/fixture.bin"
 	checksum := "sha256:" + hexSum
 
-	// Pre-flight: verify the bench can reach the fixture server. The UDP
-	// routing-table trick in RunnerIPForBench reveals the runner's source IP
-	// but cannot tell whether the bench has a return path to it. Tailscale
-	// subnet routing is the common case where it doesn't: the Mac routes to
-	// the bench via Tailscale (source = 100.x.x.x Tailscale CGNAT), but the
-	// bench has no Tailscale and cannot route back to 100.x.x.x.
+	// RunnerIPForBench can't detect asymmetric routing (e.g. Tailscale), so confirm the bench can actually reach back.
 	if !acctest.BenchCanReach(t, client, url) {
 		t.Skipf("bench cannot reach fixture server at %s (asymmetric routing); skipping url-mode test", url)
 	}
 
-	// Forward-slash form for the same reason as TestAcc_ImageFile_hostPath
-	// -- exercises pathtype.Path's StringSemanticEquals against the bench.
+	// Forward-slash form exercises pathtype.Path's StringSemanticEquals against the bench.
 	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-url")+".bin"))
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// url-mode: provider downloaded the file, so destroy must
-		// remove it. The standard "gone after destroy" assertion
-		// applies here, unlike host_path mode above.
+		// url-mode: provider downloaded the file, so destroy must remove it (unlike host_path mode).
 		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
 		Steps: []resource.TestStep{
 			{
@@ -229,10 +160,7 @@ func TestAcc_ImageFile_url(t *testing.T) {
 						tfjsonpath.New("destination_path"),
 						knownvalue.StringExact(dest),
 					),
-					// Exact match: we know the bytes the bench downloaded
-					// (we served them) so we know the exact hash. A drift
-					// here would mean the bench wrote different bytes than
-					// it read -- a real provider bug.
+					// Exact match: the served bytes are known, so a drift here means the bench wrote different bytes than it read.
 					statecheck.ExpectKnownValue(
 						"hyperv_image_file.test",
 						tfjsonpath.New("sha256"),
@@ -249,23 +177,13 @@ func TestAcc_ImageFile_url(t *testing.T) {
 	})
 }
 
-// TestAcc_ImageFile_urlGzip exercises url-mode with `compression = "gz"`
-// end-to-end: the runner downloads a gzip-encoded fixture from the
-// in-test httptest.Server, decompresses it in-process, streams the
-// decompressed bytes to a `.part` sibling on the bench, and the host
-// script verifies the runner-computed decompressed SHA before atomic-
-// renaming into place.
-//
-// The user-supplied `checksum` here is the SHA of the *compressed* bytes
-// (publisher-shaped), per the schema documentation. The on-disk
-// `sha256` Computed attribute reflects the *decompressed* payload --
-// asserting both confirms the two-SHA contract holds end-to-end (a
-// regression that compared the wrong hash on either side would surface
-// as an apply-time mismatch or an unexpected state value).
-//
-// Hermetic in the same shape as TestAcc_ImageFile_url: in-test fixture,
-// in-test server, no external dependency. Adds gzip encoding on top of
-// the existing fixture-byte plumbing.
+// TestAcc_ImageFile_urlGzip exercises url-mode with `compression = "gz"`:
+// the runner downloads a gzip-encoded fixture, decompresses it
+// in-process, and streams the result to the bench. The user-supplied
+// `checksum` is the SHA of the compressed bytes; the on-disk `sha256`
+// Computed attribute reflects the decompressed payload, so asserting
+// both confirms the two-SHA contract holds end-to-end. Hermetic like
+// TestAcc_ImageFile_url, with gzip encoding added on top.
 func TestAcc_ImageFile_urlGzip(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
 	client := acctest.NewClient(t)
@@ -304,8 +222,7 @@ func TestAcc_ImageFile_urlGzip(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// url-mode with compression: provider streamed the file on
-		// Create, so destroy must remove it. Same shape as plain url-mode.
+		// Same as plain url-mode: Create streamed the file, so destroy must remove it.
 		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
 		Steps: []resource.TestStep{
 			{
@@ -316,10 +233,7 @@ func TestAcc_ImageFile_urlGzip(t *testing.T) {
 						tfjsonpath.New("destination_path"),
 						knownvalue.StringExact(dest),
 					),
-					// On-disk sha256 must equal the *decompressed* hash,
-					// not the user-supplied compressed checksum. A regression
-					// that wrote the compressed hash into state (or compared
-					// it on the host) would fail this exactly.
+					// On-disk sha256 is the decompressed hash, not the user-supplied compressed checksum.
 					statecheck.ExpectKnownValue(
 						"hyperv_image_file.test",
 						tfjsonpath.New("sha256"),
@@ -336,12 +250,9 @@ func TestAcc_ImageFile_urlGzip(t *testing.T) {
 	})
 }
 
-// TestAcc_ImageFile_urlXz exercises url-mode with `compression = "xz"`
-// end-to-end. xz is the Talos publisher format -- the runner-pipelined
-// flow's headline use case. Same hermetic setup as TestAcc_ImageFile_urlGzip
-// (in-test fixture, in-test server, decompressed sha asserted against
-// the on-disk hash) so the bench-side machinery stays identical and the
-// only thing that varies is the codec.
+// TestAcc_ImageFile_urlXz exercises url-mode with `compression = "xz"`,
+// the Talos publisher format. Same hermetic setup as
+// TestAcc_ImageFile_urlGzip; only the codec varies.
 func TestAcc_ImageFile_urlXz(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
 	client := acctest.NewClient(t)
@@ -474,27 +385,9 @@ func TestAcc_ImageFile_urlZstd(t *testing.T) {
 }
 
 // TestAcc_ImageFile_localPath exercises local_path mode end-to-end:
-// stream a runner-local file to a staging path on the bench, verify
-// the streamed bytes' SHA, atomic-rename, then re-stream after a
-// content change to prove the ModifyPlan-driven Update path works.
-//
-// Hermetic: the runner-side fixture is written in t.TempDir(); the
-// bench-side destination is a per-test file under HYPERV_TEST_VHD_DIR
-// that gets cleaned up by destroy. Two TestSteps:
-//
-//  1. Apply with the original fixture; assert state mirrors the
-//     runner-computed SHA / size, and local_path round-trips through
-//     state.
-//  2. Rewrite the runner-side file in PreConfig with different bytes
-//     (same path), re-apply; assert state reflects the new SHA / size.
-//     This is the load-bearing assertion that ModifyPlan + the Update
-//     re-stream path actually wire up -- a regression that left
-//     UseStateForUnknown in charge would silently skip the re-stream.
-//
-// CheckDestroy: provider put the file on the bench, so destroy must
-// remove it (parallel to url-mode). A regression that made local_path
-// Delete a no-op (e.g., extending the host_path skip rule) would
-// catch fire here.
+// stream a runner-local file to the bench, verify the SHA, then
+// rewrite the runner-side file and re-apply to prove the
+// ModifyPlan-driven Update re-stream path wires up correctly.
 func TestAcc_ImageFile_localPath(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
 	client := acctest.NewClient(t)
@@ -516,8 +409,7 @@ func TestAcc_ImageFile_localPath(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// local_path mode: provider streamed the file on Create, so
-		// destroy must remove it (parallel to url-mode).
+		// local_path mode: provider streamed the file on Create, so destroy must remove it (parallel to url-mode).
 		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
 		Steps: []resource.TestStep{
 			{
@@ -546,10 +438,7 @@ func TestAcc_ImageFile_localPath(t *testing.T) {
 				},
 			},
 			{
-				// Rewrite the runner-side file with different bytes at
-				// the same path. ModifyPlan recomputes the SHA at plan
-				// time; framework sees the diff against state's SHA;
-				// Update re-streams.
+				// Same path, different bytes: ModifyPlan recomputes the SHA, and the diff against state drives Update.
 				PreConfig: func() {
 					if err := os.WriteFile(fixturePath, v2, 0o644); err != nil {
 						t.Fatalf("rewrite fixture v2: %v", err)
@@ -597,9 +486,7 @@ func TestAcc_ImageFile_sharedDestinationPath(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// Whichever resource's destroy runs first deletes the shared
-		// file; the other's destroy then finds it already gone
-		// (ErrNotFound), which Delete already treats as success.
+		// Whichever destroy runs second finds the file already gone; Delete treats that ErrNotFound as success.
 		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
 		Steps: []resource.TestStep{
 			{
@@ -621,19 +508,11 @@ func TestAcc_ImageFile_sharedDestinationPath(t *testing.T) {
 	})
 }
 
-// TestAcc_ImageFile_keepOnDestroy_localPath exercises the cache-the-
-// bytes escape hatch: with keep_on_destroy=true, a streamed local_path
-// file persists on the bench after `terraform destroy` removes the
-// resource from state. CheckResourceGone is the inverse of what we
-// want here -- using it would fail the test the moment Delete returns
-// (correctly) without invoking RemoveImageFile. Instead, the
-// CheckDestroy here asserts the *opposite*: the file must STILL be
-// readable on the bench after destroy. A regression that made
-// keep_on_destroy ignore the flag and delete anyway would surface
-// here as the file going missing.
-//
-// Cleans up the orphan in t.Cleanup so the bench doesn't accumulate
-// stale fixtures across runs.
+// TestAcc_ImageFile_keepOnDestroy_localPath exercises
+// keep_on_destroy=true: a streamed local_path file must persist on
+// the bench after `terraform destroy` removes the resource from
+// state, so CheckDestroy here asserts the file is still readable
+// rather than gone. t.Cleanup removes the orphan afterward.
 func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
 	client := acctest.NewClient(t)
@@ -647,9 +526,7 @@ func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 
 	dest := toForwardSlash(joinHostPath(dir, acctest.RandomName("img-keep")+".bin"))
 
-	// Belt-and-braces orphan cleanup. The whole point of this test is
-	// that destroy leaves the file behind; the test itself must clean
-	// up so subsequent runs start from a known-empty bench state.
+	// Destroy leaves the file behind by design, so the test cleans it up itself.
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -661,10 +538,7 @@ func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// Inverse of CheckResourceGone: the file must persist post-
-		// destroy. A regression that ignored keep_on_destroy and
-		// deleted anyway would fail this with a clear error pointing
-		// at the destination_path that should still exist.
+		// Inverse of CheckResourceGone: the file must persist post-destroy.
 		CheckDestroy: func(s *terraform.State) error {
 			for _, rs := range s.RootModule().Resources {
 				if rs.Type != "hyperv_image_file" {
@@ -701,25 +575,13 @@ func TestAcc_ImageFile_keepOnDestroy_localPath(t *testing.T) {
 	})
 }
 
-// TestAcc_ImageFile_urlAndLocalPathConflict drives the
+// TestAcc_ImageFile_urlAndLocalPathConflict drives
 // urlAndLocalPathConflictValidator from the actual plan-time path
-// (rather than the unit test's direct .validate(...) call). A regression
-// that dropped the validator from ConfigValidators would let an
-// ambiguous config through to apply, where the resource layer would
-// pick url over local_path silently -- the validator is the only thing
-// keeping that confused config out.
-//
-// The malformed-on-purpose config doesn't actually need a reachable
-// bench since the framework's plan-time validators run before any
-// resource-level network call. The TF_ACC gate via RequireEnv keeps
-// this test out of `task test:unit` runs (matching the other acc
-// tests in this file); PreCheck inside resource.TestCase still runs
-// the standard env-var checks under `task test:acc`.
+// rather than a direct .validate(...) call. The config never reaches
+// the bench, since plan-time validators run before any resource-level
+// network call; RequireEnv's TF_ACC gate just keeps this test out of
+// `task test:unit` runs, matching the other acc tests in this file.
 func TestAcc_ImageFile_urlAndLocalPathConflict(t *testing.T) {
-	// The test doesn't read HYPERV_TEST_VHD_DIR, but RequireEnv's
-	// TF_ACC gate is the cleanest way to skip outside acceptance runs.
-	// The dir value itself is unused -- the bench is never touched
-	// because the validator rejects at plan time.
 	_ = acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
 
 	runnerDir := t.TempDir()
@@ -737,9 +599,7 @@ func TestAcc_ImageFile_urlAndLocalPathConflict(t *testing.T) {
 					"C:/hyperv/tfacc/never-applied.bin",
 					fixturePath,
 					"https://example.com/never-fetched.bin",
-					// 64 hex chars to satisfy the schema regex; the
-					// validator fires before checksum verification, so
-					// the actual bytes don't matter.
+					// 64 hex chars to satisfy the schema regex; the validator fires before checksum verification.
 					"sha256:0000000000000000000000000000000000000000000000000000000000000000",
 				),
 				ExpectError: regexp.MustCompile(`mutually exclusive`),
@@ -901,21 +761,12 @@ func toForwardSlash(p string) string {
 	return strings.ReplaceAll(p, `\`, `/`)
 }
 
-// TestAcc_ImageFile_sourcePath exercises source_path mode end to end and,
-// more importantly, the reason the mode exists: an upstream image replaced
-// in place under a fixed name must propagate to the copy on the next
-// apply. Step 1 stages a source on the bench and copies it; step 2 swaps
-// the source's bytes out-of-band and re-applies. ModifyPlan hashes the
-// host-side source at plan time, so the swap surfaces as a sha256 diff and
-// Update re-copies -- no config change, no taint, no differencing-disk
-// re-parenting.
-//
-// The source is staged with the typed client rather than a second
-// hyperv_image_file resource on purpose. That matches the workflow this
-// mode targets (a vendor image refreshed by something outside Terraform),
-// and it sidesteps the one-apply lag a Terraform-managed source would
-// have: plan hashes the source as it is *now*, which for a source
-// scheduled to change in the same apply is still the old bytes.
+// TestAcc_ImageFile_sourcePath exercises source_path mode: an upstream
+// image replaced in place under a fixed name must propagate to the
+// copy on the next apply, with no config change or taint needed. The
+// source is staged with the typed client rather than a second
+// hyperv_image_file resource, matching the workflow this mode targets
+// and avoiding the one-apply lag a Terraform-managed source would add.
 func TestAcc_ImageFile_sourcePath(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR") // gates on TF_ACC
 	client := acctest.NewClient(t)
@@ -929,8 +780,7 @@ func TestAcc_ImageFile_sourcePath(t *testing.T) {
 	v2Hex := hex.EncodeToString(sha256OfBytes(v2))
 
 	stageSource(t, client, sourcePath, v1)
-	// The source is not Terraform-managed, so nothing in the test case
-	// removes it. Clean up explicitly or the bench accumulates fixtures.
+	// The source isn't Terraform-managed, so nothing in the test case removes it.
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -942,10 +792,7 @@ func TestAcc_ImageFile_sourcePath(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// The provider placed the copy, so destroy must remove it. The
-		// source is untouched by destroy -- t.Cleanup above is what
-		// reclaims it, and it running without error is itself evidence
-		// the destroy didn't take the source with it.
+		// The provider placed the copy, so destroy must remove it; the source is untouched (t.Cleanup reclaims it).
 		CheckDestroy: acctest.CheckResourceGone("hyperv_image_file", client.GetImageFile),
 		Steps: []resource.TestStep{
 			{
@@ -974,10 +821,7 @@ func TestAcc_ImageFile_sourcePath(t *testing.T) {
 				},
 			},
 			{
-				// Replace the source's bytes at the same path, the way an
-				// image refresh does. ModifyPlan re-hashes the source, the
-				// framework sees the diff against state's sha256, and
-				// Update re-copies.
+				// Same path, new bytes, like an image refresh: ModifyPlan re-hashes and Update re-copies.
 				PreConfig: func() { stageSource(t, client, sourcePath, v2) },
 				Config:    imageFileSourcePathConfig(dest, toForwardSlash(sourcePath)),
 				ConfigStateChecks: []statecheck.StateCheck{
@@ -1020,10 +864,9 @@ func TestAcc_ImageFile_sourcePathEqualsDestination(t *testing.T) {
 }
 
 // stageSource writes body to path on the bench, out of band from
-// Terraform. Used to stand up (and later replace) the upstream image the
-// source_path tests copy from. NewImageFileFromBytes is the cheapest
-// typed-client route to "put these exact bytes at this host path" -- it
-// overwrites, so replacing the fixture is the same call as creating it.
+// Terraform, standing up (and later replacing) the upstream image the
+// source_path tests copy from. NewImageFileFromBytes overwrites, so
+// replacing the fixture is the same call as creating it.
 func stageSource(t *testing.T, client *hyperv.Client, path string, body []byte) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

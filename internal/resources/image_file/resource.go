@@ -140,8 +140,7 @@ func (v sourceModeExclusivityValidator) validate(ctx context.Context, data Model
 	if !sourcePathSet || data.DestinationPath.IsNull() || data.DestinationPath.IsUnknown() {
 		return diags
 	}
-	// StringSemanticEquals, not Equal: `C:/images/x.vhdx` and
-	// `C:\Images\X.vhdx` are one file to Windows.
+	// StringSemanticEquals, not Equal: C:/images/x.vhdx and C:\Images\X.vhdx are one file to Windows.
 	same, semanticDiags := data.SourcePath.StringSemanticEquals(ctx, data.DestinationPath)
 	diags.Append(semanticDiags...)
 	if same {
@@ -160,26 +159,13 @@ func (v sourceModeExclusivityValidator) validate(ctx context.Context, data Model
 }
 
 // ModifyPlan computes the runner-side SHA-256 and size of the bytes
-// that will land on the host (read from `local_path` for local_path-
-// mode, decoded from `content_base64` for literal_bytes-mode) at plan
-// time and writes them into the planned `sha256` / `size_bytes`
-// attributes. This is what makes content changes (same destination,
-// different bytes) surface as a plan diff -- without it,
-// `UseStateForUnknown` would carry the prior values forward and the
-// framework would either skip the Update entirely or reject the apply
-// with a "Provider produced inconsistent result" check on the
-// Computed attribute that didn't match its planned value.
-//
-// Both attributes must be updated together: a content change generally
-// changes both, and the framework's post-apply consistency check
-// triggers on either one drifting from plan to apply.
-//
-// source_path-mode is the same idea one hop away: the hash is a get.ps1
-// round trip against the host-side source rather than a local read.
-//
-// Skipped for url-mode and host_path-mode (none of the source inputs are
-// set), during destroy (no plan), and when the relevant source input is
-// itself unknown at plan time (driven from a not-yet-applied dependency).
+// that will land on the host (read from local_path, decoded from
+// content_base64, or a get.ps1 round trip for source_path) and writes
+// them into the planned sha256/size_bytes, so a content change with
+// the same destination surfaces as a plan diff instead of getting
+// carried forward by UseStateForUnknown. Skipped for url-mode and
+// host_path-mode (no source input set), during destroy, and when the
+// relevant source input is itself unknown at plan time.
 func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -225,11 +211,7 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 
 	case !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown():
-		// literal_bytes-mode: decode and hash the in-memory payload.
-		// `content_base64` is RequiresReplace, so a different value here
-		// triggers Replace, not Update -- but the planned Replace's
-		// Computed attributes still need to reflect the new bytes for
-		// the framework's post-apply consistency check.
+		// content_base64 is RequiresReplace, but the planned Replace's Computed attrs still need the new bytes' hash/size.
 		decoded, decodeErr := base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
 		if decodeErr != nil {
 			resp.Diagnostics.AddAttributeError(
@@ -245,33 +227,27 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 
 	case !plan.SourcePath.IsNull() && !plan.SourcePath.IsUnknown():
-		// Configure runs only for plan and apply, so validate has no
-		// client -- leaving the computed values unknown there is correct.
+		// Configure runs only for plan/apply; validate has no client, so unknown computed values there are correct.
 		if r.client == nil {
 			return
 		}
 		sourcePath := plan.SourcePath.ValueString()
 
-		// StatImageFile, not GetImageFile: hashing a multi-GiB vhdx
-		// routinely outruns the latter's 60s cap.
+		// StatImageFile, not GetImageFile: hashing a multi-GiB vhdx routinely outruns the latter's 60s cap.
 		ctx, cancel := context.WithTimeout(ctx, sourceHashTimeout)
 		defer cancel()
 
 		src, err := r.client.StatImageFile(ctx, sourcePath)
 		if err != nil {
 			if errors.Is(err, hyperv.ErrNotFound) {
-				// On a create the source may be produced by this same apply
-				// (a url-mode resource landing the upstream image). Defer to
-				// apply rather than failing the plan; a source still missing
-				// then fails Create.
+				// Source may be produced by this same apply; defer to Create rather than failing the plan.
 				if req.State.Raw.IsNull() {
 					tflog.Debug(ctx, "source_path absent at plan time; deferring hash to apply", map[string]any{
 						"source_path": sourcePath,
 					})
 					return
 				}
-				// On an update the source existed at create time, so its
-				// absence now is worth surfacing before apply.
+				// On an update the source existed at create time, so its absence now is worth surfacing before apply.
 				resp.Diagnostics.AddAttributeError(
 					path.Root("source_path"),
 					"Source image file not found on host",
@@ -292,9 +268,7 @@ func (r *Resource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReques
 			return
 		}
 
-		// The copy is byte-for-byte, so the source's hash and size are what
-		// the destination reports after apply -- what the framework's
-		// post-apply consistency check compares against.
+		// The copy is byte-for-byte, so the source's hash/size are what the destination reports after apply.
 		plan.Sha256 = types.StringValue(src.Sha256)
 		plan.SizeBytes = types.Int64Value(src.SizeBytes)
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
@@ -319,21 +293,13 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 	r.client = client
 }
 
-// Create dispatches on source mode (url, local_path, or host_path) and
-// writes the post-create read shape back to state.
-//
-// url-mode: the provider fetches via HttpClient and verifies the checksum.
-// ErrChecksumMismatch is surfaced on path.Root("url").AtName("checksum")
-// so the diagnostic anchors to the offending attribute, not the resource.
-//
-// local_path-mode: the provider streams the runner-side file through the
-// active connection backend, then asks new.ps1 to verify the streamed
-// bytes' SHA against the runner-computed value and atomic-rename. A
-// host-side hash mismatch surfaces ErrChecksumMismatch on local_path
-// (transport corruption rather than user-supplied checksum drift).
-//
-// host_path-mode: the provider verifies the file already exists at
-// destination_path. ErrNotFound is anchored to destination_path.
+// Create dispatches on source mode and writes the post-create read
+// result back to state. url-mode fetches via HttpClient and anchors a
+// checksum mismatch on url.checksum; local_path-mode streams the
+// runner-side file and anchors a mismatch on local_path instead, since
+// that one means transport corruption, not a user-declared checksum
+// drift; host_path-mode just verifies the file exists at
+// destination_path and anchors ErrNotFound there.
 func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -366,10 +332,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 			"url":              sanitizeURLForLog(urlConfig.URL.ValueString()),
 			"compression":      urlConfig.Compression.ValueString(),
 		})
-		// The schema validator pins the "sha256:<hex>" form; strip the prefix
-		// here so the typed client receives the raw hex the wire contract expects.
-		// Compression is null when omitted -- ValueString folds that to "" which
-		// the typed client treats as "no compression, host fetches directly."
+		// Strips the schema's "sha256:<hex>" prefix; null Compression folds to "" which the client treats as no compression.
 		f, err = r.client.NewImageFileFromURL(ctx, hyperv.NewImageFileFromURLInput{
 			DestinationPath: dest,
 			URL:             urlConfig.URL.ValueString(),
@@ -387,10 +350,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 				return
 			}
 			if errors.Is(err, hyperv.ErrDecompressionFailed) {
-				// Anchor on `compression` rather than `checksum` -- a
-				// gzip-corruption error means the publisher's bytes
-				// aren't a valid stream of the declared codec, which is
-				// what the user controls via this attribute.
+				// Anchored on compression, not checksum: a gzip-corruption error means the declared codec is wrong, not the hash.
 				resp.Diagnostics.AddAttributeError(
 					path.Root("url").AtName("compression"),
 					"Image file decompression failed",
@@ -417,10 +377,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		})
 		if err != nil {
 			if errors.Is(err, hyperv.ErrChecksumMismatch) {
-				// Mismatch in local_path mode means the bytes that landed on
-				// the host don't hash to what the runner computed -- transport
-				// corruption, not user error. The retry advice is in the
-				// detail so the operator knows it's typically transient.
+				// Means the landed bytes don't hash to the runner-computed value: transport corruption, typically transient.
 				resp.Diagnostics.AddAttributeError(
 					path.Root("local_path"),
 					"Streamed file checksum mismatch",
@@ -515,7 +472,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Read fetches the current shape via get.ps1 and reconciles state.
+// Read fetches the current state via get.ps1 and reconciles it.
 //
 // ErrNotFound -> RemoveResource so Terraform plans recreate.
 // ErrUnauthorized / ErrPSExecution -> AddError so a transient fault doesn't
@@ -546,15 +503,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	// modelFromImageFile carries the user-intent fields (source-mode
-	// discriminators and behavior flags) over from prior state -- the host
-	// has no concept of them, so Read must round-trip what's already
-	// there rather than rebuild them from the file on disk.
-	//
-	// Normalize the three flags null -> false (the schema defaults) first
-	// so the Import path (which calls Read with only the ID populated)
-	// produces state consistent with what Apply writes. Without this,
-	// ImportStateVerify fails with "keep_on_destroy: false vs <missing>".
+	// Normalizes null flags to false so Import (Read with only ID) matches what Apply writes; otherwise ImportStateVerify fails.
 	if state.KeepOnDestroy.IsNull() {
 		state.KeepOnDestroy = types.BoolValue(false)
 	}
@@ -568,21 +517,16 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Update is reached for two reasons: the source bytes changed
-// (ModifyPlan-recomputed SHA differs from state) or a non-RequiresReplace
-// flag toggled (replace_while_mounted / keep_on_destroy). Only a
-// bytes-changed Update actually re-writes the destination -- in
-// local_path mode by re-streaming, in source_path mode by re-copying
-// host-side. The flag-only path takes the SHA-equality shortcut and
-// skips the write entirely so a cidata-seed flag flip doesn't re-stream
-// the full ISO over WinRM.
-//
-// literal_bytes-mode bytes-changed never enters Update -- content_base64
-// is RequiresReplace, so a byte change triggers Destroy+Create. A
-// literal_bytes flag toggle reaches Update with plan.Sha256 ==
-// state.Sha256 and exits via the shortcut. Same shape for url-mode and
-// host_path-mode: every user-settable source field is RequiresReplace,
-// so only the flag-only path is reachable.
+// Update is reached when the source bytes changed (ModifyPlan
+// recomputed a different SHA) or a non-RequiresReplace flag toggled
+// (replace_while_mounted, keep_on_destroy). Only a bytes-changed
+// Update re-writes the destination, by re-streaming in local_path mode
+// or re-copying in source_path mode; a flag-only change takes the
+// SHA-equality shortcut and skips the write, so flipping a cidata-seed
+// flag doesn't re-stream the full ISO over WinRM. literal_bytes-,
+// url-, and host_path-mode never reach Update with changed bytes,
+// since every user-settable source field in those modes is
+// RequiresReplace; a flag toggle there hits the same shortcut.
 func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -602,10 +546,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		return
 	}
 
-	// SHA-equality shortcut. ModifyPlan recomputes plan.Sha256 from the
-	// source bytes (decoded content_base64 or runner-side local_path);
-	// equality with state.Sha256 means the source bytes are unchanged
-	// and only flag attributes can be driving this Update.
+	// SHA equality means only flag attributes are driving this Update; ModifyPlan already recomputed plan.Sha256 from the source.
 	if !plan.Sha256.IsNull() && !plan.Sha256.IsUnknown() && plan.Sha256.Equal(state.Sha256) {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
@@ -637,9 +578,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 			resp.Diagnostics.AddError("Update hyperv_image_file failed (local_path mode)", err.Error())
 			return
 		}
-		// The other mode discriminators on plan are null (they're mutually
-		// exclusive); modelFromImageFile passes them through unchanged so
-		// the round-trip preserves that nullness.
+		// Other mode discriminators stay null (mutually exclusive); modelFromImageFile passes them through unchanged.
 		newState := modelFromImageFile(f, plan)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
@@ -670,22 +609,14 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// Delete runs remove.ps1 for every mode in which the provider put the
-// file on the host -- url, local_path, literal_bytes, source_path --
-// since removing it on destroy is the symmetric operation. host_path-
-// mode (no source-mode discriminator set) leaves the file alone: the
-// user attested it already existed, so removing on destroy would
-// surprise them. source_path-mode removes only the copy at
-// destination_path; the source it was cloned from is not managed here.
-//
-// `force_destroy=true` forwards into remove.ps1's detach-then-retry
-// branch: when the initial Remove-Item hits a sharing violation whose
-// holders are Hyper-V DVDs, the script detaches each slot and retries.
-// Default (false) preserves the locked-file diagnostic so cross-state
-// drift surfaces explicitly rather than silently mutating VM state.
-//
-// ErrNotFound from RemoveImageFile is treated as success (the file is
-// already gone, no need to error).
+// Delete runs remove.ps1 for every mode where the provider put the
+// file on the host (url, local_path, literal_bytes, source_path);
+// host_path-mode leaves the file alone, since the user attested it
+// already existed, and source_path-mode removes only the copy, not the
+// source it was cloned from. force_destroy=true forwards into
+// remove.ps1's detach-then-retry for a Hyper-V-DVD sharing violation;
+// the false default preserves the locked-file diagnostic so
+// cross-state drift surfaces explicitly. ErrNotFound is success.
 func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -710,12 +641,7 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
-	// keep_on_destroy=true is the cache-the-bytes-on-the-bench escape
-	// hatch -- the resource is removed from state but the file persists
-	// at destination_path. Subsequent re-creates with the same path
-	// short-circuit on the SHA-skip path. host_path-mode bails earlier
-	// since destroy is already a no-op there; this branch only matters
-	// for url-mode and local_path-mode.
+	// keep_on_destroy leaves the file on host after removing it from state; a later re-create at the same path SHA-skips.
 	if state.KeepOnDestroy.ValueBool() {
 		tflog.Info(ctx, "keep_on_destroy=true; leaving file on host", map[string]any{
 			"destination_path": state.DestinationPath.ValueString(),
@@ -764,21 +690,14 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 
 // modelFromImageFile hydrates a Model from a typed ImageFile DTO,
 // carrying every user-intent field over from intent (the plan during
-// Create/Update, prior state during Read). Those fields -- the source-
-// mode discriminators and the behavior flags -- exist only in Terraform
-// state; the host has no concept of them and nothing on disk
-// reconstructs them, so they have to round-trip from the caller.
-//
-// URL rides across as types.Object so the round-trip preserves whatever
-// state the caller holds (known/null/unknown). The Object shape mirrors
-// what the framework expects for the SingleNestedAttribute "url"
-// declared in schema.go.
-//
-// Path-typed attributes (id, destination_path) wrap the cmdlet's
-// canonical-form return value verbatim. Slash-style and case
-// differences between user input and the cmdlet's return are reconciled
-// by pathtype.Path's StringSemanticEquals; we don't need to preserve
-// the user's prior representation here.
+// Create/Update, prior state during Read): the source-mode
+// discriminators and behavior flags exist only in Terraform state, so
+// nothing on disk can reconstruct them. URL rides across as
+// types.Object, mirroring schema.go's SingleNestedAttribute "url", so
+// the round-trip preserves known/null/unknown. Path-typed attributes
+// (id, destination_path) wrap the cmdlet's canonical return value
+// verbatim; pathtype.Path's StringSemanticEquals reconciles any
+// slash-style or case difference from the user's input.
 func modelFromImageFile(f *hyperv.ImageFile, intent Model) Model {
 	return Model{
 		ID:                  pathtype.NewPathValue(f.Path),
@@ -838,20 +757,14 @@ func stripSha256Prefix(checksum string) string {
 	return checksum
 }
 
-// sanitizeURLForLog redacts credential-bearing components of a URL before
-// it reaches tflog output. Two redactions:
-//
-//   - userinfo (`https://user:pass@host/...`) -- replaced with `REDACTED`.
-//   - query string (any `?...`) -- replaced wholesale with `?REDACTED`,
-//     because pre-signed URLs embed single-use credentials there: AWS S3
-//     (X-Amz-Signature/X-Amz-Credential), Azure Blob SAS (sig/se/sp/sv),
-//     GCP Signed URLs (Signature), and the generic ?token=/?access_token=
-//     patterns. A specific-key allowlist would need indefinite maintenance
-//     and still leak any provider not on the list; the host/path/scheme
-//     is enough to identify the request in logs.
-//
-// Returns "(unparsable url)" when url.Parse can't make sense of the input,
-// to fail closed.
+// sanitizeURLForLog redacts credential-bearing URL components before
+// tflog output: userinfo becomes REDACTED, and the entire query string
+// becomes ?REDACTED, since pre-signed URLs embed single-use credentials
+// there (AWS S3, Azure Blob SAS, GCP Signed URLs, generic ?token=
+// patterns) and a specific-key allowlist would both need indefinite
+// maintenance and still leak any provider not on it; host, path, and
+// scheme are enough to identify the request in logs. Returns
+// "(unparsable url)" on a parse failure, to fail closed.
 func sanitizeURLForLog(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {

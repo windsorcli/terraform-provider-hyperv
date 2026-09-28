@@ -37,7 +37,7 @@ func mustURLObject(t *testing.T) types.Object {
 }
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
-// package-qualified name contains `keyword`. Same helper shape as the
+// package-qualified name contains `keyword`, the same helper the
 // vswitch resource tests use.
 func hasPlanModifier[M any](mods []M, keyword string) bool {
 	for _, pm := range mods {
@@ -283,12 +283,7 @@ func TestSanitizeURLForLog(t *testing.T) {
 		{"with userinfo, no password", "https://user@cdn.example.com/image.vhdx", "https://REDACTED@cdn.example.com/image.vhdx"},
 		{"http", "http://internal.lan/foo.iso", "http://internal.lan/foo.iso"},
 		{"unparsable returns sentinel", "://not a url", "(unparsable url)"},
-		// Any query string is redacted wholesale -- pre-signed URLs across
-		// every cloud carry their auth in the query, and a known-keys
-		// allowlist can't keep up. A bare ?token=abc, an AWS S3 X-Amz-*
-		// bundle, an Azure SAS sig/se/sp/sv, a GCP Signature -- all collapse
-		// to the same "?REDACTED" output. Even harmless cache-busters get
-		// dropped, which is the right tradeoff for fail-closed logging.
+		// Every query string collapses to "?REDACTED": pre-signed URLs across clouds carry auth there, and an allowlist can't keep up.
 		{"generic token query redacted", "https://cdn.example.com/foo.vhdx?token=abc", "https://cdn.example.com/foo.vhdx?REDACTED"},
 		{"AWS S3 pre-signed URL redacted", "https://bucket.s3.amazonaws.com/key.vhdx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20260427%2Fus-east-1&X-Amz-Signature=deadbeef", "https://bucket.s3.amazonaws.com/key.vhdx?REDACTED"},
 		{"Azure Blob SAS token redacted", "https://account.blob.core.windows.net/container/file.vhdx?sv=2024-01-01&se=2026-04-27T00:00:00Z&sp=r&sig=deadbeef%3D", "https://account.blob.core.windows.net/container/file.vhdx?REDACTED"},
@@ -503,13 +498,11 @@ func TestResource_Schema_LocalPathRequiresReplace(t *testing.T) {
 	}
 }
 
-// TestResource_Schema_ForceDestroy pins the force_destroy attribute's
-// shape: Optional+Computed with a static-false default and
-// UseStateForUnknown -- symmetric with keep_on_destroy. Critically
-// asserts the absence of a RequiresReplace modifier: toggling
-// force_destroy is an in-place attribute change, not a destroy+recreate
-// (which would defeat the purpose of the flag in the cross-module-
-// destroy case that motivates it).
+// TestResource_Schema_ForceDestroy pins the force_destroy attribute as
+// Optional+Computed with a static-false default and UseStateForUnknown,
+// symmetric with keep_on_destroy. Critically asserts no RequiresReplace:
+// toggling force_destroy is an in-place change, not a destroy+recreate,
+// which would defeat the flag's purpose.
 func TestResource_Schema_ForceDestroy(t *testing.T) {
 	t.Parallel()
 
@@ -542,10 +535,10 @@ func TestResource_Schema_ForceDestroy(t *testing.T) {
 	}
 }
 
-// TestResource_Schema_KeepOnDestroy pins the keep_on_destroy attribute's
-// shape: Optional+Computed (so users can omit it; framework fills in the
-// default) with a static-false default and UseStateForUnknown so plan
-// stays clean across applies that don't touch the flag.
+// TestResource_Schema_KeepOnDestroy pins keep_on_destroy as
+// Optional+Computed, so users can omit it and the framework fills in
+// the default, with a static-false default and UseStateForUnknown so
+// plan stays clean across applies that don't touch the flag.
 func TestResource_Schema_KeepOnDestroy(t *testing.T) {
 	t.Parallel()
 
@@ -766,9 +759,7 @@ func TestSourceModeExclusivityValidator(t *testing.T) {
 					got.HasError(), tc.wantError, got)
 			}
 			if tc.wantError && len(got) > 0 {
-				// Diagnostic should anchor to local_path so the user lands on
-				// the more recently introduced surface and reads "remove
-				// local_path or remove url" rather than the inverse.
+				// Anchored to local_path, so the diagnostic reads "remove local_path or remove url", not the inverse.
 				if got[0].Summary() == "" || !strings.Contains(got[0].Summary(), "mutually exclusive") {
 					t.Errorf("diag summary = %q, want substring 'mutually exclusive'", got[0].Summary())
 				}
