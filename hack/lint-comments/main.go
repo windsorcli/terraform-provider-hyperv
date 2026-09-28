@@ -202,6 +202,7 @@ func lintGoFile(path string) ([]violation, error) {
 			continue
 		}
 
+		tooLong := false
 		if inBody(cg.Pos()) {
 			if len(lines) > 1 {
 				violations = append(violations, violation{
@@ -209,6 +210,7 @@ func lintGoFile(path string) ([]violation, error) {
 					line:   lineNos[0],
 					reason: fmt.Sprintf("comment inside a function body is %d lines; one line max, always", len(lines)),
 				})
+				tooLong = true
 			}
 		} else {
 			exempt := isExemptLine(lines[len(lines)-1])
@@ -218,11 +220,15 @@ func lintGoFile(path string) ([]violation, error) {
 					line:   lineNos[0],
 					reason: fmt.Sprintf("comment block is %d lines (max %d); add a %q line (last line, so it doesn't become the godoc synopsis) if this is reference data, not prose", len(lines), maxBlockLines, "lint:allow-long-comment"),
 				})
+				tooLong = true
 			}
 		}
 
-		for i, l := range lines {
-			violations = append(violations, checkBanned(path, lineNos[i], l)...)
+		// Skip banned-phrase checks here; a length fix rewrites the text anyway, and a surviving phrase resurfaces on the next run.
+		if !tooLong {
+			for i, l := range lines {
+				violations = append(violations, checkBanned(path, lineNos[i], l)...)
+			}
 		}
 	}
 	return violations, nil
@@ -244,15 +250,19 @@ func lintPS1File(path string) ([]violation, error) {
 			return
 		}
 		exempt := isExemptLine(block[len(block)-1])
-		if !exempt && len(block) > maxBlockLines {
+		tooLong := !exempt && len(block) > maxBlockLines
+		if tooLong {
 			violations = append(violations, violation{
 				path:   path,
 				line:   blockStart,
 				reason: fmt.Sprintf("comment block is %d lines (max %d); add a %q line (last line) if this is reference data, not prose", len(block), maxBlockLines, "lint:allow-long-comment"),
 			})
 		}
-		for i, line := range block {
-			violations = append(violations, checkBanned(path, blockStart+i, line)...)
+		// Mirrors lintGoFile: skip banned-phrase checks on a block already flagged for length.
+		if !tooLong {
+			for i, line := range block {
+				violations = append(violations, checkBanned(path, blockStart+i, line)...)
+			}
 		}
 		block = nil
 	}

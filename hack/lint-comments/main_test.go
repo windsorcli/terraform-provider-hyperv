@@ -109,3 +109,44 @@ func TestLintPS1File_BlockCommentCloserNotCountedAsLineComment(t *testing.T) {
 		t.Errorf("#> should not be swept into the following comment block, got violations: %v", v)
 	}
 }
+
+func TestLintGoFile_SkipsBannedCheckOnOverlongBlock(t *testing.T) {
+	src := "package p\n\nfunc F() {\n\t// this comment has the wrong shape\n\t// and is two lines\n\t_ = 1\n}\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overlong.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := lintGoFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 1 {
+		t.Errorf("want exactly 1 violation (length only, banned-phrase suppressed), got %d: %v", len(v), v)
+	}
+}
+
+func TestLintPS1File_SkipsBannedCheckOnOverlongBlock(t *testing.T) {
+	lines := make([]string, 0, maxBlockLines+1)
+	lines = append(lines, "# this comment has the wrong shape")
+	for i := 0; i < maxBlockLines; i++ {
+		lines = append(lines, "# filler line")
+	}
+	content := strings.Join(lines, "\n") + "\nWrite-Host 'hi'\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overlong.ps1")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := lintPS1File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 1 {
+		t.Errorf("want exactly 1 violation (length only, banned-phrase suppressed), got %d: %v", len(v), v)
+	}
+}
