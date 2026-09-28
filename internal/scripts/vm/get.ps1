@@ -51,14 +51,13 @@
 #                     ...
 #                   ]
 #                 }
-#   stderr/exit : missing VM -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
-#                 the Go side so resource Read calls RemoveResource.
+#   stderr/exit : missing VM -> ObjectNotFound envelope, exit 1 -> Go
+#                 maps to ErrNotFound so Read calls RemoveResource.
 #
-# boot_order is gen-2-only in this slice. Gen 1 (BIOS StartupOrder, a
-# 4-string enum from {CD, IDEHardDrive, LegacyNetworkAdapter, Floppy})
-# is deferred to a follow-up; the schema validator rejects boot_order
-# on gen 1 at plan time.
+# boot_order is gen-2-only: gen 1's BIOS StartupOrder isn't modeled, and
+# the schema validator rejects boot_order on gen 1 at plan time.
+#
+# lint:allow-long-comment
 
 
 # Get-HypervVM fetches a VM by name. Same Stop + selective ObjectNotFound
@@ -74,16 +73,7 @@ function Get-HypervVM {
         $vm = Get-VM -Name $Name -ErrorAction Stop
     }
     catch {
-        # "VM missing" surfaces in two shapes (mirror of the
-        # vswitch/get.ps1 fix from the M1d acc-test PR):
-        #   1. CategoryInfo.Category = ObjectNotFound -- the documented
-        #      contract; what some Hyper-V module versions emit.
-        #   2. CategoryInfo.Category = InvalidArgument with
-        #      FullyQualifiedErrorId =
-        #      'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVM'
-        #      -- what Get-VM actually emits on Server 2022 + PS 5.1
-        #      (verified 2026-04 against a real bench; the acc test
-        #      for hyperv_vm's CheckDestroy caught this).
+        # "VM missing" surfaces as ObjectNotFound on some module versions, or as this specific InvalidArgument FQEId on Server 2022 + PS 5.1 (mirrors vswitch/get.ps1).
         $isMissing = (
             $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound
         ) -or (

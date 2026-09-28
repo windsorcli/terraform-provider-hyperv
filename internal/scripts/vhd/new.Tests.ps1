@@ -1,5 +1,5 @@
 # Locks the JSON contract for New-HypervVHD{Fixed,Dynamic,Differencing}.
-# Three creation modes share an output shape (matches get.ps1) but each
+# Three creation modes share an output format (matches get.ps1) but each
 # forwards a distinct -Fixed/-Dynamic/-Differencing switch with mode-
 # appropriate other params.
 

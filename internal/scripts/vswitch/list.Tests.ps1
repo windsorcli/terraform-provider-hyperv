@@ -1,8 +1,7 @@
 # Locks the Get-HypervVMSwitchByPrefix contract: filters Get-VMSwitch by
-# name prefix, emits a JSON array (even on zero / one match) with only
-# Name, and does NOT carry the full read shape. Mirrors vm/list.Tests.ps1
-# -- the two are intentionally symmetric so the sweeper logic on the Go
-# side can read both via the same minimal shape.
+# name prefix, emits a JSON array (even on zero/one match) with only Name,
+# not the full read format. Mirrors vm/list.Tests.ps1 so the sweeper logic
+# on the Go side can read both through the same minimal format.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -33,9 +32,7 @@ Describe 'Get-HypervVMSwitchByPrefix' {
         }
 
         It 'emits a JSON array even when there are zero matches' {
-            # The Go decoder is []VMSwitchName -- a JSON object instead
-            # of an empty array would unmarshal-error. -InputObject in
-            # the script keeps the shape array-typed.
+            # -InputObject keeps the output array-typed; the Go decoder is []VMSwitchName and errors on a bare object.
             Mock Get-VMSwitch { @() }
 
             $output = Get-HypervVMSwitchByPrefix -NamePrefix 'tfacc-'
@@ -55,10 +52,7 @@ Describe 'Get-HypervVMSwitchByPrefix' {
         }
 
         It 'emits only the Name field (sweeper does not need the full read shape)' {
-            # Minimal shape. NAT-switch sweep support (which would need
-            # the NAT name carried alongside) is deliberately deferred
-            # until NAT acctests exist; current acctest bar uses
-            # Private + Internal only.
+            # Minimal format: NAT-switch sweep support would need the NAT name carried alongside, not needed by current acctests.
             Mock Get-VMSwitch { @(New-HypervSwitchSample -Name 'tfacc-sw-shape') }
 
             $output = Get-HypervVMSwitchByPrefix -NamePrefix 'tfacc-'

@@ -508,10 +508,7 @@ Describe 'New-HypervImageFileFromLocalPath' {
     Context 'error propagation (local_path mode)' {
 
         It 'throws InvalidData with ImageFileChecksumMismatch on hash mismatch (skips Move-Item, cleans up staging)' {
-            # Transport corruption between runner and host -- the bytes
-            # that landed don't match what the runner thinks it sent.
-            # Same diagnostic shape as url-mode so the Go side can map
-            # both paths to ErrChecksumMismatch through one rule.
+            # Transport corruption between runner and host; same diagnostic format as url-mode.
             Mock Test-Path {
                 # First call (mode-entry presence check) returns true; the
                 # finally-block cleanup check also returns true so we see
@@ -586,21 +583,9 @@ Describe 'New-HypervImageFileFromLocalPath' {
     }
 
     Context 'replace-while-mounted mode (ReplaceWhileMounted switch)' {
-        # iso_volume sets this flag because cidata seeds may be mounted as
-        # a DVD on a running VM. Move-Item -Force against a destination
-        # Hyper-V holds an exclusive open handle on surfaces "Cannot
-        # create a file when that file already exists." The fix is the
-        # swap-via-pivot dance in Invoke-HypervDvdSafeReplace: rename
-        # staging to a sibling pivot, point each matching DVD slot at the
-        # pivot (releasing the lock on the destination), Copy-Item the
-        # pivot bytes to the destination, point each slot back, remove
-        # the pivot. Every Set-VMDvdDrive call has a real existing path,
-        # which avoids the bench-observed "object not found" failure
-        # mode of Set-VMDvdDrive -Path $null.
-        #
-        # All cases stub Get-FileHash to match expected_sha256 so the
-        # dance under test runs; the hash-mismatch path stays in the
-        # previous context and is not duplicated here.
+        # iso_volume sets this flag since cidata seeds may be mounted as a DVD;
+        # see Invoke-HypervDvdSafeReplace in new.ps1 for the swap-via-pivot mechanism.
+        # All cases stub Get-FileHash to match expected_sha256 so the dance under test runs.
 
         It 'when no VM mounts the destination: Move-Item runs once, no DVD calls' {
             # No-attachment branch must be a uniform fall-through to the

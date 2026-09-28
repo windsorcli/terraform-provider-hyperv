@@ -14,24 +14,20 @@
 #                   "secure_boot":      <bool>,      # optional, gen 2 only
 #                   "notes":            "<string>"   # optional
 #                 }
-#   stdout JSON : same shape as get.ps1.
+#   stdout JSON : same fields as get.ps1.
 #
-# Mutability semantics: name and generation are RequiresReplace at the
-# schema layer and never reach this script. Everything else is in-place
-# mutable via Set-VM* cmdlets.
+# name and generation are RequiresReplace at the schema layer and never
+# reach this script; everything else is in-place mutable via Set-VM*
+# cmdlets. vcpu, memory_bytes, and secure_boot generally require the VM
+# to be powered off; the cmdlet's own error surfaces verbatim rather
+# than auto-stopping the VM, which would change apply semantics. Power
+# transitions belong to hyperv_vm_state.
 #
-# **VM-must-be-Off rule.** vcpu, memory_bytes, and secure_boot generally
-# require the VM to be powered off. The cmdlets error clearly when the VM
-# is running; we surface that error verbatim. Auto-stopping the VM during
-# Update would be dangerous magic that changes apply semantics -- the
-# operator drives power transitions via hyperv_vm_state.
-
+# lint:allow-long-comment
 
 # Set-HypervVM applies the partial update. Same Stop + selective
-# ObjectNotFound catch pattern as get.ps1 -- a missing VM raises
-# ObjectNotFound (mapped to ErrNotFound on the Go side) so Update can
-# recover gracefully from out-of-band deletion via destroy+recreate
-# rather than surfacing the cmdlet's opaque InvalidArgument error.
+# ObjectNotFound catch pattern as get.ps1, so Update can recover from
+# out-of-band deletion via destroy+recreate.
 function Set-HypervVM {
     [CmdletBinding()]
     param(
@@ -60,16 +56,7 @@ function Set-HypervVM {
         throw $errorRecord
     }
 
-    # Only forward what the caller supplied. The Go-side Update sends only
-    # changed fields, so each branch is gated on presence.
-    #
-    # Memory is one Set-VMMemory call that bundles startup + dynamic
-    # toggles + min/max. We fire the call when ANY memory field
-    # changed, so a dynamic-only flip (e.g., min_bytes only) goes
-    # through on its own. When DynamicMemory is unset but MemoryBytes
-    # changed, we lock static (DynamicMemoryEnabled=$false) to
-    # preserve the v2-and-prior behavior; otherwise the cmdlet might
-    # reject StartupBytes against the existing dynamic min/max range.
+    # One Set-VMMemory call bundles startup + dynamic + min/max; an unset DynamicMemory with a changed MemoryBytes locks static to avoid the cmdlet rejecting StartupBytes against the existing dynamic range.
     $memChanged = $null -ne $MemoryBytes -or $null -ne $DynamicMemory `
         -or $null -ne $MinMemoryBytes -or $null -ne $MaxMemoryBytes
     if ($memChanged) {
@@ -86,13 +73,7 @@ function Set-HypervVM {
             if ($null -ne $MinMemoryBytes) { $memoryArgs.MinimumBytes = [int64] $MinMemoryBytes }
             if ($null -ne $MaxMemoryBytes) { $memoryArgs.MaximumBytes = [int64] $MaxMemoryBytes }
         }
-        # Skip Set-VMMemory if no actual config field was added beyond
-        # VMName. This guards against a corner case the Go-side
-        # buildSetInput fallback prevents in practice but the script
-        # contract is independent of: a caller that sends ONLY
-        # -MinMemoryBytes / -MaxMemoryBytes (no -DynamicMemory and no
-        # -MemoryBytes) would otherwise produce a no-op Set-VMMemory
-        # call -- harmless on Hyper-V but a wasted SSH round-trip.
+        # Skip a Set-VMMemory call that would only carry VMName (no-op, wasted round-trip).
         if ($memoryArgs.Count -gt 1) {
             Set-VMMemory @memoryArgs -ErrorAction Stop
         }

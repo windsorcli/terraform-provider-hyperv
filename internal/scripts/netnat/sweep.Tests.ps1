@@ -1,10 +1,8 @@
 # Locks the Invoke-HypervNetNatSweep contract: filters Get-NetNat by name
 # prefix, removes each match, and emits a JSON object with a `removed`
-# array (even on zero / one match). The combined list+remove shape is
-# the deliberate departure from vswitch/list.ps1 -- saves a round-trip
-# since the sweeper would chain them anyway. Multiple NetNats can
-# coexist on a host, so the multi-match cases below are load-bearing,
-# not just defensive.
+# array (even on zero / one match). Combined list+remove is a deliberate
+# departure from vswitch/list.ps1, saving the round-trip the sweeper
+# would otherwise chain anyway.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -57,9 +55,7 @@ Describe 'Invoke-HypervNetNatSweep' {
         }
 
         It 'emits an object with an empty array when there are zero matches' {
-            # Go decoder is struct { Removed []string }. -InputObject in
-            # the script keeps the inner shape array-typed so the
-            # decoder returns []string{} (length 0), not null.
+            # -InputObject keeps the output array-typed so the Go decoder gets []string{}, not null.
             Mock Get-NetNat { @() }
             Mock Remove-NetNat {}
 
@@ -120,8 +116,7 @@ Describe 'Invoke-HypervNetNatSweep' {
 
             @($parsed.removed).Count | Should -Be 1
             @($parsed.removed) | Should -Contain 'tfacc-nat-ok'
-            # Same raw-JSON shape guard as the happy-path single-match test
-            # -- pins the [string[]]$removed typing in the error-iteration path.
+            # Same raw-JSON format guard as the happy-path single-match test; pins [string[]]$removed typing here too.
             $output | Should -Match '"removed":\["tfacc-nat-ok"\]'
             @($parsed.removed) | Should -Not -Contain 'tfacc-nat-fails'
         }

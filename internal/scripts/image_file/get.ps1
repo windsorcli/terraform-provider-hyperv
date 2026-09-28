@@ -8,12 +8,13 @@
 #                   "SizeBytes": <int64>,
 #                   "Sha256":    "<lowercase-hex>"
 #                 }
-#   stderr/exit : missing file -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
-#                 the Go side so resource Read calls RemoveResource.
+#   stderr/exit : missing file -> ObjectNotFound envelope, exit 1 -> Go
+#                 maps to ErrNotFound so Read calls RemoveResource.
 #
-# SHA-256 is recomputed on every Read by design (drift detection).
-# Image-heavy refreshes are slow as a result; documented in the resource.
+# SHA-256 is recomputed on every Read for drift detection, which makes
+# image-heavy refreshes slow; documented in the resource.
+#
+# lint:allow-long-comment
 
 # Get-HypervImageFile reads file metadata + SHA-256. Test-Path returns $false
 # for non-existent paths (no error), so the missing branch sidesteps the

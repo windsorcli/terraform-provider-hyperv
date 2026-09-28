@@ -15,15 +15,12 @@
 #                 already occupied -> InvalidArgument -> ErrPSExecution.
 #                 Bad ISO path -> InvalidArgument -> ErrPSExecution.
 #
-# iso_path is optional: an empty DVD drive (no medium loaded) is a
-# legitimate configuration. Add-VMDvdDrive without -Path produces an
-# empty drive that can later have an ISO inserted via the swap path
-# (detach + attach with iso_path set).
+# iso_path is optional: Add-VMDvdDrive without -Path produces a
+# legitimate empty drive that a later swap (detach + attach) can load.
+# Like add-hard-disk-drive.ps1, this doesn't validate the
+# generation/controller-type pairing; Hyper-V's own cmdlet error is clear.
 #
-# Like add-hard-disk-drive.ps1, this script doesn't validate the
-# generation/controller-type pairing -- Hyper-V's cmdlet errors
-# clearly with "cannot attach IDE devices to a generation 2 virtual
-# machine" if SCSI/IDE is paired with the wrong gen.
+# lint:allow-long-comment
 
 function Add-HypervVMDvdDrive {
     [CmdletBinding()]

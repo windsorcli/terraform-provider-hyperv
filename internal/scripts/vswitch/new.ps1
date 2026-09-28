@@ -12,7 +12,7 @@
 #                   "nat_internal_address_prefix": "<CIDR>",                                # NAT only, required when NAT
 #                   "nat_host_address":            "<IPv4>"                                 # NAT only, required when NAT
 #                 }
-#   stdout JSON : the created switch in the canonical nine-field read shape
+#   stdout JSON : the created switch in the canonical nine-field format
 #                 (six base + three NAT). NAT fields are empty strings for
 #                 non-NAT switches.
 #
@@ -20,16 +20,15 @@
 # (e.g. -SwitchType External requires -NetAdapterName) propagate through the
 # structured error envelope on the catch.
 #
-# NAT branch -- Hyper-V has no "NAT" switch_type natively. A NAT switch is
-# an Internal VMSwitch + a New-NetIPAddress on the host vNIC + a New-NetNat
-# tying the prefix to that vNIC. The script orchestrates all three. A
-# NetNat with the configured name is idempotently adopted when present
-# (re-apply / import safety); name mismatch is no longer a conflict --
-# multiple NetNats coexist on a host as long as Name and prefix don't
-# collide.
+# NAT branch: Hyper-V has no native "NAT" switch_type, so a NAT switch is
+# an Internal VMSwitch plus a New-NetIPAddress on the host vNIC plus a
+# New-NetNat tying the prefix to that vNIC. A NetNat with the configured
+# name is idempotently adopted when present (re-apply/import safety).
+#
+# lint:allow-long-comment
 
 # New-HypervSwitch builds the parameter splat for New-VMSwitch from typed
-# inputs, runs the cmdlet, and emits the canonical read shape. For NAT
+# inputs, runs the cmdlet, and emits the canonical read format. For NAT
 # switches it additionally provisions NetIPAddress + NetNat.
 function New-HypervSwitch {
     [CmdletBinding()]
@@ -61,17 +60,7 @@ function New-HypervSwitch {
     else {
         $newArgs.SwitchType = $SwitchType
     }
-    # AllowManagementOS lives on New-VMSwitch's NetAdapterName /
-    # NetAdapterInterfaceDescription parameter sets (External-only). The
-    # SwitchType parameter set used for Internal/Private does NOT accept
-    # the flag -- forwarding it forces multi-set ambiguity and PowerShell
-    # errors with "Parameter set cannot be resolved using the specified
-    # named parameters." Internal switches always have a host vNIC
-    # implicitly (that's what makes them Internal vs Private), so there's
-    # nothing meaningful to set anyway. Gate the cmdlet param to External;
-    # throw a clear contract error if the caller passed it for any other
-    # type so the error attribute-anchors at the schema layer instead of
-    # surfacing the cmdlet's opaque diagnostic.
+    # AllowManagementOS is External-only: forwarding it on Internal/Private causes New-VMSwitch parameter-set ambiguity.
     if ($null -ne $AllowManagementOS -and $SwitchType -eq 'External') {
         $newArgs.AllowManagementOS = [bool]$AllowManagementOS
     }
@@ -114,18 +103,10 @@ function New-HypervNatSwitch {
         [Parameter(Mandatory)] [string] $NatHostAddress
     )
 
-    # Name-scoped lookup. Multiple NetNats can coexist on a host as long
-    # as Name and prefix don't collide, so we only care about a NetNat
-    # that matches the configured name.
     $existingNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue
     $adoptNat = $false
     if ($null -ne $existingNat) {
-        # Same name: adopt -- but only if the prefix matches. Adopting a
-        # NetNat whose prefix differs from the plan would loop: Create
-        # records the host's prefix, Read sees it on refresh, the diff
-        # forces replacement (RequiresReplace on the prefix attr), and
-        # the replacement Create hits the same adoption path. Throw here
-        # with clear remediation instead.
+        # Adopt only if the prefix matches; a mismatch would loop through RequiresReplace on every apply.
         if ($existingNat.InternalIPInterfaceAddressPrefix -ne $NatInternalAddressPrefix) {
             throw "A NetNat named '$NatName' already exists with prefix " +
                 "'$($existingNat.InternalIPInterfaceAddressPrefix)', but the plan asks for " +
@@ -136,9 +117,7 @@ function New-HypervNatSwitch {
         $adoptNat = $true
     }
 
-    # Derive PrefixLength from the CIDR. The Go-side schema validator
-    # already shape-checked this string at plan time; this guard is
-    # belt-and-braces for direct script invocations that bypass validation.
+    # Belt-and-braces CIDR check for direct script invocations that bypass the Go-side schema validator.
     if ($NatInternalAddressPrefix -notmatch '^(\d{1,3}\.){3}\d{1,3}/\d+$') {
         throw "nat_internal_address_prefix '$NatInternalAddressPrefix' is not a valid CIDR (expected 'A.B.C.D/N')."
     }
@@ -154,15 +133,7 @@ function New-HypervNatSwitch {
     }
     $sw = New-VMSwitch @vmsArgs
 
-    # Rollback on partial-failure: once New-VMSwitch succeeds, any failure
-    # in the subsequent NetIPAddress / NetNat steps would otherwise leave
-    # an orphan VMSwitch on the host. Terraform records no state because
-    # New returns an error, so the next apply tries to create the same
-    # switch and fails with "already exists" -- blocking all further
-    # applies until the operator manually runs Remove-VMSwitch. Wrap the
-    # post-VMSwitch sequence in a try/catch that tears down whatever
-    # landed (in remove.ps1's order: NetNat -> NetIPAddress -> VMSwitch),
-    # then re-throws so the typed envelope still surfaces to Go.
+    # A failure after New-VMSwitch would otherwise leave an orphan switch blocking every future apply on "already exists".
     $ipCreated = $false
     $natCreated = $false
     try {
@@ -183,20 +154,7 @@ function New-HypervNatSwitch {
         }
     }
     catch {
-        # Best-effort rollback. Capture the original failure first so a
-        # subsequent throw from a cleanup step (which bypasses -ErrorAction
-        # SilentlyContinue because it's a terminating error from within a
-        # cmdlet's body) doesn't overwrite it. The caller must see the
-        # ORIGINAL failure (e.g. "address already in use"), not the
-        # cleanup chatter -- the typed envelope on the Go side keys on
-        # the original error's category / FullyQualifiedErrorId. Order
-        # mirrors remove.ps1: NetNat -> NetIPAddress -> VMSwitch.
-        #
-        # The explicit `$null = $_` discard inside each cleanup catch
-        # mirrors vm/new.ps1's orphan-cleanup pattern -- it satisfies
-        # PSScriptAnalyzer's PSAvoidUsingEmptyCatchBlock and makes the
-        # intent literal: cleanup failures are deliberately swallowed
-        # so the caller sees the original create-side failure.
+        # Capture the original failure before cleanup, which mirrors remove.ps1's teardown order and must not overwrite it.
         $original = $_
         if ($natCreated) {
             try { Remove-NetNat -Name $NatName -Confirm:$false -ErrorAction Stop }

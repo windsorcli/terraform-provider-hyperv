@@ -1,6 +1,6 @@
 # Locks the JSON contract for New-HypervNatStaticMapping -- both the input-side
 # splat logic (which JSON keys map to which Add-NetNatStaticMapping +
-# New-NetFirewallRule parameters) and the output-side read shape that
+# New-NetFirewallRule parameters) and the output-side read format that
 # round-trips through Get-HypervNatStaticMapping.
 
 BeforeAll {

@@ -3,17 +3,16 @@
 #
 # Wire contract (locked in by Tests.ps1):
 #
-#   stdin JSON  : same shape as new.ps1.
+#   stdin JSON  : same fields as new.ps1.
 #   stdout JSON : the updated mapping in the canonical eleven-field
-#                 read shape.
+#                 read format.
 #
-# NatStaticMapping has no in-place edit. internal_ip / internal_port
+# NatStaticMapping has no in-place edit: internal_ip/internal_port
 # changes are expressed as Remove + Add, which assigns a fresh
-# StaticMappingID -- the read-back returns it and the resource layer
-# threads the new value back into state.
+# StaticMappingID that the read-back threads into state. The firewall
+# rule, by contrast, has Set-NetFirewallRule for in-place mutation.
 #
-# The firewall rule, by contrast, has Set-NetFirewallRule for in-place
-# mutation of Enabled / Profile.
+# lint:allow-long-comment
 
 # Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1, which
 # the Go-side loadNatStaticMappingWithRetry prepends to this script body
@@ -91,11 +90,11 @@ function Set-HypervNatStaticMapping {
     #   false             yes          Set -Enabled False (disable)
     #   false             no           skip
     #
-    # The "true + absent" branch is what closes the out-of-band-delete
-    # loop: without it, Read reports enabled=false, terraform plans an
-    # Update, Update silently skips, and the next refresh re-detects
-    # the same diff forever. Recreating mirrors new.ps1's create path
-    # parameter-for-parameter so the host-side shape stays uniform.
+    # The "true + absent" branch closes the out-of-band-delete loop:
+    # without it, Read would report enabled=false forever after an
+    # out-of-band rule delete, since Update would have nothing to do.
+    #
+    # lint:allow-long-comment
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -ne $existingFw) {

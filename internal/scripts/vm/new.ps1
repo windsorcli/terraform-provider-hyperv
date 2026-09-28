@@ -13,24 +13,19 @@
 #                   "secure_boot":      <bool>,       # optional, gen 2 only
 #                   "notes":            "<string>"    # optional
 #                 }
-#   stdout JSON : same shape as get.ps1.
+#   stdout JSON : same fields as get.ps1.
 #
-# Sequence: New-VM (with -NoVHD so we don't auto-attach storage; the
-# BootDevice enum on this Hyper-V module has no "None" value, so we
-# simply omit -BootDevice and let Hyper-V's default apply -- the VM has
-# nothing to boot from until storage is attached separately, which is
-# expected for the minimal slice), Set-VMMemory (DynamicMemoryEnabled
-# defaults to false to lock static; the optional dynamic_memory wire
-# field opts in to dynamic with min/max), Set-VMProcessor, Set-VMFirmware
-# (gen 2 + secure_boot only), Set-VM Notes. Each Set-* is its own cmdlet
-# call -- New-VM doesn't accept all of these in one shot.
+# Sequence: New-VM -NoVHD (no auto-attached storage; -BootDevice is
+# omitted since the enum has no "None" value, so the VM boots nothing
+# until storage is attached separately), Set-VMMemory (DynamicMemoryEnabled
+# defaults false; the optional dynamic_memory field opts into dynamic
+# with min/max), Set-VMProcessor, Set-VMFirmware (gen 2 + secure_boot
+# only), Set-VM Notes. Each Set-* is a separate cmdlet call since
+# New-VM doesn't accept all of these in one shot.
+#
+# lint:allow-long-comment
 
-
-# New-HypervVM creates a VM and applies the post-create Set-* tail. -NoVHD
-# means New-VM doesn't auto-attach a VHD; -BootDevice is intentionally
-# omitted because the enum has no "None" value (see header comment) --
-# Hyper-V's default applies and the VM has nothing to boot from until
-# storage is attached separately via hyperv_vm_hard_disk_drive et al.
+# New-HypervVM creates a VM and applies the post-create Set-* tail.
 function New-HypervVM {
     [CmdletBinding()]
     param(
@@ -54,50 +49,17 @@ function New-HypervVM {
         -NoVHD -ErrorAction Stop
     $vmId = $newVmObj.Id
 
-    # New-VM auto-creates a default "Network Adapter" NIC with empty
-    # SwitchName. Strip it so the VM starts with zero NICs -- the
-    # resource-layer Create then attaches exactly what the user
-    # declared in network_adapter. Without this, the user's plan
-    # (network_adapter omitted -> empty list) doesn't match state
-    # (one auto-created NIC after refresh) and the framework's
-    # "Provider produced inconsistent result after apply" check
-    # fires. Verified empirically against Server 2022 + PS 5.1.
-    #
-    # Pipe form (rather than `Remove-VMNetworkAdapter -Name '*'`)
-    # because the cmdlet doesn't accept wildcards on -Name.
+    # Strip the auto-created default NIC so the VM starts with zero NICs; otherwise an omitted network_adapter plan mismatches post-refresh state.
     Get-VMNetworkAdapter -VM $newVmObj -ErrorAction Stop |
         Remove-VMNetworkAdapter -ErrorAction Stop
 
-    # Same pattern for Gen 1: New-VM auto-creates an empty DVD drive
-    # at IDE 1,0. Strip it so the VM starts with zero DVDs and the
-    # resource-layer Create attaches exactly what the user declared.
-    # Without this, the auto-DVD shows up as a phantom dvd_drive entry
-    # in the post-apply read shape and trips the framework's
-    # "Provider produced inconsistent result after apply" check.
-    # Gen 2 doesn't get an auto-DVD, so this is a Gen 1-only no-op
-    # check that's cheap to leave unconditional.
+    # Same for Gen 1's auto-created empty DVD drive at IDE 1,0; Gen 2 gets no auto-DVD, so this is a cheap Gen-1-only no-op otherwise.
     Get-VMDvdDrive -VM $newVmObj -ErrorAction Stop |
         Remove-VMDvdDrive -ErrorAction Stop
 
-    # Atomicity guard: New-VM has now committed the VM to the host. Any
-    # failure in the post-create Set-* sequence below would leave a
-    # partially-configured VM lingering -- the Go-side Create returns
-    # without writing state, Terraform records the resource as not created,
-    # and the next apply trips a name-collision until an operator manually
-    # removes the orphan. Wrap the Set-* sequence in a try/catch and
-    # best-effort Remove-VM on any failure so the operation appears
-    # atomic from Terraform's perspective. SilentlyContinue on the
-    # cleanup keeps the original Set-* error as the surfaced cause; if
-    # cleanup itself fails the worst case is the same orphan we'd have
-    # had without the guard, so no regression.
+    # New-VM has committed the VM; best-effort Remove-VM on any Set-* failure below keeps Create atomic from Terraform's perspective.
     try {
-        # DynamicMemoryEnabled MUST land in the same call as
-        # StartupBytes; otherwise the cmdlet rejects StartupBytes as
-        # out-of-range against the existing dynamic min/max. When the
-        # user opts into dynamic, StartupBytes also has to fall inside
-        # [MinimumBytes, MaximumBytes] -- the cmdlet's clear error
-        # passes through as ErrPSExecution if the resource-layer
-        # validators didn't catch it at plan time.
+        # DynamicMemoryEnabled must land in the same call as StartupBytes, or the cmdlet rejects it as out-of-range against existing dynamic min/max.
         $memoryArgs = @{
             VM                   = $newVmObj
             StartupBytes         = $MemoryBytes
@@ -130,26 +92,12 @@ function New-HypervVM {
         }
     }
     catch {
-        # Inner try/catch so a Remove-VM failure (terminating OR
-        # non-terminating) doesn't mask the original Set-* error.
-        # SilentlyContinue alone wouldn't catch a thrown terminating
-        # error from cleanup, hence the explicit try.
+        # Inner try/catch so a Remove-VM cleanup failure doesn't mask the original Set-* error.
         try {
             Remove-VM -VM $newVmObj -Force -ErrorAction Stop
         }
         catch {
-            # Best-effort cleanup; the original Set-* error is what we want
-            # the operator to see -- it's the actionable one. The cleanup
-            # failure is intentionally discarded: there is no warning channel
-            # the runner currently captures (stdout = result JSON, stderr =
-            # error envelope JSON, and Write-Verbose / stream 4 is not piped
-            # through the connection layer). If cleanup fails the worst case
-            # is the same orphan VM we'd have without the guard, and the next
-            # apply trips a name-collision that IS surfaced.
-            #
-            # The explicit discard below makes the intent literal and keeps
-            # PSScriptAnalyzer's PSAvoidUsingEmptyCatchBlock happy --
-            # comments alone don't count as catch-block content.
+            # Discarded: cleanup failure just leaves the same orphan the guard tries to avoid; the next apply's name-collision surfaces it.
             $null = $_
         }
         throw

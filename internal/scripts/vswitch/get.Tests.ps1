@@ -1,5 +1,5 @@
 # Locks the JSON contract for Get-HypervSwitch. The Go-side typed wrapper
-# (PR4) decodes the output with field tags that match the keys asserted here;
+# decodes the output with field tags that match the keys asserted here;
 # any change to those keys or types is a wire-level break.
 
 BeforeAll {
@@ -13,10 +13,7 @@ Describe 'Get-HypervSwitch' {
     Context 'happy path' {
 
         It 'emits the canonical nine-field shape (six base + three NAT)' {
-            # The wire shape is constant across switch types: NAT fields
-            # are always present, populated only when SwitchType=NAT and
-            # nat_name is supplied, empty strings otherwise. Keeps the
-            # typed-client decode path branch-free.
+            # NAT fields are always present (empty unless SwitchType=NAT), keeping the typed-client decode path branch-free.
             Mock Get-VMSwitch { New-HypervSwitchSample -Name 'sw0' -SwitchType 'External' }
             $parsed = Get-HypervSwitch -Name 'sw0' | ConvertFrom-Json
 
@@ -114,16 +111,8 @@ Describe 'Get-HypervSwitch' {
         }
 
         It 'remaps the cmdlet''s actual "switch not found" error (InvalidArgument + FQId) to the typed envelope' {
-            # Get-VMSwitch on Server 2022 + PS 5.1 reports a missing switch
-            # with category=InvalidArgument and FullyQualifiedErrorId
-            # 'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch'
-            # -- NOT the documented ObjectNotFound. Verified against a real
-            # bench 2026-04 by an acceptance-test CheckDestroy failure:
-            # the previous version of this test mocked the *documented*
-            # shape (ObjectNotFound) and let the production catch only
-            # handle that shape, so the bench-side reality slipped through
-            # to the Go side as ErrPSExecution. Pinning the actual FQId
-            # here keeps the test honest about the cmdlet's behavior.
+            # Get-VMSwitch on Server 2022 + PS 5.1 reports a missing switch as
+            # InvalidArgument with this FQId, not the documented ObjectNotFound.
             Mock Get-VMSwitch {
                 $exception = [System.ArgumentException]::new(
                     "Hyper-V was unable to find a virtual switch with name `"$Name`".")
@@ -182,10 +171,7 @@ Describe 'Get-HypervSwitch' {
         }
 
         It 'still handles the documented ObjectNotFound shape (defensive: older Hyper-V versions)' {
-            # Belt-and-suspenders against future Hyper-V versions or other
-            # cmdlet paths that might emit the documented ObjectNotFound
-            # shape. The catch accepts both shapes and routes both to the
-            # same VMSwitchNotFound envelope.
+            # Belt-and-suspenders: the catch accepts both error formats and routes both to the same VMSwitchNotFound envelope.
             Mock Get-VMSwitch {
                 $exception = [System.Management.Automation.ItemNotFoundException]::new(
                     "Hyper-V was unable to find a virtual switch with name '$Name'.")

@@ -9,18 +9,19 @@
 #                   "allow_management_os": <bool>,                            # optional
 #                   "notes":               "<string>"                         # optional
 #                 }
-#   stdout JSON : the updated switch in the canonical read shape (same fields
-#                 as get.ps1 -- emitted by re-reading after the mutation lands).
+#   stdout JSON : the updated switch in the canonical format (same fields
+#                 as get.ps1, emitted by re-reading after the mutation lands).
 #
 # Only keys present in the input are touched. switch_type is immutable
-# (RequiresReplace plan modifier on the Go side) and is NOT forwarded to
-# Set-VMSwitch -- when present in the payload it's used purely to mirror
-# new.ps1's Private + AllowManagementOS reject path. The Go-side Update
-# should populate it from prior state so the validation kicks in.
+# (RequiresReplace on the Go side) and is not forwarded to Set-VMSwitch;
+# when present it's used only to mirror new.ps1's Private +
+# AllowManagementOS reject path, populated from prior state on Update.
+#
+# lint:allow-long-comment
 
 # Set-HypervSwitch applies a partial update via Set-VMSwitch, then re-reads
-# via Get-VMSwitch so the emitted shape matches Read exactly. Two-step instead
-# of -PassThru because Set-VMSwitch's -PassThru behavior across NIC rebinding
+# via Get-VMSwitch so the output matches Read exactly. Two-step instead of
+# -PassThru because Set-VMSwitch's -PassThru behavior across NIC rebinding
 # is uneven across PS 5.1 / 7.x.
 function Set-HypervSwitch {
     [CmdletBinding()]
@@ -33,17 +34,7 @@ function Set-HypervSwitch {
         [string]         $NatName
     )
 
-    # Existence pre-check. Symmetric with get.ps1 / remove.ps1: Set-VMSwitch
-    # on a missing switch raises an InvalidArgument error which the Go side
-    # would map to ErrPSExecution -- losing the ErrNotFound semantics that
-    # let Update recover gracefully from out-of-band deletion.
-    #
-    # Stop + selective catch instead of SilentlyContinue: a transient WMI
-    # fault, permission error, or cluster-connectivity blip would otherwise
-    # be indistinguishable from "switch missing", get remapped to ObjectNotFound,
-    # and let the Go-side Update drop the resource from state -- after which
-    # the next apply calls New-VMSwitch and fails on a name conflict, forcing
-    # a manual import or taint to recover.
+    # Existence pre-check, symmetric with get.ps1/remove.ps1: Set-VMSwitch's own missing-switch error maps to ErrPSExecution, not ErrNotFound.
     try {
         $existing = Get-VMSwitch -Name $Name -ErrorAction Stop
     }
@@ -62,17 +53,7 @@ function Set-HypervSwitch {
         throw $errorRecord
     }
 
-    # Symmetric with new.ps1: AllowManagementOS is meaningful only for
-    # External switches. We read the host-side truth from $existing
-    # (populated by Get-VMSwitch above) rather than the caller-supplied
-    # $SwitchType so the guard fires unconditionally. If we trusted the
-    # caller hint, an Update payload that omits switch_type would
-    # short-circuit the check and pass -AllowManagementOS=$false through
-    # to Set-VMSwitch on a real Internal switch -- which silently
-    # converts it to Private (a type mutation with no error, surfacing
-    # only as state drift on the next refresh). $existing.SwitchType is
-    # an enum; ToString() matches the convention get.ps1 uses for the
-    # canonical projection.
+    # Reads $existing.SwitchType (host truth), not the caller's hint: trusting an omitted switch_type would silently flip an Internal switch to Private.
     if ($null -ne $AllowManagementOS -and $existing.SwitchType.ToString() -ne 'External') {
         throw "allow_management_os is not valid for switch_type '$($existing.SwitchType)' (External only)"
     }
@@ -91,9 +72,7 @@ function Set-HypervSwitch {
         }
         Set-VMSwitch -Name $Name -Notes $Notes -ErrorAction Stop
 
-        # Read-back. Mirrors get.ps1's NAT augmentation: pull the underlying
-        # VMSwitch, the NetIPAddress, the NetNat, then synthesize the
-        # SwitchType=NAT shape.
+        # Read-back mirrors get.ps1's NAT augmentation to synthesize SwitchType=NAT.
         $sw = Get-VMSwitch -Name $Name -ErrorAction Stop
         $natIp = Get-NetIPAddress `
             -InterfaceAlias "vEthernet ($Name)" `
@@ -127,12 +106,7 @@ function Set-HypervSwitch {
         ErrorAction = 'Stop'
     }
     if ($PSBoundParameters.ContainsKey('NetAdapterNames')) {
-        # Set-VMSwitch -NetAdapterName is typed [string] (single NIC), unlike
-        # New-VMSwitch which auto-unwraps a one-element [string[]]. Index
-        # explicitly so the binder gets a string. NIC teaming is configured
-        # outside the switch resource via Set-VMSwitchTeam; the schema's
-        # list shape is preserved for symmetry, but only the first entry
-        # binds the switch.
+        # Set-VMSwitch -NetAdapterName takes a single string, unlike New-VMSwitch's [string[]]; only the first entry binds.
         if ($NetAdapterNames.Count -eq 0) {
             throw "net_adapter_names must contain at least one adapter"
         }

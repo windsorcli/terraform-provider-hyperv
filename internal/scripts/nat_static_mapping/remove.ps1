@@ -12,9 +12,10 @@
 #                 }
 #   stdout      : empty (caller passes dst=nil to runScript).
 #
-# Best-effort destroy: a missing static mapping or missing firewall
-# rule is treated as success (the goal is "no mapping/rule by these
-# identifiers exists," and that's already true).
+# Best-effort destroy: a missing mapping or firewall rule is success,
+# since the goal ("no mapping/rule by these identifiers") already holds.
+#
+# lint:allow-long-comment
 
 function Remove-HypervNatStaticMapping {
     [CmdletBinding()]

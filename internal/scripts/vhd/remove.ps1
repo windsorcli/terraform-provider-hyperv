@@ -4,14 +4,13 @@
 #
 #   stdin JSON  : { "path": "<absolute-path>" }
 #   stdout      : empty (caller passes dst=nil to runScript).
-#   stderr/exit : missing file -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
-#                 the Go side so Delete can treat already-gone as success.
+#   stderr/exit : missing file -> ObjectNotFound envelope, exit 1 -> Go maps
+#                 to ErrNotFound so Delete treats already-gone as success.
 #
-# There's no Remove-VHD cmdlet -- a VHD is just a file. Remove-Item is what
-# Hyper-V tooling itself uses. The cmdlet errors loudly if the file is
-# attached to a running VM (open file handle), which surfaces as a
-# transport-level error and bubbles up via the catch block.
+# No Remove-VHD cmdlet exists; a VHD is just a file, so this uses
+# Remove-Item, which errors if the file is attached to a running VM.
+#
+# lint:allow-long-comment
 
 # Remove-HypervVHD deletes the VHD file. Same Test-Path-first pattern as
 # get/set: missing file returns $false (no error) so the missing branch

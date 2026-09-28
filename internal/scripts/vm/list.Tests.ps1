@@ -1,8 +1,7 @@
 # Locks the Get-HypervVMByPrefix contract: filters Get-VM output by name
-# prefix, emits a JSON array (even on zero / one match) with only Name,
-# and does NOT carry the full read shape (state, generation, etc.) that
-# get.ps1 emits. The Go-side []VMName decoder depends on the array
-# shape and the minimal field set.
+# prefix, emits a JSON array (even on zero/one match) with only Name, not
+# the full read format (state, generation, etc.) get.ps1 emits. The
+# Go-side []VMName decoder depends on the array format and field set.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -38,9 +37,7 @@ Describe 'Get-HypervVMByPrefix' {
         }
 
         It 'emits a JSON array even when there are zero matches' {
-            # The Go decoder is []VMName -- a JSON object ('{}') instead
-            # of an empty array ('[]') would unmarshal-error. -InputObject
-            # in the script is what keeps the shape array-typed.
+            # -InputObject keeps the output array-typed; the Go decoder is []VMName and errors on a bare object.
             Mock Get-VM { @() }
 
             $output = Get-HypervVMByPrefix -NamePrefix 'tfacc-'
@@ -49,10 +46,7 @@ Describe 'Get-HypervVMByPrefix' {
         }
 
         It 'emits a JSON array (not a bare object) when there is exactly one match' {
-            # Same array-shape invariant as the empty case, single-match
-            # version. Without -InputObject, PowerShell would unroll the
-            # one-element array and ConvertTo-Json would emit a bare
-            # object instead of a one-element array.
+            # Same array-typed invariant as the empty case, single-match version.
             Mock Get-VM { @(New-HypervVMSample -Name 'tfacc-vm-only-one') }
 
             $output = Get-HypervVMByPrefix -NamePrefix 'tfacc-'
@@ -64,9 +58,7 @@ Describe 'Get-HypervVMByPrefix' {
         }
 
         It 'emits only the Name field (sweeper does not need the full read shape)' {
-            # Locks the minimal-shape decision -- a wider shape means
-            # slower enumeration on a host with many VMs and a wider
-            # blast radius for script-Go contract drift.
+            # Locks the minimal-format decision: a wider format means slower enumeration and a wider blast radius for contract drift.
             Mock Get-VM { @(New-HypervVMSample -Name 'tfacc-vm-shape') }
 
             $output = Get-HypervVMByPrefix -NamePrefix 'tfacc-'

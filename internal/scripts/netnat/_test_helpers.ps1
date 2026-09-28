@@ -22,10 +22,9 @@ function Remove-NetNat {
     )
 }
 
-# New-HypervNetNatSample builds a PSCustomObject shaped like a real
-# Get-NetNat result. Only Name is populated -- the sweeper consumes
-# only that field, and the read shape exposed elsewhere
-# (InternalIPInterfaceAddressPrefix, etc.) is irrelevant to sweep.
+# New-HypervNetNatSample builds a PSCustomObject modeled on a real
+# Get-NetNat result. Only Name is populated, since that's all the
+# sweeper consumes.
 function New-HypervNetNatSample {
     [CmdletBinding()]
     param(

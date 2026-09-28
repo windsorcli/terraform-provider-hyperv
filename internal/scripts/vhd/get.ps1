@@ -13,13 +13,13 @@
 #                   "Format":         "VHD"|"VHDX",
 #                   "Attached":       <bool>              # in use by any VM
 #                 }
-#   stderr/exit : missing file -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
-#                 the Go side so resource Read calls RemoveResource.
+#   stderr/exit : missing file -> ObjectNotFound envelope, exit 1 -> Go maps
+#                 to ErrNotFound so Read calls RemoveResource.
 #
-# Difference from image_file/get: VHD content integrity is the OS's concern,
-# so no SHA-256. Drift surfaces via FileSizeBytes (sparse files grow as the
-# VM writes) and Attached (out-of-band attach by another tool).
+# Unlike image_file/get, no SHA-256: VHD content integrity is the OS's
+# concern. Drift surfaces via FileSizeBytes and Attached instead.
+#
+# lint:allow-long-comment
 
 # Get-HypervVHD reads a VHD's metadata. Same Test-Path-first pattern as
 # image_file: a missing file returns $false (no error), so the missing

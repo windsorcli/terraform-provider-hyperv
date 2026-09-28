@@ -17,11 +17,11 @@
 #                 not found" surfaces here as part of the Add cmdlet's
 #                 input validation) -> ErrPSExecution.
 #
-# The display name is the user's slot key for diff/reconciliation; the
-# Go-side resource layer enforces uniqueness within a VM's NIC list at
-# plan time. MacAddress format is pre-validated at the schema layer
-# (colon, hyphen, or unsigned-12-hex). VlanID is pre-validated to
-# 1-4094 by the schema; 0 / absent here means "leave NIC untagged".
+# The display name is the user's slot key for diff/reconciliation,
+# unique within a VM's NIC list at the schema layer. VlanID 0/absent
+# means "leave NIC untagged".
+#
+# lint:allow-long-comment
 
 function Add-HypervVMNetworkAdapter {
     [CmdletBinding()]

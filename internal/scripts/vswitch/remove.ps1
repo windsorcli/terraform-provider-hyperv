@@ -7,15 +7,15 @@
 #                 from prior state for NAT-typed resources so the script
 #                 tears down NetNat + NetIPAddress before Remove-VMSwitch.
 #   stdout      : empty (caller passes dst=nil to runScript).
-#   stderr/exit : missing switch -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
-#                 the Go side so Delete can treat already-gone as success.
+#   stderr/exit : missing switch -> ObjectNotFound envelope, exit 1 -> Go
+#                 maps to ErrNotFound so Delete treats already-gone as
+#                 success.
 #
-# NAT teardown order is load-bearing: Remove-VMSwitch fails if the NetNat
-# instance still references the switch's vNIC, so NetNat first, then
-# NetIPAddress (un-IPs the vNIC), then Remove-VMSwitch. Each step tolerates
-# its own ObjectNotFound -- best-effort destroy semantics for partial
-# out-of-band cleanup.
+# NAT teardown order is load-bearing: NetNat first, then NetIPAddress,
+# then Remove-VMSwitch, since the switch fails to remove while a NetNat
+# still references its vNIC. Each step tolerates its own ObjectNotFound.
+#
+# lint:allow-long-comment
 
 # Remove-HypervSwitch deletes a switch by name. Missing-switch case throws
 # an explicit ObjectNotFound so Delete on the Go side can treat already-gone

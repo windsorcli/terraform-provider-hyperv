@@ -8,24 +8,14 @@
 #                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
 #                 the Go side so Delete can treat already-gone as success.
 #
-# Stop-VM-then-Remove-VM is the standard pattern: Remove-VM -Force errors
-# on a running VM ("VM cannot be removed while it is running"), so we have
-# to power it off first. This is the one place the script DOES drive a
-# power transition -- destroy is destructive by definition, so power-off-
-# to-delete is acceptable. Non-destroy power transitions belong to
-# hyperv_vm_state.
+# Stop-VM-then-Remove-VM: Remove-VM -Force errors on a running VM, so
+# this is the one place the script drives a power transition (destroy
+# is destructive by definition). -Force -TurnOff is a hard power-off,
+# not a graceful IC shutdown: graceful Stop-VM has no built-in timeout
+# and would hang the apply against an unresponsive guest. A clean
+# shutdown should go through hyperv_vm_state before `terraform destroy`.
 #
-# -Force -TurnOff: hard power-off, equivalent to "pulling the plug." We
-# do NOT attempt a graceful shutdown via the integration services
-# Shutdown ICs because:
-#   1. Graceful Stop-VM has no built-in timeout -- a guest with absent
-#      or unresponsive integration services hangs the apply indefinitely.
-#   2. Convention across IaC providers (AWS, Azure, libvirt) is hard-stop
-#      on destroy; operators expect that semantic.
-#   3. If a clean shutdown matters (decoupled VHDXs the user is keeping),
-#      they should drive it via hyperv_vm_state before `terraform
-#      destroy` -- not relying on the destroy path itself.
-# Documented in the resource's MarkdownDescription.
+# lint:allow-long-comment
 
 # Remove-HypervVM stops the VM (if running) and removes it. Same Stop +
 # selective ObjectNotFound catch pattern as get/set: a missing VM raises

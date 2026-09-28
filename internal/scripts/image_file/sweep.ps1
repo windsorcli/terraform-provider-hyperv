@@ -10,11 +10,11 @@
 #   stderr/exit : 0 on success. Missing parent_dir is an empty result
 #                 (fresh bench), not an error.
 #
-# Excludes VHD-family extensions (.vhd, .vhdx, .avhd, .avhdx) -- those
-# are the vhd sweeper's territory. This script owns everything else
-# under the prefix (.bin, .iso, .txt, fixture files, etc.).
+# Excludes VHD-family extensions (.vhd, .vhdx, .avhd, .avhdx), which are
+# the vhd sweeper's territory; this script owns everything else under
+# the prefix. A Remove-Item failure on one file logs and continues.
 #
-# Best-effort per-file: a Remove-Item failure logs and continues.
+# lint:allow-long-comment
 
 function Invoke-HypervImageFileSweep {
     [CmdletBinding()]
@@ -26,9 +26,7 @@ function Invoke-HypervImageFileSweep {
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $NamePrefix
     )
 
-    # [string[]] forces array shape through ConvertTo-Json -- a bare @()
-    # serializes a single-element list to a scalar on PS 5.1. Same
-    # rationale as netnat/sweep.ps1.
+    # [string[]] typing keeps a single match from unboxing to a scalar in the JSON output (see netnat/sweep.ps1).
     [string[]]$removed = @()
 
     if (-not (Test-Path -LiteralPath $ParentDir -PathType Container)) {

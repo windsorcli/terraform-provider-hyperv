@@ -15,9 +15,10 @@
 #                 NatName, Protocol, ExternalIPAddress, ExternalPort,
 #                 InternalIPAddress, InternalPort, FirewallRulePresent,
 #                 FirewallRuleName, FirewallRuleProfile).
-#   stderr/exit : missing mapping -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound
-#                 on the Go side (resource Read calls RemoveResource).
+#   stderr/exit : missing mapping -> ObjectNotFound envelope, exit 1 ->
+#                 Go maps to ErrNotFound so Read calls RemoveResource.
+#
+# lint:allow-long-comment
 
 # Get-HypervNatStaticMapping enumerates the NatStaticMapping list scoped
 # to NatName and filters in-process for the (Protocol, ExternalIP,

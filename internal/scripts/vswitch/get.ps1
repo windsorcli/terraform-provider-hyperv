@@ -5,7 +5,7 @@
 #   stdin JSON  : { "name": "<switch-name>", "nat_name": "<string>"? }
 #                 nat_name is optional; the Go-side resource Read passes it
 #                 from prior state for NAT-typed resources so the script
-#                 can join Get-NetIPAddress + Get-NetNat into the read shape.
+#                 can join Get-NetIPAddress + Get-NetNat into the output.
 #   stdout JSON : single VMSwitch object with the keys
 #                   Name, SwitchType, AllowManagementOS,
 #                   NetAdapterInterfaceDescription, Notes, Id,
@@ -15,19 +15,19 @@
 #                 and Get-NetNat + Get-NetIPAddress both succeed; Id is the
 #                 Guid stringified. NAT fields are empty strings for non-NAT
 #                 switches.
-#   stderr/exit : missing switch -> Write-HypervError envelope with
-#                 category=ObjectNotFound + exit 1, mapped to ErrNotFound on
-#                 the Go side (resource Read calls RemoveResource).
-#                 vmms-stopped surfaces as ResourceUnavailable -> ErrUnavailable.
-#                 For NAT switches, missing NetNat or missing NetIPAddress
-#                 also surfaces as ObjectNotFound -- partial NAT teardown
-#                 means the resource as a whole is gone.
+#   stderr/exit : missing switch -> ObjectNotFound envelope, exit 1 -> Go
+#                 maps to ErrNotFound (resource Read calls RemoveResource).
+#                 vmms-stopped -> ResourceUnavailable -> ErrUnavailable. For
+#                 NAT switches, a missing NetNat or NetIPAddress is also
+#                 ObjectNotFound: partial NAT teardown means the resource
+#                 as a whole is gone.
 #
-# Tests dot-source this file (`. ./get.ps1`); the entry block is guarded so it
-# only runs when the script is invoked directly. The select-block shape is
-# duplicated across get/new/set on purpose -- the Go runtime concatenates only
-# preamble + a single verb script per call, so cross-script helpers aren't
-# visible at runtime.
+# Tests dot-source this file; the entry block is guarded to skip when
+# invoked that way. The Select-Object projection is duplicated across
+# get/new/set on purpose: the runtime concatenates only preamble plus a
+# single verb script per call, so cross-script helpers aren't visible.
+#
+# lint:allow-long-comment
 
 # Get-HypervSwitch fetches a switch by name. Missing-switch case throws an
 # explicit ObjectNotFound so the Go-side typed client maps it to ErrNotFound
@@ -49,19 +49,7 @@ function Get-HypervSwitch {
         $sw = Get-VMSwitch -Name $Name -ErrorAction Stop
     }
     catch {
-        # "Switch missing" surfaces in two shapes:
-        #   1. CategoryInfo.Category = ObjectNotFound -- the documented
-        #      contract; what some Hyper-V module versions emit.
-        #   2. CategoryInfo.Category = InvalidArgument with
-        #      FullyQualifiedErrorId =
-        #      'InvalidParameter,Microsoft.HyperV.PowerShell.Commands.GetVMSwitch'
-        #      -- what Get-VMSwitch actually emits on Server 2022 + PS 5.1
-        #      (verified 2026-04 against a real bench; the acc test for
-        #      hyperv_virtual_switch's CheckDestroy caught this). The FQId
-        #      is precise enough that unrelated InvalidArgument errors
-        #      (bad name format, etc.) still propagate as the design
-        #      intends -- only the canonical "Get-VMSwitch says not found"
-        #      shape is treated as missing.
+        # "Switch missing" surfaces as ObjectNotFound on some module versions, or as this specific InvalidArgument FQEId on Server 2022 + PS 5.1.
         $isMissing = (
             $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound
         ) -or (

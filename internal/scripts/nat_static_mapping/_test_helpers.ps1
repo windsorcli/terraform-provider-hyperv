@@ -1,22 +1,11 @@
 # _test_helpers.ps1 -- shared Pester setup for the nat_static_mapping verb
-# scripts. Underscore prefix keeps it out of Pester's *.Tests.ps1
-# discovery glob.
+# scripts. Underscore prefix keeps it out of Pester's *.Tests.ps1 glob.
 #
-# Stubs for the NetNat / NetFirewall cmdlets the nat_static_mapping scripts
-# call. Defined unconditionally (not gated on `Get-Command`) on purpose:
-# when the real NetNat / NetSecurity modules are present (Windows
-# runners), their parameter sets require certain combinations -- e.g.
-# `Add-NetNatStaticMapping -NatName -Protocol` without the address /
-# port pair doesn't resolve cleanly on PS 5.1, and the binder rejects
-# the call before Pester's mock body runs, returning a zero-call count.
-# Defining stubs in this script's scope shadows the module cmdlets in
-# the BeforeAll dot-source scope, so Pester mocks the simple stub
-# surface (no parameter sets, no validators) and ParameterFilters see
-# the bound values consistently across PS 5.1 / 7.x.
-#
-# In production scripts run via -EncodedCommand in a fresh runspace,
-# the real cmdlets are still used; this shadow only applies to test
-# execution.
+# Stubs the NetNat / NetFirewall cmdlets unconditionally: the real
+# modules' parameter sets reject some bound-value combinations before
+# Pester's mock body runs, so these simplified stubs shadow them and
+# let ParameterFilters see bound values consistently. Production
+# scripts run via -EncodedCommand in a fresh runspace and never see it.
 
 # NetNat singleton-resolution: nat_static_mapping references an existing NAT
 # by name (provider precondition). Get-NetNat is the cross-resource
@@ -100,9 +89,8 @@ function Remove-NetFirewallRule {
     )
 }
 
-# New-HypervNatStaticMappingSample builds a PSCustomObject shaped like a real
-# Get-NetNatStaticMapping result. Field set mirrors what the canonical
-# read shape projects.
+# New-HypervNatStaticMappingSample builds a PSCustomObject modeled on a real
+# Get-NetNatStaticMapping result. Field set mirrors the canonical read format.
 function New-HypervNatStaticMappingSample {
     [CmdletBinding()]
     param(
@@ -125,9 +113,9 @@ function New-HypervNatStaticMappingSample {
     }
 }
 
-# New-HypervFirewallRuleSample builds a PSCustomObject shaped like a
+# New-HypervFirewallRuleSample builds a PSCustomObject modeled on a
 # real Get-NetFirewallRule result. Only the fields the canonical read
-# shape consumes (DisplayName, Profile, Enabled) are populated.
+# format consumes (DisplayName, Profile, Enabled) are populated.
 function New-HypervFirewallRuleSample {
     [CmdletBinding()]
     param(
@@ -144,7 +132,7 @@ function New-HypervFirewallRuleSample {
 
 # New-HypervNetNatSample mirrors the vswitch helper: the precondition
 # probe in nat_static_mapping/new.ps1 (Get-NetNat -Name <nat_name>) returns
-# this shape on success, $null on missing.
+# this structure on success, $null on missing.
 function New-HypervNetNatSample {
     [CmdletBinding()]
     param(

@@ -7,16 +7,12 @@
 #                 array, even on zero or one match.
 #   stderr/exit : 0 on success (including the empty-result case).
 #
-# Used by the acceptance-test sweeper. Minimal wire shape -- only Name
-# is carried because the sweeper's RemoveVMSwitch call only needs the
-# name (the existing acctest bar uses Private + Internal switches only;
-# NAT-switch sweep support can extend this script with a NatName field
-# when NAT acctests land).
+# Used by the acceptance-test sweeper, which only needs the name for its
+# RemoveVMSwitch call. Same prefix-filter-after-Get-VMSwitch pattern as
+# vm/list.ps1: the wildcard form via -Name behaves inconsistently across
+# PS versions on no-match, so Where-Object filters after enumeration.
 #
-# Same prefix-filter-after-Get-VMSwitch pattern as vm/list.ps1: the
-# wildcard form via -Name behaves inconsistently across PS versions on
-# no-match, so we filter with Where-Object in PowerShell after the
-# enumeration call.
+# lint:allow-long-comment
 
 # Get-HypervVMSwitchByPrefix returns Get-VMSwitch filtered by
 # `Name -like "${prefix}*"`. Symmetric with Get-HypervVMByPrefix.
@@ -30,8 +26,7 @@ function Get-HypervVMSwitchByPrefix {
         Where-Object { $_.Name -like $pattern } |
         ForEach-Object { [pscustomobject]@{ Name = $_.Name } })
 
-    # -InputObject keeps the shape array-typed even at zero or one
-    # match -- see vm/list.ps1 header for the full rationale.
+    # -InputObject keeps the output array-typed even at zero or one match (see vm/list.ps1).
     ConvertTo-Json -InputObject $results -Depth 10 -Compress
 }
 

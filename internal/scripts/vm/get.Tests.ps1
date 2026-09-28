@@ -13,9 +13,7 @@ Describe 'Get-HypervVM' {
 
     Context 'happy path' {
 
-        # Read-HypervVMResult always calls Get-VMMemory (added in the
-        # dynamic-memory slice). The default mock returns a static-only
-        # shape; tests that exercise dynamic memory override per-It.
+        # Read-HypervVMResult always calls Get-VMMemory; the default mock returns a static-only result, and dynamic-memory tests override per-It.
         BeforeEach {
             Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
         }
@@ -70,10 +68,7 @@ Describe 'Get-HypervVM' {
         }
 
         It 'emits an empty HardDiskDrives array when no disks attached' {
-            # The @() wrapper in Read-HypervVMResult forces array-shape on
-            # the JSON wire even when the cmdlet returns nothing. Without
-            # it, ConvertTo-Json would emit `null` for an empty pipeline,
-            # which Go's []HardDiskDrive decode rejects.
+            # The @() wrapper keeps the output array-typed; without it ConvertTo-Json emits `null`, which Go's []HardDiskDrive decode rejects.
             Mock Get-VM { New-HypervVMSample -Generation 2 }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
             Mock Get-VMHardDiskDrive { @() }

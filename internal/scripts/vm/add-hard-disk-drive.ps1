@@ -18,13 +18,11 @@
 #                 -> ErrPSExecution; surfaces verbatim with the cmdlet
 #                 error so the operator knows which slot or which path.
 #
-# This script DOES NOT validate that controller_type matches generation
-# (gen 1 supports IDE+SCSI, gen 2 supports SCSI only). Hyper-V's
-# Add-VMHardDiskDrive errors clearly with "Hyper-V cannot attach IDE
-# devices to a generation 2 virtual machine"; we let that propagate
-# rather than duplicate the rule on the script side. The Go-side
-# resource validator can catch this at plan time later if it becomes
-# a friction point.
+# Doesn't validate controller_type against generation (gen 1 supports
+# IDE+SCSI, gen 2 SCSI only); Add-VMHardDiskDrive's own error is clear
+# enough to let propagate rather than duplicate the rule here.
+#
+# lint:allow-long-comment
 
 function Add-HypervVMHardDiskDrive {
     [CmdletBinding()]

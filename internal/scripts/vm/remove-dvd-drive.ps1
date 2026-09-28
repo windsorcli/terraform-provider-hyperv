@@ -15,10 +15,10 @@
 #                 the resource-layer reconciliation in Update treats
 #                 as a no-op.
 #
-# Like remove-hard-disk-drive.ps1, this is slot-keyed: the iso_path
-# isn't part of the wire payload because the slot tuple alone
-# identifies which DVD drive to remove. Whatever ISO (if any) was
-# loaded gets implicitly ejected as part of the detach.
+# Like remove-hard-disk-drive.ps1, this is slot-keyed: the slot tuple
+# alone identifies the drive, so iso_path isn't part of the payload.
+#
+# lint:allow-long-comment
 
 function Remove-HypervVMDvdDrive {
     [CmdletBinding()]

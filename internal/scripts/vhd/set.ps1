@@ -3,20 +3,20 @@
 # Wire contract (locked in by Tests.ps1):
 #
 #   stdin JSON  : { "path": "<absolute-path>", "size_bytes": <int64> }
-#   stdout JSON : same shape as get.ps1 (re-read after the resize lands).
+#   stdout JSON : same fields as get.ps1 (re-read after the resize lands).
 #
 # Other mutations (vhd_type, parent_path, block_size_bytes, path) are
 # RequiresReplace at the schema layer and never reach this script.
 #
-# Resize-VHD constraints worth surfacing as cmdlet errors (we do NOT pre-
-# validate -- the cmdlet's diagnostics are clearer than anything we'd write):
-#   - Shrink requires the trailing blocks be empty; run Optimize-VHD first.
-#   - Online resize works for VHDX on Gen 2 VMs only; Gen 1 must be powered off.
-#   - Fixed-format resize rewrites the entire file (slow on multi-GB disks).
+# No pre-validation: Resize-VHD's own diagnostics are clearer than
+# anything we'd write for shrink-with-data, offline-only Gen 1 resize,
+# or the multi-GB rewrite cost of a fixed-format resize.
+#
+# lint:allow-long-comment
 
-# Read-HypervVHDResult emits the canonical 8-field shape. Inline duplicate
-# of get.ps1's tail because the runtime concatenates only preamble + a
-# single verb script per call.
+# Read-HypervVHDResult emits the canonical 8-field format. Inline duplicate
+# of get.ps1's tail: the runtime concatenates only preamble plus a single
+# verb script per call.
 function Read-HypervVHDResult {
     [CmdletBinding()]
     param(

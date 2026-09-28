@@ -1,20 +1,12 @@
 # _test_helpers.ps1 -- shared Pester setup for the vswitch verb scripts.
 # Underscore prefix keeps it out of Pester's *.Tests.ps1 discovery glob.
 #
-# Stubs for the Hyper-V cmdlets the vswitch scripts call. Defined
-# unconditionally (not gated on `Get-Command`) on purpose: when the real
-# Hyper-V module is present (Windows runners), its Set-VMSwitch parameter
-# sets require certain combinations -- e.g. -Name + -NetAdapterName without
-# -SwitchType doesn't resolve to a complete parameter set on PS 5.1 and the
-# binder rejects the call before Pester's mock body runs, returning a
-# zero-call count. Defining stubs in this script's scope shadows the module
-# cmdlets in the BeforeAll dot-source scope, so Pester mocks the simple
-# stub surface (no parameter sets, no validators) and ParameterFilters see
-# the bound values consistently across PS 5.1 and 7.x.
-#
-# In production scripts run via -EncodedCommand in a fresh runspace, so the
-# real Hyper-V cmdlets are still used; this shadow only applies to test
-# execution.
+# Stubs the Hyper-V cmdlets unconditionally: the real module's Set-VMSwitch
+# parameter sets reject some bound-value combinations before Pester's mock
+# body runs (e.g. -Name + -NetAdapterName without -SwitchType on PS 5.1),
+# so these simplified stubs shadow them and let ParameterFilters see bound
+# values consistently. Production scripts run via -EncodedCommand in a
+# fresh runspace and never see this shadow.
 
 function Get-VMSwitch {
     [CmdletBinding()]
@@ -139,10 +131,9 @@ function New-HypervSwitchSample {
     }
 }
 
-# New-HypervNetNatSample builds a PSCustomObject shaped like a real
-# Get-NetNat result. Only the two fields the canonical read shape exposes
-# (Name, InternalIPInterfaceAddressPrefix) are populated -- Get-NetNat
-# returns more, but the typed contract only consumes these.
+# New-HypervNetNatSample builds a PSCustomObject modeled on a real
+# Get-NetNat result. Only the two fields the canonical read format exposes
+# (Name, InternalIPInterfaceAddressPrefix) are populated.
 function New-HypervNetNatSample {
     [CmdletBinding()]
     param(
@@ -155,7 +146,7 @@ function New-HypervNetNatSample {
     }
 }
 
-# New-HypervNetIPAddressSample builds a PSCustomObject shaped like a real
+# New-HypervNetIPAddressSample builds a PSCustomObject modeled on a real
 # Get-NetIPAddress result for the host vNIC of an Internal/NAT switch. The
 # canonical read consumes IPAddress + PrefixLength.
 function New-HypervNetIPAddressSample {

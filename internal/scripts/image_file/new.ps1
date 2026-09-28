@@ -10,41 +10,27 @@
 #                   "staging_path":     "<absolute-path>",          # local_path
 #                   "source_path":      "<absolute-path>"           # source_path
 #                 }
-#   stdout JSON : same shape as get.ps1 (Path, SizeBytes, Sha256).
+#   stdout JSON : same fields as get.ps1 (Path, SizeBytes, Sha256).
 #
 # Mode semantics:
-#   url         - download via HttpWebRequest to a sibling .part file in the
-#                 destination directory, verify SHA-256 against
-#                 expected_sha256, then atomic-rename (Move-Item) to
-#                 destination_path. NTFS rename within a volume is atomic;
-#                 the .part-in-destination-dir layout keeps it that way.
-#   host_path   - verify-only: the user attests the file already exists at
-#                 destination_path. No copy. Missing-file surfaces as
-#                 ObjectNotFound -> ErrNotFound, same as Read.
-#   local_path  - the Go side has streamed bytes from the runner to
-#                 staging_path on the host (via Connection.StreamFile).
-#                 This script verifies the staged file's SHA-256 against
-#                 the runner-computed expected_sha256 (transport-corruption
-#                 check) and atomic-renames the staging file to
-#                 destination_path. Same .part-in-destination-dir,
-#                 same Move-Item-is-atomic guarantee as url mode.
-#   source_path - host-side copy: Copy-Item from source_path to a sibling
-#                 .part of destination_path, verify the copied bytes'
-#                 SHA-256 against expected_sha256 (the hash the Go side
-#                 read from source_path at plan time), then atomic-rename.
-#                 Never crosses the wire; both endpoints are host-local.
+#   url         - download to a sibling .part in the destination dir,
+#                 verify SHA-256, atomic-rename into place.
+#   host_path   - verify-only: user attests the file already exists;
+#                 no copy. Missing file is ObjectNotFound, same as Read.
+#   local_path  - the Go side has already streamed bytes to staging_path;
+#                 this verifies SHA-256 (transport-corruption check) and
+#                 atomic-renames staging_path to destination_path.
+#   source_path - host-side Copy-Item from source_path to a sibling
+#                 .part, verify SHA-256, atomic-rename. Never crosses
+#                 the wire; both endpoints are host-local.
 #
-# Why HttpWebRequest (not HttpClient, BITS, or Invoke-WebRequest):
-#   - HttpClient on .NET Framework 4.x (PS 5.1 / Server 2019) fails TLS
-#     handshake with "Could not create SSL/TLS secure channel" against some
-#     HTTPS endpoints (confirmed against factory.talos.dev on WS2019).
-#     HttpWebRequest uses the same Schannel path as Invoke-WebRequest and
-#     works correctly on both PS 5.1 and PS 7.
-#   - Start-BitsTransfer requires an interactive user session (HRESULT
-#     0x800704DD over SSH/WinRM "Network" logon).
-#   - Invoke-WebRequest -OutFile on PS 5.1 buffers the response body in
-#     memory before writing to disk -- fine for small files, OOMs on the
-#     multi-GB VHDX images this resource exists to fetch.
+# HttpWebRequest, not HttpClient/BITS/Invoke-WebRequest: HttpClient on
+# .NET Framework 4.x fails TLS handshake against some HTTPS endpoints
+# on WS2019; Start-BitsTransfer needs an interactive session (fails over
+# SSH/WinRM); Invoke-WebRequest -OutFile buffers the whole response in
+# memory on PS 5.1, which OOMs on multi-GB VHDX images.
+#
+# lint:allow-long-comment
 
 # Save-HypervHttpFile downloads $Url to $OutFile via HttpWebRequest with a
 # streamed response copy. GetResponseStream() returns the body as a stream
@@ -101,9 +87,9 @@ function Move-HypervImageFileIntoPlace {
     }
 }
 
-# Read-HypervImageFileResult emits the canonical three-field result shape.
-# Inline duplicate of get.ps1's tail because the runtime concatenates only
-# preamble + a single verb script per call (no cross-script helpers).
+# Read-HypervImageFileResult emits the canonical three-field result format.
+# Inline duplicate of get.ps1's tail: the runtime concatenates only
+# preamble plus a single verb script per call.
 function Read-HypervImageFileResult {
     [CmdletBinding()]
     param(
@@ -172,42 +158,29 @@ function New-HypervImageFileFromUrl {
 }
 
 # Invoke-HypervDvdSafeReplace replaces $DestinationPath with the bytes at
-# $StagingPath when the destination may currently be locked by a Hyper-V
-# DVD attachment on a running VM. `Move-Item -Force` does delete-then-
-# rename; on a destination with an exclusive open handle the delete is
-# pended and the rename surfaces "Cannot create a file when that file
-# already exists." Hyper-V supports DVD media hot-swap on running VMs
-# (Set-VMDvdDrive -Path <new>), so we use a swap-via-pivot dance:
+# $StagingPath when the destination may be locked by a Hyper-V DVD
+# attachment on a running VM (Move-Item -Force's delete-then-rename
+# fails with "file already exists" against an open handle). Swap-via-
+# pivot dance, using Hyper-V's DVD media hot-swap (Set-VMDvdDrive -Path):
 #
-#   1. Move staging from $StagingPath to a sibling pivot file
-#      ($DestinationPath.swap-<guid>). Rename within the directory is
-#      lock-free here because no VM has the staging path mounted.
-#   2. Re-target every matching DVD slot from $DestinationPath to the
-#      pivot. Hyper-V atomically releases its open handle on the old
-#      destination as the new media takes effect.
-#   3. With $DestinationPath now unlocked, copy the pivot bytes to it.
-#      Copy-Item reads the pivot through Hyper-V's FILE_SHARE_READ and
-#      writes a fresh file at the destination -- no rename of the locked
-#      pivot needed.
-#   4. Re-target every slot back to $DestinationPath. Hyper-V picks up
-#      the new bytes there and releases the lock on the pivot.
+#   1. Move staging to a sibling pivot ($DestinationPath.swap-<guid>).
+#   2. Re-target every matching DVD slot from destination to pivot,
+#      which releases Hyper-V's open handle on the destination.
+#   3. Copy the now-unlocked pivot bytes to destination.
+#   4. Re-target every slot back to destination.
 #   5. Remove the pivot.
 #
-# Why not the more obvious detach-via-Set-VMDvdDrive-Path-null? On the
-# tested benches (Server 2022, Hyper-V module shipped with PS 5.1), a
-# Path=$null call clears the media on the slot, but a subsequent
-# Set-VMDvdDrive at the same (VMName, ControllerNumber, ControllerLocation)
-# tuple surfaces "the object was not found" -- empirically the slot's
-# resolution machinery breaks when the drive transiently has no media,
-# even though Get-VMDvdDrive still reports the drive as present at the
-# slot. Swap-via-pivot keeps every Set-VMDvdDrive call pointed at a
-# real existing file, sidestepping the issue entirely.
+# Not a simpler Set-VMDvdDrive -Path $null detach: on tested benches
+# that clears the slot's media, but a subsequent Set-VMDvdDrive at the
+# same slot then fails with "object not found," since the slot's
+# resolution breaks while its media is transiently empty. Every step
+# here keeps Set-VMDvdDrive pointed at a real file.
 #
-# All cleanup happens in a finally block so a partial failure (Copy-Item
-# disk-full, Hyper-V error mid-swap) restores the slots to $DestinationPath
-# rather than leaving the VM mounting a soon-deleted pivot. The pivot is
-# best-effort cleaned -- a leak is a sweepable artifact, not a corrupt
-# state.
+# Cleanup runs in a finally block so a partial failure restores the
+# slots to $DestinationPath; the pivot itself is best-effort cleaned
+# (a leak is sweepable, not corrupt state).
+#
+# lint:allow-long-comment
 function Invoke-HypervDvdSafeReplace {
     [CmdletBinding()]
     param(
@@ -216,16 +189,7 @@ function Invoke-HypervDvdSafeReplace {
     )
     $normalizedDest = ($DestinationPath -replace '/', '\')
 
-    # Walk Get-VM and Get-VMDvdDrive per-VM rather than the more concise
-    # Get-VMDvdDrive -VMName '*' wildcard form. The wildcard form on PS
-    # 5.1 / older Hyper-V module versions returns VMDvdDrive objects with
-    # the VMName field unpopulated (the .VM parent is set, but the
-    # .VMName scalar that Set-VMDvdDrive's parameter set keys on lands as
-    # an empty string), so a downstream Set-VMDvdDrive -VMName $dvd.VMName
-    # dispatches to "" and surfaces the cmdlet's stock "object not found"
-    # error. The set-boot-order.ps1 path uses the same per-VM enumeration
-    # shape -- this matches an existing in-repo pattern known to work
-    # against the bench.
+    # Per-VM Get-VMDvdDrive, not the -VMName '*' wildcard form: on PS 5.1 / older Hyper-V modules the wildcard form leaves VMName unpopulated, which breaks the downstream Set-VMDvdDrive -VMName lookup.
     $attached = @()
     foreach ($vm in (Get-VM -ErrorAction Stop)) {
         foreach ($dvd in (Get-VMDvdDrive -VMName $vm.Name -ErrorAction Stop)) {
@@ -244,33 +208,18 @@ function Invoke-HypervDvdSafeReplace {
     }
 
     if ($attached.Count -eq 0) {
-        # No VM holds the lock -- straight move, same shape as the
-        # non-dvd-aware path.
+        # No VM holds the lock: same straight-move path as the non-dvd-aware caller.
         Move-HypervImageFileIntoPlace -StagingPath $StagingPath -DestinationPath $DestinationPath
         return
     }
 
-    # Pivot is a sibling so the rename in step 1 stays on the same NTFS
-    # volume (atomic) and Copy-Item in step 3 stays in the same directory
-    # (no cross-volume slow path). The .swap- prefix groups all in-flight
-    # pivots under a single sweep pattern if a future cleanup tool ever
-    # needs one. The trailing .iso is required: Set-VMDvdDrive validates
-    # the path's extension (rejects "The specified path for the drive is
-    # not valid" otherwise) -- the cmdlet enforces .iso even though the
-    # iso_volume schema MarkdownDescription notes Hyper-V "doesn't
-    # require" the suffix at the storage layer; it is the cmdlet
-    # parameter validator that does.
+    # Pivot stays a sibling for an atomic same-volume rename/copy; the trailing .iso is required by Set-VMDvdDrive's own path validator.
     $pivotPath = "$normalizedDest.swap-$([guid]::NewGuid().ToString('n')).iso"
 
     Move-Item -LiteralPath $StagingPath -Destination $pivotPath -ErrorAction Stop
 
     try {
-        # Step 2: re-point each slot at the pivot. Each Set-VMDvdDrive is
-        # an atomic media swap -- Hyper-V's open handle on $DestinationPath
-        # is released as the call returns. Backslash-normalized path
-        # because Hyper-V's storage layer canonicalizes; passing the
-        # user-form (often forward-slash from HCL) has been observed to
-        # land as an empty Path on the drive.
+        # Backslash-normalized path: a forward-slash form (common from HCL) has landed as an empty Path on the drive.
         foreach ($dvd in $attached) {
             Set-VMDvdDrive `
                 -VMName             $dvd.VMName `
@@ -280,21 +229,11 @@ function Invoke-HypervDvdSafeReplace {
                 -ErrorAction Stop
         }
 
-        # Step 3: $DestinationPath is now unlocked. Copy-Item reads the
-        # pivot through Hyper-V's FILE_SHARE_READ open mode (verified
-        # against bench at the time of writing) and writes a fresh file
-        # at the destination. -Force overwrites any leftover bytes.
+        # Copy-Item reads the pivot through Hyper-V's FILE_SHARE_READ open mode; -Force overwrites leftover bytes.
         Copy-Item -LiteralPath $pivotPath -Destination $DestinationPath -Force -ErrorAction Stop
     }
     finally {
-        # Step 4: restore each slot to $DestinationPath. Best-effort
-        # SilentlyContinue here: if step 3 failed and the destination is
-        # missing, we still try to put the slot back; if it succeeds the
-        # VM keeps its DVD link intact across the failed apply. ErrorAction
-        # Stop here would mask the original copy-failure error with a
-        # secondary "missing destination" error, which is less useful for
-        # diagnosis. The slot is left pointing at the pivot in the worst
-        # case -- the Read shape will surface that on the next refresh.
+        # SilentlyContinue: a failed restore leaves the slot on the pivot, which the next Read surfaces as drift.
         foreach ($dvd in $attached) {
             Set-VMDvdDrive `
                 -VMName             $dvd.VMName `
@@ -304,24 +243,15 @@ function Invoke-HypervDvdSafeReplace {
                 -ErrorAction SilentlyContinue
         }
 
-        # Step 5: clean up the pivot. SilentlyContinue because a failure
-        # here (e.g. step 4 didn't actually re-target some slot, so the
-        # pivot is still locked) is recoverable on the next apply or via
-        # manual sweep -- not worth shadowing the primary outcome with.
-        # No Test-Path guard: -ErrorAction SilentlyContinue handles the
-        # missing-file case directly and the guard adds a TOCTOU window
-        # without protective value.
+        # Best-effort: an unremovable pivot (still locked) is recoverable on the next apply or a manual sweep.
         Remove-Item -LiteralPath $pivotPath -Force -ErrorAction SilentlyContinue
     }
 }
 
 # New-HypervImageFileFromLocalPath verifies a file the Go-side StreamFile
 # primitive has just deposited at staging_path, then atomic-renames it to
-# destination_path on hash match. Mirrors the url-mode shape: the only
-# difference is where the staged bytes came from (Go-side stream vs
-# HttpClient download). Same .part-in-destination-dir layout keeps the
-# Move-Item atomic on NTFS, same finally-block cleanup keeps a half-baked
-# staging file from lingering across a failed apply.
+# destination_path on hash match. Same verify-then-rename structure as
+# url mode; only the origin of the staged bytes differs.
 #
 # ReplaceWhileMounted opts the Move-Item step into the
 # detach-write-attach dance via Invoke-HypervDvdSafeReplace. Callers that

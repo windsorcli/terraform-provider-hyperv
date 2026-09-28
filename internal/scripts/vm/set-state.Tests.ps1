@@ -1,6 +1,6 @@
 # Locks the JSON contract for Set-HypervVMState (vm/set-state.ps1).
 # The Go-side resource layer dispatches state.desired transitions
-# through this script; any change to the wire shape or the dispatch
+# through this script; any change to the wire format or the dispatch
 # mapping is a breaking change.
 
 BeforeAll {
@@ -12,10 +12,7 @@ BeforeAll {
 
 Describe 'Set-HypervVMState' {
 
-    # Read-HypervVMResult always calls Get-VMMemory (added in the
-    # dynamic-memory slice). Default mock returns a static-only shape;
-    # this script doesn't directly mutate memory, so all tests share
-    # the default.
+    # Read-HypervVMResult always calls Get-VMMemory; this script doesn't mutate memory, so all tests share the default static-only mock.
     BeforeEach {
         Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
     }
@@ -128,11 +125,7 @@ Describe 'Set-HypervVMState' {
     Context 'error propagation' {
 
         It 'maps a missing VM to ObjectNotFound regardless of cmdlet category' {
-            # Mirrors get.ps1's two-shape catch -- on Server 2022 + PS 5.1
-            # the cmdlet emits InvalidArgument + the GetVM FQId for a
-            # missing VM, NOT ObjectNotFound. The script normalizes both
-            # to ObjectNotFound so the Go side maps to ErrNotFound and
-            # Update can recover via destroy + recreate.
+            # Mirrors get.ps1: on Server 2022 + PS 5.1 the cmdlet emits InvalidArgument + the GetVM FQId, not ObjectNotFound, for a missing VM.
             Mock Get-VM {
                 $exception = [System.ArgumentException]::new(
                     "Hyper-V was unable to find a virtual machine with name 'missing'.")

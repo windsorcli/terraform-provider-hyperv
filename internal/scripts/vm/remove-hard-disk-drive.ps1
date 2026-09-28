@@ -16,11 +16,10 @@
 #                 reconciliation treats this as a no-op (the slot is
 #                 already in the desired empty state).
 #
-# Path is intentionally NOT a parameter here -- the slot identifies the
-# attachment, not the underlying VHD. Two attachments to the same VHD at
-# different slots would otherwise need disambiguation, and that matches
-# the cmdlet's own contract (Remove-VMHardDiskDrive keys on slot, not
-# path).
+# Path is not a parameter here: the slot identifies the attachment, not
+# the underlying VHD, matching Remove-VMHardDiskDrive's own contract.
+#
+# lint:allow-long-comment
 
 function Remove-HypervVMHardDiskDrive {
     [CmdletBinding()]

@@ -1,14 +1,10 @@
 # _test_helpers.ps1 -- shared Pester setup for the vm verb scripts.
 # Underscore prefix keeps it out of Pester's *.Tests.ps1 discovery glob.
 #
-# Stubs for the Hyper-V cmdlets the vm scripts call. Same rationale as
-# vswitch's test helper: when the real Hyper-V module is loaded, its
-# parameter sets impose constraints that drop bound values during Pester
-# mock interactions on PS 5.1. Stub functions with simple parameter sets
-# sidestep that.
-#
-# In production scripts run via -EncodedCommand in a fresh runspace, so the
-# real cmdlets are still used; this shadow only applies to test execution.
+# Stubs the Hyper-V cmdlets, same rationale as vswitch's test helper:
+# the real module's parameter sets drop bound values during Pester mock
+# interactions on PS 5.1. Production scripts run via -EncodedCommand in
+# a fresh runspace and never see this shadow.
 
 function Get-VM {
     [CmdletBinding()]
@@ -261,11 +257,9 @@ function New-HypervVMSample {
 }
 
 # New-HypervVMMemorySample builds a Get-VMMemory-shaped object for use in
-# Mock blocks. The read shape pulls DynamicMemoryEnabled / Minimum /
-# Maximum off this object; tests that exercise the static-only path can
-# leave the defaults (DynamicMemoryEnabled=$false; Hyper-V's default
-# legacy Minimum=512MiB / Maximum=1TiB are preserved on the cmdlet but
-# ignored by the read-back when DynamicMemoryEnabled is false).
+# Mock blocks. The read format pulls DynamicMemoryEnabled/Minimum/Maximum
+# off this object; static-path tests can leave the defaults since
+# Minimum/Maximum are ignored by the read-back when dynamic is off.
 function New-HypervVMMemorySample {
     [CmdletBinding()]
     param(
@@ -283,10 +277,8 @@ function New-HypervVMMemorySample {
 }
 
 # New-HypervVMFirmwareSample builds a Get-VMFirmware-shaped object for use
-# in Mock blocks. SecureBoot and BootOrder are the fields the read shape
-# consumes; BootOrder defaults to an empty array (gen 2 with default boot
-# order would normally have entries, but tests that don't care about the
-# field can leave it empty).
+# in Mock blocks. SecureBoot and BootOrder are the fields the read format
+# consumes; BootOrder defaults to an empty array for tests that don't care.
 function New-HypervVMFirmwareSample {
     [CmdletBinding()]
     param(
@@ -302,25 +294,11 @@ function New-HypervVMFirmwareSample {
 }
 
 # New-HypervVMBootOrderEntrySample builds a VMComponentObject-shaped
-# pscustomobject for use in Mock blocks. The DeviceType parameter
-# names a CLR type that the production scripts dispatch on (verified
-# against Server 2022 + PS 5.1: $entry.BootType is the high-level
-# category 'Drive'/'Network', NOT the storage subtype, so Device's
-# .GetType().Name is the load-bearing discriminator).
-#
-# Valid DeviceType values:
-#   'HardDiskDrive'    -> emits a Device with ControllerType / Number / Location
-#   'DvdDrive'         -> ditto
-#   'VMNetworkAdapter' -> emits a Device with Name
-#   'None'             -> emits a $null Device, as Hyper-V returns for
-#                         File and Unknown firmware entries; requires
-#                         an explicit -BootType
-#
-# The Device's CLR type name is set via PSObject.TypeNames.Insert
-# so the script's $entry.Device.GetType().Name pseudo-test matches
-# what the real cmdlet emits. (PSObject doesn't actually change the
-# CLR type, but PowerShell's switch on .GetType().Name reads the
-# inserted type name; the production switch behaves identically.)
+# pscustomobject for Mock blocks. DeviceType names the CLR type the
+# production script dispatches on via $entry.Device.GetType().Name
+# ($entry.BootType is only the high-level 'Drive'/'Network' category).
+# 'None' emits a $null Device, as Hyper-V returns for File/Unknown
+# entries, and requires an explicit -BootType.
 function New-HypervVMBootOrderEntrySample {
     [CmdletBinding()]
     param(
@@ -400,7 +378,7 @@ function New-HypervVMHardDiskDriveSample {
 
 # New-HypervVHDSample builds a Get-VHD-shaped object for use in Mock
 # blocks. Defaults model a base (non-differencing) VHDX; per-test
-# overrides cover the checkpoint differencing-disk shape.
+# overrides cover the checkpoint differencing-disk case.
 function New-HypervVHDSample {
     [CmdletBinding()]
     param(

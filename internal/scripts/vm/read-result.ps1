@@ -1,24 +1,13 @@
 # vm/read-result.ps1 -- canonical Read-HypervVMResult function, prepended
-# to every VM verb script that emits the read shape (get/new/set/set-state).
-#
-# Until 2026-04 this body lived inline in four separate scripts because the
-# runtime concatenates preamble + a single verb script per call. The Go-side
-# typed client (internal/hyperv/vm.go) now prepends this snippet alongside
-# the preamble for the four read-emitting verbs, leaving one canonical copy
-# the Pester get.Tests.ps1 contract test pins.
-#
-# Pester *.Tests.ps1 files dot-source this file in their BeforeAll so the
-# function is in scope when the test exercises a verb script that calls
-# Read-HypervVMResult.
+# by the Go-side typed client to every VM verb script that emits the read
+# format (get/new/set/set-state). Pester *.Tests.ps1 files dot-source this
+# file in their BeforeAll for the same reason.
 
-# Resolve-HypervCheckpointBasePath walks Get-VMHardDiskDrive's reported
-# Path back to the base VHD when it's an active checkpoint differencing
-# disk. .avhd/.avhdx is Hyper-V's reserved extension for the disk it
-# creates automatically per checkpoint; while a checkpoint exists on a
-# Running VM, Get-VMHardDiskDrive reports that leaf instead of the base
-# disk the config attaches, which fails Terraform's apply-consistency
-# check. A user-managed differencing VHD (the hyperv_vhd resource) keeps
-# a .vhdx extension and is left untouched by the extension check below.
+# Resolve-HypervCheckpointBasePath walks an .avhd/.avhdx checkpoint
+# differencing disk back to its base VHD: while a checkpoint exists,
+# Get-VMHardDiskDrive reports that leaf instead of the attached config
+# path, which fails Terraform's apply-consistency check. A user-managed
+# .vhdx differencing disk is untouched by the extension check below.
 function Resolve-HypervCheckpointBasePath {
     [CmdletBinding()]
     param(
@@ -40,10 +29,9 @@ function Resolve-HypervCheckpointBasePath {
     throw "Resolve-HypervCheckpointBasePath: '$Path' did not resolve to a base disk within 32 hops -- likely a cyclic or corrupt checkpoint chain."
 }
 
-# Read-HypervVMResult emits the canonical 14-field VM read shape consumed
-# by the Go-side modelFromVM. The wire fields are deliberately PascalCase
-# matched to the hyperv.VM Go struct's json tags, NOT to the schema's
-# snake_case attribute names; modelFromVM does the snake_case translation.
+# Read-HypervVMResult emits the canonical 14-field VM read format consumed
+# by the Go-side modelFromVM, PascalCase matched to the hyperv.VM Go
+# struct's json tags; modelFromVM does the snake_case translation.
 function Read-HypervVMResult {
     [CmdletBinding()]
     param(
@@ -64,22 +52,7 @@ function Read-HypervVMResult {
         $secureBootTemplate = [string] $firmware.SecureBootTemplate
         $bootOrder = @(
             foreach ($entry in $firmware.BootOrder) {
-                # The Microsoft.HyperV.PowerShell.VMBootSourceType enum
-                # only distinguishes Drive / Network / File / Unknown --
-                # NOT HardDiskDrive vs DvdDrive (both surface as 'Drive').
-                # The .NET type of $entry.Device is the real
-                # discriminator: HardDiskDrive vs DvdDrive vs
-                # VMNetworkAdapter. Verified empirically against
-                # Server 2022 + PS 5.1 (2026-04 bench session).
-                #
-                # File-type entries (UEFI bootloader paths -- e.g.,
-                # \EFI\BOOT\BOOTX64.EFI) and Unknown are silently
-                # skipped: not yet in the schema, and emitting a
-                # half-shaped record the Go side can't act on would
-                # surface as a phantom diff every plan.
-                #
-                # Those entries carry a null Device, as do records left
-                # behind by a device that has since been removed.
+                # BootSourceType only distinguishes Drive/Network/File/Unknown, not HardDiskDrive vs DvdDrive; $entry.Device's .NET type is the real discriminator. A null Device (File/Unknown entries, or a removed device) is skipped: not modeled in the schema.
                 if ($null -eq $entry.Device) {
                     continue
                 }
@@ -116,16 +89,7 @@ function Read-HypervVMResult {
             }
         )
     }
-    # Hard-disk drives flow as an array even when empty -- ConvertTo-Json
-    # serializes an empty PowerShell array to `[]` only when it's
-    # explicitly typed as an array (the @() prefix below). Without that
-    # cast a single-HDD case round-trips as a scalar object, breaking the
-    # Go-side decode into []HardDiskDrive.
-    #
-    # Built with a foreach loop rather than Select-Object calculated
-    # properties: Select-Object silently swallows an exception thrown
-    # inside an Expression scriptblock instead of propagating it, which
-    # would hide a Resolve-HypervCheckpointBasePath failure entirely.
+    # @() keeps this array-typed for ConvertTo-Json; a foreach loop, not Select-Object, so a Resolve-HypervCheckpointBasePath exception propagates instead of being swallowed.
     $hdds = @(
         foreach ($hdd in (Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop)) {
             [pscustomobject]@{
@@ -136,36 +100,12 @@ function Read-HypervVMResult {
             }
         }
     )
-    # Network adapters: same @() wrapper rationale as HDDs -- empty
-    # array on the wire becomes []NetworkAdapter on the Go side, not
-    # nil, which keeps state stable when no NICs are attached.
-    # NICs include IPAddresses so the resource layer can surface a
-    # top-level ip_addresses flatten. Empty IPAddresses is the common
-    # case (Off VM, or integration services not reporting yet).
-    #
-    # Direct pscustomobject construction (rather than Select-Object
-    # with computed property) sidesteps a PS 5.1 ConvertTo-Json
-    # quirk: an empty array inside a Select-Object computed-property
-    # serializes as `{}` instead of `[]`, breaking the Go-side
-    # decode into []string. Building the object directly preserves
-    # the [string[]] cast through the JSON serializer.
+    # Same @() rationale as HDDs. Direct pscustomobject construction, not Select-Object with a computed property, sidesteps a PS 5.1 quirk where an empty array inside that property serializes to `{}` instead of `[]`.
     $nics = @(
         foreach ($nic in (Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop)) {
-            # MacAddress: emit only when the NIC has DynamicMacAddressEnabled
-            # = false (i.e. user-set static MAC). Dynamic MACs come back as
-            # whatever Hyper-V auto-assigned this boot, and surfacing that
-            # as state would create a perpetual diff against an empty
-            # config -- the resource layer treats empty string here as
-            # "null state" so unset config matches unset state.
+            # Empty unless DynamicMacAddressEnabled=false (user-set static MAC); a dynamic MAC would otherwise create a perpetual diff.
             $macAddress = if ($nic.DynamicMacAddressEnabled) { '' } else { [string] $nic.MacAddress }
-            # VlanID: 0 means untagged, 1-4094 means access-mode VLAN.
-            # Get-VMNetworkAdapterVlan exposes the active VLAN setting.
-            # Trunk and isolation modes aren't yet supported on the
-            # resource side; we emit the AccessVlanId regardless (a
-            # trunk-mode NIC reports AccessVlanId=0, which the resource
-            # layer surfaces as null -- correct in spirit since the user
-            # didn't set vlan_id, even if Hyper-V has a different mode
-            # configured out-of-band).
+            # AccessVlanId regardless of mode: trunk/isolation aren't yet supported, and a trunk NIC's AccessVlanId=0 correctly reads as unset.
             $vlanID = 0
             $vlanInfo = Get-VMNetworkAdapterVlan -VMNetworkAdapter $nic -ErrorAction Stop
             if ($vlanInfo -and $vlanInfo.OperationMode -eq 'Access') {
@@ -180,9 +120,7 @@ function Read-HypervVMResult {
             }
         }
     )
-    # DVD drives: same shape as HardDiskDrives. An empty drive (no ISO
-    # loaded) emits Path as the empty string, not null -- the cmdlet's
-    # raw .Path property is "" in that case and we don't translate.
+    # DVD drives: same format as HardDiskDrives; an empty drive emits Path as "" (the cmdlet's own raw value), not null.
     $dvds = @(
         Get-VMDvdDrive -VM $Vm -ErrorAction Stop |
             Select-Object `
@@ -191,15 +129,7 @@ function Read-HypervVMResult {
                 @{ N = 'ControllerNumber';   E = { [int] $_.ControllerNumber } },
                 @{ N = 'ControllerLocation'; E = { [int] $_.ControllerLocation } }
     )
-    # Memory dynamic fields come from Get-VMMemory -- the Get-VM object
-    # only exposes MemoryStartup / MemoryAssigned, not
-    # DynamicMemoryEnabled / Minimum / Maximum. When dynamic is off the
-    # host still stores Minimum / Maximum (Hyper-V's defaults: 512MiB
-    # min, 1TiB max), but the values aren't in effect, so we surface
-    # null on the wire to keep state honest about what's actually
-    # being managed. The Go decode into *int64 handles null cleanly.
-    # -VM (not -VMName) skips the redundant name resolution; the
-    # caller already handed us the resolved VM object.
+    # Get-VM exposes only MemoryStartup/MemoryAssigned; min/max come from Get-VMMemory and surface as null when dynamic is off, even though Hyper-V still stores stale defaults for them.
     $mem = Get-VMMemory -VM $Vm -ErrorAction Stop
     $memoryDynamicEnabled = [bool] $mem.DynamicMemoryEnabled
     $memoryMinimumBytes   = if ($memoryDynamicEnabled) { [int64] $mem.Minimum } else { $null }

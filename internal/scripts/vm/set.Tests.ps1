@@ -1,6 +1,6 @@
 # Locks the partial-update semantics of Set-HypervVM. Only the keys
 # present in the input get forwarded to the corresponding Set-VM* cmdlet,
-# and the post-update read shape matches Get-HypervVM exactly.
+# and the post-update read format matches Get-HypervVM exactly.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -11,8 +11,7 @@ BeforeAll {
 
 Describe 'Set-HypervVM' {
 
-    # Read-HypervVMResult always calls Get-VMMemory. Default mock returns
-    # a static-only shape; tests that exercise dynamic memory override.
+    # Read-HypervVMResult always calls Get-VMMemory; the default mock returns a static-only result, and dynamic-memory tests override.
     BeforeEach {
         Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
     }

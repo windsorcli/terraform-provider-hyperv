@@ -13,9 +13,7 @@ BeforeAll {
 
 Describe 'New-HypervVM' {
 
-    # Read-HypervVMResult always calls Get-VMMemory. The default mock
-    # returns a static-only shape; tests that exercise dynamic memory
-    # override per-It.
+    # Read-HypervVMResult always calls Get-VMMemory; the default mock returns a static-only result, and dynamic-memory tests override per-It.
     BeforeEach {
         Mock Get-VMMemory { New-HypervVMMemorySample -DynamicMemoryEnabled $false }
     }

@@ -17,11 +17,13 @@
 #                   }
 #                 }
 #   stdout JSON : the created mapping in the canonical eleven-field
-#                 read shape (same fields as get.ps1).
+#                 read format (same fields as get.ps1).
 #
 # Cross-resource precondition: nat_name must resolve to an existing
 # NetNat instance. Without the precondition, Add-NetNatStaticMapping
 # fails with an opaque "no NAT" message that obscures the dependency.
+#
+# lint:allow-long-comment
 
 # Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1, which
 # the Go-side loadNatStaticMappingWithRetry prepends to this script body
@@ -59,10 +61,7 @@ function New-HypervNatStaticMapping {
 
     $protocolUpper = $Protocol.ToUpper()
 
-    # Add the static mapping. The cmdlet returns the mapping with a
-    # fresh StaticMappingID Hyper-V assigns -- we capture it for the
-    # rollback path and the read shape. Wrapped in dup-name retry to
-    # absorb the Win32 0x34 transient (see Invoke-WithNetNatRetry).
+    # Capture the fresh StaticMappingID Hyper-V assigns for the rollback path and read-back below.
     $mapping = Invoke-WithNetNatRetry {
         Add-NetNatStaticMapping `
             -NatName $NatName `
@@ -74,20 +73,7 @@ function New-HypervNatStaticMapping {
             -ErrorAction Stop
     }
 
-    # Rollback on partial-failure. New-NetFirewallRule landing after
-    # Add-NetNatStaticMapping, then failing, would otherwise leave an
-    # orphan mapping with no Terraform state -- the next apply trips
-    # on the (Protocol, ExternalIP, ExternalPort) uniqueness check at
-    # Add time. Wrap in try/catch, capture the original failure first,
-    # tear down the mapping, re-throw the original. The empty $null = $_
-    # discard inside each cleanup catch satisfies PSScriptAnalyzer's
-    # PSAvoidUsingEmptyCatchBlock the same way vswitch/new.ps1's
-    # rollback does.
-    #
-    # Asymmetry with vswitch/new.ps1's NAT rollback: only the static
-    # mapping needs cleanup. If New-NetFirewallRule throws, the rule
-    # never landed (the cmdlet doesn't partial-create), so there's
-    # nothing to remove on the firewall side.
+    # A failed firewall rule after the mapping lands would otherwise orphan the mapping; tear it down and re-throw.
     try {
         if ($FirewallEnabled) {
             New-NetFirewallRule `
@@ -107,15 +93,7 @@ function New-HypervNatStaticMapping {
         throw $original
     }
 
-    # Read-back: project the canonical eleven-field shape. Composite Id
-    # uses lowercase protocol so it matches the schema's `protocol`
-    # attribute and the input the user typed. FirewallRulePresent and
-    # FirewallRuleProfile come from a Get-NetFirewallRule re-probe,
-    # symmetric with get.ps1 / set.ps1 -- the host's actual rule state
-    # is the source of truth, not the input the caller passed. Without
-    # this round-trip the firewall.enabled=false + non-default profile
-    # config produces a state that disagrees with what Read returns on
-    # the next refresh.
+    # Re-probe the firewall rule so the host's actual state, not the caller's input, is what's reported back.
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
     $firewallPresent = $null -ne $existingFw

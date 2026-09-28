@@ -19,19 +19,14 @@
 #                 Cmdlet errors (e.g., empty BootOrder, gen 1 VM) -> the
 #                 cmdlet's category, surfaced via Write-HypervError.
 #
-# Gen 2 (UEFI) only: Set-VMFirmware -BootOrder takes VMComponentObject[].
-# Each wire entry is resolved to its actual device handle via Get-VM*
-# with the slot/name filter, and the resolved devices are passed in
-# wire order to Set-VMFirmware. The schema layer guards against gen 1
-# at plan time; the cmdlet's "this command cannot be run on a
-# generation 1 virtual machine" error is the backstop if it ever
-# reaches us anyway.
+# Gen 2 (UEFI) only: each wire entry is resolved to its device handle
+# via Get-VM* with a slot/name filter, then passed in wire order to
+# Set-VMFirmware -BootOrder. The schema layer guards against gen 1 at
+# plan time; the cmdlet's own error is the backstop. No pre-diff against
+# Get-VMFirmware: the Go-side resource layer already diffs plan vs.
+# state before calling this script, and a re-set is cheap regardless.
 #
-# Why this script doesn't loop over Get-VMFirmware first to diff
-# vs current: idempotent re-set is cheap (Set-VMFirmware is a single
-# config write) and the Go-side resource layer already does the
-# plan-vs-state diff before deciding to call us. A second diff here
-# would be redundant.
+# lint:allow-long-comment
 
 # Resolve-HypervVMBootDevice maps a single wire entry to the underlying
 # device handle Set-VMFirmware -BootOrder expects. Helper kept separate
@@ -97,17 +92,7 @@ function Set-HypervVMBootOrder {
         Resolve-HypervVMBootDevice -VMName $Name -Entry $entry
     }
 
-    # Preserve File-type and Unknown-type firmware entries the schema
-    # doesn't model: UEFI bootloader paths (e.g. \EFI\BOOT\BOOTX64.EFI)
-    # that Hyper-V or the guest OS registers on first boot.
-    # Set-VMFirmware -BootOrder REPLACES the entire firmware boot
-    # sequence -- anything not in the list is removed -- so without
-    # this readback the first apply on a VM that has booted would
-    # silently drop those entries. Hyper-V may recreate a default EFI
-    # loader on next boot in some configurations, but the behavior is
-    # implementation-specific; we preserve explicitly. Drive-type
-    # ('Drive', 'Network') entries are NOT preserved here -- the
-    # user's declared boot_order is the source of truth for those.
+    # Preserve File/Unknown-type firmware entries (UEFI bootloader paths the schema doesn't model): Set-VMFirmware -BootOrder replaces the whole sequence, so omitting them would silently drop them.
     $preserved = @()
     $firmware = Get-VMFirmware -VMName $Name -ErrorAction Stop
     if ($firmware -and $firmware.BootOrder) {

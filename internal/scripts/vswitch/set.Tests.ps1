@@ -1,6 +1,6 @@
 # Locks the partial-update semantics of Set-HypervSwitch -- only the keys
 # present in the input get forwarded to Set-VMSwitch -- and confirms the
-# read-back shape matches Get-HypervSwitch exactly.
+# read-back format matches Get-HypervSwitch exactly.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1

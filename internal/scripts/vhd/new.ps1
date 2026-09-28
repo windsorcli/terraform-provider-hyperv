@@ -9,7 +9,7 @@
 #                   "parent_path":      "<absolute-path>",         # required for differencing
 #                   "block_size_bytes": <int64>                    # optional
 #                 }
-#   stdout JSON : same shape as get.ps1 (Path, VhdType, SizeBytes, ...).
+#   stdout JSON : same fields as get.ps1 (Path, VhdType, SizeBytes, ...).
 #
 # Mode semantics:
 #   fixed         - pre-allocates the full SizeBytes on disk; slow create,
@@ -23,10 +23,12 @@
 # Differencing on a missing/invalid parent returns InvalidArgument with
 # fullyQualifiedErrorId starting "InvalidParameter,Microsoft.Vhd." -- the
 # Go-side errors.go maps that to ErrInvalidParentPath.
+#
+# lint:allow-long-comment
 
-# Read-HypervVHDResult emits the canonical 8-field shape. Inline duplicate
-# of get.ps1's tail because the runtime concatenates only preamble + a
-# single verb script per call (no cross-script helpers).
+# Read-HypervVHDResult emits the canonical 8-field format. Inline duplicate
+# of get.ps1's tail: the runtime concatenates only preamble plus a single
+# verb script per call.
 function Read-HypervVHDResult {
     [CmdletBinding()]
     param(
@@ -103,17 +105,10 @@ function New-HypervVHDDifferencing {
     Read-HypervVHDResult -Path $Path
 }
 
-# Invoke-HypervVHDNew dispatches a parsed-JSON $Params object to
-# the correct New-HypervVHD* function. Extracted from the entry block so
-# the JSON-to-args translation (in particular the size_bytes presence
-# guard) is directly Pester-testable without spawning a subprocess.
-#
-# size_bytes presence guard: [int64] $null silently coerces to 0, which
-# New-VHD then rejects with the opaque "The parameter is incorrect"
-# message. Throwing here surfaces "size_bytes is required for <mode> VHDs"
-# instead. The Go-side validator catches this in normal operation; this
-# is the script-layer defense in depth (mirrors the explicit null check
-# already used for block_size_bytes).
+# Invoke-HypervVHDNew dispatches a parsed-JSON $Params object to the
+# correct New-HypervVHD* function, testable directly without a subprocess.
+# Rejects a missing/null size_bytes explicitly, since [int64] $null
+# otherwise coerces to 0 and New-VHD fails with an opaque message.
 function Invoke-HypervVHDNew {
     [CmdletBinding()]
     param(
@@ -121,10 +116,7 @@ function Invoke-HypervVHDNew {
     )
     switch ($Params.vhd_type) {
         'fixed' {
-            # Two-stage check: the property-list guard is required because
-            # StrictMode 3.0 throws on access to undefined PSObject properties
-            # (omitted-from-JSON case). The null check then catches the
-            # explicit `"size_bytes": null` case.
+            # Property-list check first: StrictMode 3.0 throws on an omitted-from-JSON property access.
             if ($Params.PSObject.Properties.Name -notcontains 'size_bytes' -or
                 $null -eq $Params.size_bytes) {
                 throw "size_bytes is required for fixed VHDs"

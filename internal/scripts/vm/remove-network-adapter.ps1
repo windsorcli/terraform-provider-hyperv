@@ -12,15 +12,11 @@
 #                 reconciliation in Update treats this as a no-op since
 #                 the desired state -- NIC removed -- is already met).
 #
-# Important: Remove-VMNetworkAdapter -Name <X> removes ALL NICs whose
-# display name equals X. Hyper-V allows multiple NICs with the same
-# name (the cmdlet doesn't enforce uniqueness), but the Go-side
-# resource validator rejects duplicate names within a VM's NIC list at
-# plan time, so this script's behavior is well-defined for our case.
-# A user who somehow ended up with duplicate-named NICs (e.g. via an
-# out-of-band Add-VMNetworkAdapter) would see all duplicates removed
-# on a single detach -- documented limitation, surfaced via the
-# script's unchanged behavior.
+# Remove-VMNetworkAdapter -Name <X> removes every NIC named X; the
+# Go-side resource validator rejects duplicate names within a VM's NIC
+# list at plan time, so this is well-defined for names this provider set.
+#
+# lint:allow-long-comment
 
 function Remove-HypervVMNetworkAdapter {
     [CmdletBinding()]

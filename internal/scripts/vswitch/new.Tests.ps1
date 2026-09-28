@@ -1,6 +1,6 @@
 # Locks the JSON contract for New-HypervSwitch -- both the input-side splat
 # logic (which JSON keys map to which New-VMSwitch parameters) and the
-# output-side read shape that round-trips through Get-HypervSwitch.
+# output-side read format that round-trips through Get-HypervSwitch.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -131,10 +131,7 @@ Describe 'New-HypervSwitch' {
             $parsed = (New-HypervSwitch -Name 'ext0' -SwitchType 'External' `
                 -NetAdapterNames @('NIC1')) | ConvertFrom-Json
 
-            # NAT fields are always present in the output. Non-NAT switches
-            # emit them as empty strings so the wire shape is constant
-            # across switch types -- the typed client decodes the same
-            # struct regardless of branch.
+            # NAT fields are always present, empty on non-NAT switches, so the typed client decodes one struct regardless of branch.
             $parsed.PSObject.Properties.Name | Sort-Object | Should -Be @(
                 'AllowManagementOS',
                 'Id',

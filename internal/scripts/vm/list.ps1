@@ -7,23 +7,18 @@
 #                 even when zero or one match.
 #   stderr/exit : 0 on success (including the empty-result case).
 #
-# Used by the acceptance-test sweeper (internal/acctest/sweep.go) to find
-# orphan tfacc-* VMs after a crashed run. The wire shape is intentionally
-# minimal -- the sweeper only needs Name to call RemoveVM, so we omit the
-# full read shape (State, MemoryAssigned, generation, ...) that get.ps1
-# emits. A bigger shape would mean a slower enumeration and a wider
-# blast radius if the script-Go contract drifts.
+# Used by the acceptance-test sweeper to find orphan tfacc-* VMs after a
+# crashed run. Only Name is emitted, not the full get.ps1 fields: the
+# sweeper only needs it for RemoveVM, and a narrower contract means a
+# smaller blast radius if the script-Go contract drifts. The prefix is a
+# parameter, not hardcoded, so the script survives a sweep-prefix change.
 #
-# Why a parameterized prefix instead of a hardcoded 'tfacc-': the script
-# is contract-clean even if the project's sweep prefix changes, and
-# future callers (a hypothetical `terraform state pull -inventory` shape)
-# can reuse the script without forking.
+# lint:allow-long-comment
 
 # Get-HypervVMByPrefix returns Get-VM filtered by `Name -like "${prefix}*"`.
-# The wildcard form lives at the call site (not in the parameter) because
-# parameter ValidatePattern can't carry a wildcard; doing the construction
-# here also keeps the contract honest -- callers supply "tfacc-", not
-# "tfacc-*", and don't have to know about PowerShell's wildcard syntax.
+# The wildcard form lives at the call site, not the parameter, since
+# ValidatePattern can't carry a wildcard and callers shouldn't need to
+# know PowerShell's wildcard syntax.
 function Get-HypervVMByPrefix {
     [CmdletBinding()]
     param(
@@ -34,11 +29,7 @@ function Get-HypervVMByPrefix {
         Where-Object { $_.Name -like $pattern } |
         ForEach-Object { [pscustomobject]@{ Name = $_.Name } })
 
-    # -InputObject prevents the pipeline from unrolling a single-element
-    # array into a scalar, so the output shape is always a JSON array
-    # (even with zero or one match). Without it, ConvertTo-Json would
-    # emit '{}' for a single result instead of '[{...}]', breaking the
-    # Go-side []VMName decoder.
+    # -InputObject keeps the output array-typed (even zero/one match); without it a single result serializes to '{}', breaking the Go []VMName decoder.
     ConvertTo-Json -InputObject $results -Depth 10 -Compress
 }
 

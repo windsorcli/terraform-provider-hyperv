@@ -1,16 +1,7 @@
 // Package scripts embeds the PowerShell scripts the provider runs against
-// the host. The typed Hyper-V client (internal/hyperv) reads from these
-// embedded filesystems and concatenates common/preamble.ps1 to the top of
-// each resource script per the §5 contract.
-//
-// Directory layout (one subdir per resource family):
-//
-//	common/preamble.ps1     — concatenated to every script (§5)
-//	vswitch/get.ps1         — Get-VMSwitch wrapper        (M1)
-//	vswitch/new.ps1         — New-VMSwitch wrapper        (M1)
-//	vswitch/set.ps1         — Set-VMSwitch wrapper        (M1)
-//	vswitch/remove.ps1      — Remove-VMSwitch wrapper     (M1)
-//	... etc.
+// the host, one subdirectory per resource family. The typed Hyper-V client
+// (internal/hyperv) concatenates common/preamble.ps1 to the top of each
+// resource script per the §5 contract.
 package scripts
 
 import "embed"
@@ -61,9 +52,8 @@ func NatStaticMappingScript(verb string) ([]byte, error) {
 }
 
 // NatStaticMappingRetry returns nat_static_mapping/_retry.ps1, the shared
-// Invoke-WithDupNameRetry helper. The Go-side hyperv.Client prepends
-// its body to the new and set verb scripts at runtime, replacing what
-// used to be two inline copies of the same function.
+// Invoke-WithDupNameRetry helper. The Go-side hyperv.Client prepends its
+// body to the new and set verb scripts at runtime.
 func NatStaticMappingRetry() ([]byte, error) {
 	return NatStaticMapping.ReadFile("nat_static_mapping/_retry.ps1")
 }
@@ -92,37 +82,20 @@ func VHDScript(verb string) ([]byte, error) {
 	return VHD.ReadFile("vhd/" + verb + ".ps1")
 }
 
-// NetNat holds the verb scripts for orphan-NetNat cleanup. The only
-// verb needed today is a combined list+remove `sweep` used by the
-// acceptance-test sweeper -- splitting it into separate list and
-// remove scripts would double the SSH cost for zero benefit. Multiple
-// NetNats can coexist on a host; the sweeper handles all matches in
-// one pass. Production CRUD on NetNat lives inside vswitch/{new,remove}.ps1
-// and nat_static_mapping/*.ps1; this package is sweep-only.
+// NetNat holds the sweep script for orphan-NetNat cleanup, used by the
+// acceptance-test sweeper. Production CRUD on NetNat lives inside
+// vswitch/{new,remove}.ps1 and nat_static_mapping/*.ps1.
 //
 //go:embed netnat/sweep.ps1
 var NetNat embed.FS
 
-// NetNatScript returns the contents of netnat/<verb>.ps1. Today the
-// only verb is "sweep"; the function shape mirrors VswitchScript so
-// the call sites stay consistent if more verbs land later.
+// NetNatScript returns the contents of netnat/<verb>.ps1.
 func NetNatScript(verb string) ([]byte, error) {
 	return NetNat.ReadFile("netnat/" + verb + ".ps1")
 }
 
-// VM holds the verb scripts for hyperv_vm. Beyond the four base verbs
-// (get/new/set/remove) there are per-attachment add/remove scripts:
-//
-//   - add-hard-disk-drive / remove-hard-disk-drive (M4)
-//   - add-network-adapter / remove-network-adapter (next M4 commit)
-//   - add-dvd-drive / remove-dvd-drive (next M4 commit)
-//
-// The attachment scripts deliberately don't get fold into set.ps1 -- each
-// attach/detach is a separate cmdlet on the host (Add-VMHardDiskDrive,
-// Add-VMNetworkAdapter, etc.) and the Go-side reconciliation in Update
-// is much cleaner when each cmdlet has its own script with its own
-// per-cmdlet error mapping than when set.ps1 has to disambiguate which
-// of N internal failures fired.
+// VM holds the verb scripts for hyperv_vm, plus per-attachment add/remove
+// scripts, each with its own cmdlet and error mapping instead of set.ps1.
 //
 //go:embed vm/get.ps1 vm/new.ps1 vm/set.ps1 vm/remove.ps1 vm/list.ps1
 //go:embed vm/add-hard-disk-drive.ps1 vm/remove-hard-disk-drive.ps1
@@ -145,8 +118,7 @@ func VMScript(verb string) ([]byte, error) {
 // VMReadResult returns vm/read-result.ps1, the canonical
 // Read-HypervVMResult function shared by the four VM read-emitting
 // scripts (get/new/set/set-state). The Go-side hyperv.Client prepends
-// its body to those scripts at runtime, replacing what used to be four
-// inline copies of the same function.
+// its body to those scripts at runtime.
 func VMReadResult() ([]byte, error) {
 	return VM.ReadFile("vm/read-result.ps1")
 }
