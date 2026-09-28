@@ -17,7 +17,7 @@ import (
 )
 
 // hasPlanModifier checks if any plan-modifier in `mods` has a type whose
-// package-qualified name contains `keyword`. Same helper shape as the
+// package-qualified name contains `keyword`, the same helper the
 // vswitch / image_file resource tests use.
 func hasPlanModifier[M any](mods []M, keyword string) bool {
 	for _, pm := range mods {
@@ -174,9 +174,7 @@ func TestResource_Schema_VhdTypeOneOf(t *testing.T) {
 	if len(strAttr.Validators) == 0 {
 		t.Fatal("vhd_type must carry at least one validator (OneOf fixed/dynamic/differencing)")
 	}
-	// The validator's Description() exposes the configured set; compare
-	// against the literal expected list. Lowercase mirrors the schema's
-	// chosen casing (the wire-stdin contract for new.ps1).
+	// Lowercase mirrors the schema's own casing, the wire-stdin contract for new.ps1.
 	desc := strAttr.Validators[0].Description(t.Context())
 	for _, want := range []string{"fixed", "dynamic", "differencing"} {
 		if !strings.Contains(desc, want) {
@@ -489,16 +487,14 @@ func TestBlockSizeBytesValidator(t *testing.T) {
 	}
 }
 
-// assertValidatorDiags is the shared assertion shape for all three
-// validator-table tests. Verifies presence/absence of an error and, when
-// expected, that the error is anchored to the right attribute path.
-//
-// "Anchored" means the diagnostic carries a path.Path attached via
-// AddAttributeError -- that's what Terraform uses to highlight the
+// assertValidatorDiags is the shared assertion for all three
+// validator-table tests: verifies presence/absence of an error and,
+// when expected, that it's anchored to the right attribute path via
+// AddAttributeError, which is what Terraform uses to highlight the
 // offending line in plan output. Checking only the message text would
-// pass a buggy validator that called AddAttributeError(path.Root("foo"))
-// while writing "bar" in the message; the type assertion to
-// diag.DiagnosticWithPath catches that mismatch.
+// pass a buggy validator that anchored path.Root("foo") while writing
+// "bar" in the message; the type assertion to diag.DiagnosticWithPath
+// catches that mismatch.
 func assertValidatorDiags(t *testing.T, diags diag.Diagnostics, wantError bool, wantPath string) {
 	t.Helper()
 	if !wantError {
@@ -600,18 +596,6 @@ func TestModelFromVHD_PreservesInt64Sizes(t *testing.T) {
 		t.Errorf("BlockSizeBytes = %d, want 33554432", got.BlockSizeBytes.ValueInt64())
 	}
 }
-
-// Case-preservation across Windows path canonicalization (Get-VHD
-// returns "C:\..." for a config of "c:\..." -- uppercase drive letter,
-// junction-point resolution, short-filename expansion) is no longer a
-// resource-layer concern. The pathtype.Path custom type's
-// StringSemanticEquals handles slash-style and case folding at the
-// framework layer, so the previous preserveCaseOrNullify shim and the
-// "preserves prior casing" tests against modelFromVHD are gone.
-//
-// Equivalent coverage now lives at:
-//   internal/types/path/path_test.go::TestPath_StringSemanticEquals_equivalent
-//   internal/types/path/path_test.go::TestPath_StringSemanticEquals_distinct
 
 // optionalInt64 returns nil for null/unknown framework values so the
 // typed client's *int64 + omitempty drops the field from the wire JSON.
@@ -838,10 +822,7 @@ func TestExistingValidators_StandDownInSourcePathMode(t *testing.T) {
 		t.Errorf("parentPathRequiresDifferencingValidator fired in source_path mode: %v", got)
 	}
 
-	// ConfigValidators run against Config, not Plan, so a source_path wired
-	// to another resource's attribute is *unknown* there rather than known.
-	// Treating unknown as "not set" makes the size_bytes rule demand a size
-	// for a copied disk and breaks the chained-source config outright.
+	// ConfigValidators see Config, not Plan, so a cross-resource source_path is unknown there, not known.
 	unknownSource := model
 	unknownSource.SourcePath = pathtype.NewPathUnknown()
 

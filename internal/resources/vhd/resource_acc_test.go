@@ -1,18 +1,15 @@
 package vhd_test
 
-// Acceptance tests for hyperv_vhd. Three creation modes (fixed, dynamic,
-// differencing) share the same schema and are distinguished by vhd_type
-// plus cross-attribute config validators. The acc tests in this PR cover
-// dynamic and fixed -- the two stand-alone modes. Differencing requires
-// a pre-staged parent VHD on the bench (or a chained image_file → vhd
-// dependency in HCL); a follow-up PR layers that test on once the
-// host_path-mode fixture is settled.
+// Acceptance tests for hyperv_vhd. The three creation modes (fixed,
+// dynamic, differencing) share one schema, distinguished by vhd_type
+// plus cross-attribute config validators; these tests cover dynamic
+// and fixed. Differencing needs a pre-staged parent VHD on the bench,
+// not exercised here.
 //
-// Why the bench needs HYPERV_TEST_VHD_DIR: Hyper-V cmdlets refuse to
-// create disks in arbitrary locations on a real host (ACL on
-// C:\ProgramData\... vs. user-writable paths varies); a per-bench
-// configurable directory keeps the test from baking in path
-// assumptions. See docs/contributing/acceptance-tests.md.
+// HYPERV_TEST_VHD_DIR exists because Hyper-V cmdlets refuse to create
+// disks in arbitrary locations (ACLs vary by path); a per-bench
+// configurable directory avoids baking in path assumptions. See
+// docs/contributing/acceptance-tests.md.
 
 import (
 	"context"
@@ -52,9 +49,7 @@ const (
 // also resize but the cmdlet path is the same.
 func TestAcc_VHD_dynamic(t *testing.T) {
 	dir := acctest.RequireEnv(t, "HYPERV_TEST_VHD_DIR")
-	// Forward-slash form to exercise pathtype.Path's semantic-equals.
-	// State retains this form (not Hyper-V's canonical backslash) so the
-	// path assertion below uses the same variable.
+	// Forward-slash form exercises pathtype.Path's semantic-equals; state retains it, so the assertion below reuses the variable.
 	vhdPath := strings.ReplaceAll(
 		joinHostPath(dir, acctest.RandomName("vhd-dyn")+".vhdx"),
 		`\`, `/`,
@@ -92,14 +87,7 @@ func TestAcc_VHD_dynamic(t *testing.T) {
 				},
 			},
 			{
-				// Resize: same path, larger size. Schema marks this as
-				// in-place via Resize-VHD. The plan-action assertion
-				// below pins that contract directly: a regression that
-				// flipped size_bytes to RequiresReplace would otherwise
-				// silently destroy-and-recreate, the statecheck on the
-				// new size would still pass against the fresh file, and
-				// only an out-of-band file-identity check (which we
-				// don't have) would catch it.
+				// Pins size_bytes as in-place: a regression to RequiresReplace would destroy-recreate but still pass the size statecheck.
 				Config: vhdSizedConfig(vhdPath, "dynamic", vhdResizedSizeBytes),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
@@ -120,18 +108,7 @@ func TestAcc_VHD_dynamic(t *testing.T) {
 			{
 				ResourceName: "hyperv_vhd.test",
 				ImportState:  true,
-				// vhdPath is the forward-slash form (set above for the
-				// same StringSemanticEquals exercise). Using it verbatim
-				// for ImportStateId is correct; see image_file's
-				// resource_acc_test.go for the empirically-verified
-				// rationale (terraform-plugin-testing's
-				// ImportStateVerify is byte-for-byte at the verify
-				// layer, but the framework's resp.State.Set during
-				// post-import Read does merge with prior state via
-				// StringSemanticEquals -- so the forward form set by
-				// passthrough is retained when Read writes the cmdlet's
-				// backslash form). Backslash here was tried and
-				// produces a clean ImportStateVerify failure.
+				// Forward-slash ImportStateId is correct: Read's state merge via StringSemanticEquals retains it despite the cmdlet's backslash form.
 				ImportStateId:     vhdPath,
 				ImportStateVerify: true,
 			},
@@ -170,18 +147,7 @@ func TestAcc_VHD_fixed(t *testing.T) {
 						tfjsonpath.New("size_bytes"),
 						knownvalue.Int64Exact(vhdInitialSizeBytes),
 					),
-					// file_size_bytes is NOT asserted: a "fixed" VHDX of
-					// 64 MiB pre-allocates 64 MiB of payload but lands on
-					// disk at ~68 MiB once header + footer + log overhead
-					// is added (measured against Server 2022). The exact
-					// overhead varies by host version and block size, so
-					// pinning the value would be flaky. The
-					// fixed-vs-dynamic distinction is sufficiently proven
-					// by the vhd_type assertion above; verifying that
-					// fixed actually pre-allocates (vs dynamic's sparse
-					// behavior) belongs in a dedicated test that compares
-					// the two side-by-side, if it ends up worth doing at
-					// all.
+					// file_size_bytes isn't asserted: header/footer/log overhead varies by host version and block size, so pinning it would be flaky.
 				},
 			},
 		},
@@ -189,16 +155,12 @@ func TestAcc_VHD_fixed(t *testing.T) {
 }
 
 // vhdSizedConfig is the smallest valid HCL for a sized VHD (fixed or
-// dynamic). parent_path is omitted -- the resource's config validator
-// rejects it for non-differencing modes, and supplying it would shadow
-// the size_bytes assertion. block_size_bytes is also omitted; Hyper-V
-// applies the format default (32 MiB for VHDX) and the test doesn't
-// pin that value because the default may evolve across host versions.
-//
-// path is embedded verbatim. Callers control the slash form: pass
-// forward-slash form to exercise pathtype.Path's StringSemanticEquals
-// and assert on the same value (the framework retains the user's plan
-// representation in state when semantic-equals returns true).
+// dynamic). parent_path is omitted, since the config validator rejects
+// it for non-differencing modes; block_size_bytes is also omitted, so
+// Hyper-V applies its format default rather than pinning a value that
+// may evolve across host versions. path is embedded verbatim; pass a
+// forward-slash form to exercise pathtype.Path's StringSemanticEquals,
+// which the framework retains in state when it returns true.
 func vhdSizedConfig(path, vhdType string, sizeBytes int64) string {
 	return fmt.Sprintf(`
 resource "hyperv_vhd" "test" {
@@ -251,9 +213,7 @@ func TestAcc_VHD_sourcePath(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// The provider placed the copy, so destroy removes it. The source
-		// is not managed here; t.Cleanup reclaims it, and that call
-		// succeeding is itself evidence destroy left the source alone.
+		// Destroy removes the provider-placed copy; t.Cleanup separately reclaims the unmanaged source.
 		CheckDestroy: acctest.CheckResourceGone("hyperv_vhd", client.GetVHD),
 		Steps: []resource.TestStep{
 			{
@@ -264,8 +224,7 @@ func TestAcc_VHD_sourcePath(t *testing.T) {
 						tfjsonpath.New("path"), knownvalue.StringExact(copyPath)),
 					statecheck.ExpectKnownValue("hyperv_vhd.test",
 						tfjsonpath.New("source_path"), knownvalue.StringExact(toSlash(sourcePath))),
-					// The grow ran after the copy landed: the copy reports
-					// the planned size, not the source's 64 MiB.
+					// The grow ran after the copy landed: reports the planned size, not the source's 64 MiB.
 					statecheck.ExpectKnownValue("hyperv_vhd.test",
 						tfjsonpath.New("size_bytes"), knownvalue.Int64Exact(vhdResizedSizeBytes)),
 					// vhd_type was inherited from the source, never configured.
@@ -277,9 +236,7 @@ func TestAcc_VHD_sourcePath(t *testing.T) {
 				},
 			},
 			{
-				// No config change and an untouched source: the plan must be
-				// empty. Guards against the source hash being recomputed into
-				// a permanent diff, which would re-copy on every apply.
+				// Guards against the source hash recomputing into a permanent diff that would re-copy on every apply.
 				Config: vhdSourcePathConfig(copyPath, toSlash(sourcePath), vhdResizedSizeBytes),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
@@ -288,9 +245,7 @@ func TestAcc_VHD_sourcePath(t *testing.T) {
 				},
 			},
 			{
-				// Replace the source in place with different bytes, the way
-				// an upstream image refresh does. The re-copy resets the disk
-				// and the grow re-runs on the fresh copy.
+				// Replaces the source in place, the way an upstream image refresh does; the re-copy resets the disk and re-grows it.
 				PreConfig: func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 					defer cancel()
@@ -406,11 +361,7 @@ func TestAcc_VHD_sourcePathDeferred(t *testing.T) {
 				},
 			},
 			{
-				// The deferred path needs the same idempotency guarantee the
-				// non-deferred test gets. A source_sha256 that resolved at
-				// apply but doesn't match what ModifyPlan computes on the next
-				// run would re-copy forever, and the first step alone cannot
-				// see that -- it only proves the value became known.
+				// Proves idempotency beyond "the value became known": a mismatched source_sha256 here would re-copy forever.
 				Config: vhdSourcePathChainedConfig(sourcePath, copyPath, vhdInitialSizeBytes),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
