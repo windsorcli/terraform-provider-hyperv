@@ -227,7 +227,7 @@ func TestBuild_ValidateFiles(t *testing.T) {
 
 // TestBuild_EmptyFileList produces a valid empty-volume ISO. ECMA-119
 // permits zero-data-extent volumes, and this fixture is useful for
-// regression tests that care about PVD shape but not file content.
+// regression tests that care about PVD structure but not file content.
 func TestBuild_EmptyFileList(t *testing.T) {
 	out, err := Build("CIDATA", nil)
 	if err != nil {

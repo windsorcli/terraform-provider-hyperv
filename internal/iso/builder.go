@@ -1,34 +1,12 @@
-// Package iso synthesizes deterministic ISO9660 volumes on the runner for
-// the data.hyperv_iso_volume data source. The bytes the runner produces
-// are stable across hosts, OSes, and clocks: same `volume_label` + same
-// `files` map -> byte-identical output -> stable SHA-256 across applies.
-//
-// Determinism matters for two reasons. First, the data source's `sha256`
-// output is what consumers (typically `hyperv_image_file` in
-// literal_bytes mode) hash the bytes they place on the host against -- if
-// the input map is unchanged but synthesis emits different bytes, every
-// plan would surface phantom drift on the placement resource. Second,
-// the runner-streamed deploy reuses hyperv_image_file's local_path-mode
-// wire path; the host-side script
-// verifies the streamed bytes' SHA against the runner-computed value and
-// rejects mismatches as transport corruption. A non-deterministic builder
-// would break both contracts.
-//
-// kdomanski/iso9660 v0.4.0 produces a valid ISO9660 image but injects two
-// kinds of non-determinism into the Primary Volume Descriptor (PVD) at
-// sector 16 (file offset 0x8000):
-//
-//   - SystemIdentifier set to runtime.GOOS (varies by build OS).
-//   - VolumeCreation / VolumeModification / VolumeEffective timestamps
-//     set to time.Now() (varies by clock).
-//
-// Build post-processes these PVD fields at known ECMA-119 byte offsets to
-// fixed values: SystemIdentifier becomes a constant string, all three
-// timestamp fields become zero-byte timestamps (ECMA-119 8.4.26.1 permits
-// all-zero as "no time recorded"). File data sectors and directory entries
-// are already deterministic in v0.4.0 -- per-file RecordingTimestamp is
-// zero-valued, and the staging-dir traversal walks entries in lexical
-// order regardless of AddFile call order.
+// Package iso synthesizes deterministic ISO9660 volumes on the runner
+// for the data.hyperv_iso_volume data source: same volume_label +
+// files map always produces byte-identical output, so sha256 stays
+// stable across applies and the runner-streamed transport-corruption
+// check never false-positives. kdomanski/iso9660 v0.4.0 otherwise
+// injects non-determinism into the Primary Volume Descriptor at
+// sector 16 (a runtime.GOOS-derived SystemIdentifier and
+// time.Now()-derived timestamps); Build post-processes those PVD
+// fields to fixed values at their known ECMA-119 byte offsets.
 package iso
 
 import (
@@ -106,27 +84,14 @@ type File struct {
 }
 
 // Build synthesizes a deterministic ISO9660 volume with the given
-// volume label and file set, returning the raw bytes.
-//
-// `volumeLabel` must be 1-32 d-characters (A-Z, 0-9, underscore); empty
-// or longer labels are rejected. The case-sensitivity of cloud-init's
-// "cidata" lookup is handled by cloud-init itself reading the RockRidge
-// extension, but kdomanski/iso9660 v0.4.0 does not emit RockRidge, so
-// the PVD label is the only label cloud-init sees -- and cloud-init
-// uppercases before comparing, so "cidata" and "CIDATA" both match.
-// The resource layer normalizes user input.
-//
-// `files` is sorted by Name before adding to the ISO so the staging-dir
-// traversal lexical order doesn't depend on the caller's slice order.
-// Empty file lists produce a valid empty-volume ISO (allowed by ECMA-119,
-// useful as a regression test fixture).
-//
-// Returns the full ISO bytes (typically 256 KiB-1 MiB for cidata seeds;
-// kdomanski/iso9660 does not pre-allocate, so the output is sized to
-// content). Memory cost: peak ~2x the output size during WriteTo's
-// internal buffering. For the sub-MiB seeds this resource targets, that
-// is acceptable; if multi-GiB ISOs ever land here, switch to streaming
-// io.Writer and post-process via random-access on the on-disk file.
+// volume label and file set, returning the raw bytes. volumeLabel
+// must be 1-32 d-characters (A-Z, 0-9, underscore); cloud-init
+// uppercases the PVD label before comparing, so "cidata" and "CIDATA"
+// both match, but the resource layer should normalize case before
+// calling Build. files is sorted by Name first, so the staging-dir
+// traversal order doesn't depend on the caller's slice order. Peak
+// memory is roughly 2x the output size during WriteTo's buffering,
+// fine for the sub-MiB seeds this resource targets.
 func Build(volumeLabel string, files []File) ([]byte, error) {
 	if err := validateVolumeLabel(volumeLabel); err != nil {
 		return nil, err
@@ -183,20 +148,13 @@ func stampDeterministicPVD(iso []byte) error {
 }
 
 // zeroTimestamp writes ECMA-119 8.4.26.1's all-zero "no time recorded"
-// representation into dst: 16 ASCII '0' characters for the
-// YYYYMMDDHHMMSSXX fields, plus a single zero byte for the timezone
-// offset.
-//
-// Precondition: dst must be exactly pvdTimestampLen (17) bytes. The
-// single caller (stampDeterministicPVD) guarantees this via its
-// upstream length check on the iso buffer; a refactor that violates
-// the precondition surfaces as a slice-out-of-bounds panic at the
-// dst[16] write rather than silently leaving the non-deterministic
-// timestamp bytes in place.
-//
-// All-spaces (ASCII 0x20) is also a valid "unspecified" representation
-// per the spec, but cloud-init and other ISO consumers parse the digit
-// form more reliably; the bench tests exercise the digit form.
+// representation into dst: 16 ASCII '0' characters plus a zero
+// timezone byte. dst must be exactly pvdTimestampLen (17) bytes; the
+// single caller guarantees this via its own length check, so a
+// violation surfaces as a slice-out-of-bounds panic rather than
+// silently leaving non-deterministic bytes in place. All-spaces is
+// also spec-valid, but the digit form parses more reliably across
+// ISO consumers.
 func zeroTimestamp(dst []byte) {
 	for i := 0; i < 16; i++ {
 		dst[i] = '0'
@@ -204,10 +162,9 @@ func zeroTimestamp(dst []byte) {
 	dst[16] = 0
 }
 
-// padToA returns `src` truncated or space-padded to exactly `n` bytes.
-// Used to size the SystemIdentifier override to its ECMA-119 field
-// length without introducing nul bytes (which violate the a-character
-// alphabet -- spec-strict ISO readers reject them).
+// padToA returns `src` truncated or space-padded to exactly `n`
+// bytes, sizing the SystemIdentifier override to its ECMA-119 field
+// length without introducing nul bytes, which spec-strict ISO readers reject.
 func padToA(src []byte, n int) []byte {
 	out := make([]byte, n)
 	for i := range out {
