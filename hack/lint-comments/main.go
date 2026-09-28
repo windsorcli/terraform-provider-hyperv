@@ -211,13 +211,7 @@ func lintGoFile(path string) ([]violation, error) {
 				})
 			}
 		} else {
-			exempt := false
-			for _, l := range lines {
-				if isExemptLine(l) {
-					exempt = true
-					break
-				}
-			}
+			exempt := isExemptLine(lines[len(lines)-1])
 			if !exempt && len(lines) > maxBlockLines {
 				violations = append(violations, violation{
 					path:   path,
@@ -249,13 +243,7 @@ func lintPS1File(path string) ([]violation, error) {
 		if len(block) == 0 {
 			return
 		}
-		exempt := false
-		for _, line := range block {
-			if isExemptLine(line) {
-				exempt = true
-				break
-			}
-		}
+		exempt := isExemptLine(block[len(block)-1])
 		if !exempt && len(block) > maxBlockLines {
 			violations = append(violations, violation{
 				path:   path,
