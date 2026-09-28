@@ -47,18 +47,13 @@ type WinRMOptions struct {
 	Auth     string // "ntlm" | "basic" | "kerberos"; default "ntlm"
 	CACert   string // path to a CA bundle PEM; empty = system roots
 
-	// Kerberos auth fields. Only meaningful when Auth=="kerberos"; ignored
-	// otherwise. The provider-config layer is responsible for catching the
-	// "kerberos fields set without auth=kerberos" misconfig at plan time;
-	// this struct just transports the values.
-	//
-	// KrbRealm is required (NewWinRM rejects empty when Auth=="kerberos").
-	// KrbSpn defaults to "HTTP/<Host>" when empty.
-	// KrbConfigPath defaults to first-existing of $KRB5_CONFIG,
-	// ~/.config/krb5.conf, /etc/krb5.conf when empty.
-	// KrbCCachePath, when set, switches from password-mode (inline AS-REQ)
-	// to ccache-mode (re-use a pre-existing TGT). When set, Password is
-	// ignored.
+	// Kerberos fields, meaningful only when Auth=="kerberos" (the
+	// provider-config layer catches a misconfigured Auth at plan time).
+	// KrbRealm is required; KrbSpn defaults to "HTTP/<Host>";
+	// KrbConfigPath defaults to the first existing of $KRB5_CONFIG,
+	// ~/.config/krb5.conf, /etc/krb5.conf. Setting KrbCCachePath
+	// switches from password-mode (inline AS-REQ) to ccache-mode
+	// (reuse an existing TGT) and Password is then ignored.
 	KrbRealm      string
 	KrbSpn        string
 	KrbConfigPath string
@@ -114,18 +109,14 @@ type winrmBackend struct {
 // Compile-time assertion.
 var _ Connection = (*winrmBackend)(nil)
 
-// NewWinRM builds a Connection backed by masterzen/winrm. Validates
-// required fields and applies defaults so callers get a fully-resolved
-// backend; the actual HTTP client is constructed lazily by Open so a unit
-// test that only exercises NewWinRM doesn't pay the construction cost.
-//
-// Auth methods supported: ntlm (default), basic, kerberos.
-//
-// Kerberos uses jcmturner/gokrb5 under the hood (pure-Go MIT Kerberos,
-// no GSSAPI library on the runner) and supports two credential modes:
-// password (inline AS-REQ) or ccache (re-use an existing TGT). The
-// caller picks the mode by setting Password or KrbCCachePath; setting
-// both, or neither, is rejected.
+// NewWinRM builds a Connection backed by masterzen/winrm, validating
+// required fields and applying defaults; the HTTP client itself is
+// built lazily by Open, so a unit test exercising only NewWinRM
+// doesn't pay that cost. Auth supports ntlm (default), basic, and
+// kerberos; kerberos uses jcmturner/gokrb5 (pure-Go, no GSSAPI on the
+// runner) in either password mode (inline AS-REQ) or ccache mode
+// (reuse an existing TGT), picked by setting Password or
+// KrbCCachePath; setting both, or neither, is rejected.
 func NewWinRM(opts WinRMOptions) (Connection, error) {
 	if opts.Host == "" {
 		return nil, errors.New("winrm: host is required")
@@ -147,8 +138,7 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 		if opts.KrbRealm == "" {
 			return nil, errors.New("winrm: kerberos auth requires kerberos.realm")
 		}
-		// Password XOR ccache: exactly one credential source. Both is
-		// ambiguous (which wins?), neither leaves no way to authenticate.
+		// Password XOR ccache: exactly one credential source, ambiguous or absent otherwise.
 		hasPassword := len(opts.Password) > 0
 		hasCCache := opts.KrbCCachePath != ""
 		if hasPassword && hasCCache {
@@ -189,12 +179,7 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 		maxShells = defaultWinRMMaxShells
 	}
 
-	// Kerberos defaults: SPN renders as HTTP/<host> per the standard
-	// WinRM service principal naming convention; krb5.conf path probes
-	// the canonical locations so an operator who didn't set one still
-	// gets a working config on a typical Linux/macOS runner. Both apply
-	// only when auth=kerberos; the masterzen library ignores these
-	// fields for ntlm/basic so passing them through is harmless.
+	// Kerberos-only defaults; masterzen ignores these fields for ntlm/basic, so passing them through is harmless.
 	krbSpn := opts.KrbSpn
 	if auth == "kerberos" && krbSpn == "" {
 		krbSpn = "HTTP/" + opts.Host
@@ -227,15 +212,11 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 	}, nil
 }
 
-// defaultKrbConfigPath probes the canonical krb5.conf locations in
-// priority order: KRB5_CONFIG env var (the standard MIT/Heimdal
-// override), ~/.config/krb5.conf (user-level, common with brew-
-// installed krb5 on macOS), then /etc/krb5.conf (system-level on
-// Linux/macOS). Returns the first existing path or empty if none
-// found -- in the empty case, masterzen/winrm's config.Load will
-// surface a clear "open <empty>: no such file or directory" error
-// at first auth attempt, which is the right shape for "you didn't
-// set this and we couldn't auto-detect" misconfig.
+// defaultKrbConfigPath probes KRB5_CONFIG, then ~/.config/krb5.conf,
+// then /etc/krb5.conf, returning the first existing path or empty. An
+// empty result surfaces as masterzen/winrm's own "open <empty>: no
+// such file" error at first auth attempt, a reasonable signal that
+// nothing was set and auto-detect failed.
 func defaultKrbConfigPath() string {
 	if p := os.Getenv("KRB5_CONFIG"); p != "" {
 		return p
@@ -280,17 +261,12 @@ func (b *winrmBackend) Open(ctx context.Context) error {
 	)
 
 	if b.opts.CACert != "" {
-		// #nosec G304 -- the path is operator-supplied (provider attribute
-		// winrm.cacert or env HYPERV_WINRM_CACERT), not derived from
-		// untrusted input. The user explicitly told us to use this CA
-		// bundle for cert verification.
+		// #nosec G304 -- operator-supplied path (winrm.cacert or HYPERV_WINRM_CACERT), not untrusted input.
 		caBytes, err := os.ReadFile(b.opts.CACert)
 		if err != nil {
 			return fmt.Errorf("winrm: read cacert %s: %w", b.opts.CACert, err)
 		}
-		// Sanity-check that the file actually parses as a PEM bundle so a
-		// typoed path or truncated copy surfaces here instead of as an
-		// opaque TLS handshake error later.
+		// Sanity-check PEM parsing so a typo surfaces here, not as an opaque TLS handshake error later.
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caBytes) {
 			return fmt.Errorf("winrm: cacert %s contains no PEM certificates", b.opts.CACert)
@@ -300,9 +276,7 @@ func (b *winrmBackend) Open(ctx context.Context) error {
 
 	params := buildWinRMParams(b.opts)
 
-	// masterzen takes the password as a string and copies it into its
-	// EndpointParams; our []byte stays the canonical copy and gets
-	// zeroed at Close().
+	// masterzen copies the password into its own EndpointParams; our []byte stays canonical, zeroed at Close().
 	client, err := winrm.NewClientWithParameters(endpoint, b.opts.Username, string(b.opts.Password), params)
 	if err != nil {
 		return fmt.Errorf("winrm: build client: %w", err)
@@ -310,8 +284,7 @@ func (b *winrmBackend) Open(ctx context.Context) error {
 	b.client = client
 
 	if err := b.healthcheckLocked(ctx); err != nil {
-		// Don't mark the backend opened on a failed healthcheck so a
-		// subsequent Open reattempts cleanly.
+		// Not marked opened on a failed healthcheck, so a subsequent Open reattempts cleanly.
 		b.client = nil
 		return err
 	}
@@ -319,21 +292,13 @@ func (b *winrmBackend) Open(ctx context.Context) error {
 	return nil
 }
 
-// Close releases the backend's persistent state and zeros the password
-// bytes we hold. WinRM has no transport state beyond the cached client
-// struct, so the flag flip is otherwise a no-op. Idempotent.
-//
-// One-shot after Close: zeroing `b.opts.Password` makes the backend
-// non-reusable. Open() reads `b.opts.Password` and a post-Close Open
-// would silently auth with all-zero bytes. The current provider
-// lifecycle is single-Configure + single-Close, so this is fine; any
-// future caller introducing a reconnect-on-failure path must rebuild
-// the backend via NewWinRM rather than calling Open() again on the
-// closed one.
-//
-// masterzen/winrm has already copied the password into its own
-// EndpointParams by the time Close() runs; that copy is outside our
-// reach. Zeroing here covers the provider's own state.
+// Close releases the backend's persistent state and zeros the held
+// password bytes; idempotent. Zeroing makes the backend non-reusable,
+// since Open reads b.opts.Password and would silently auth with
+// zeroed bytes afterward. That's fine given the provider's
+// single-Configure, single-Close lifecycle, but a future
+// reconnect-on-failure path must rebuild via NewWinRM instead of
+// calling Open again here.
 func (b *winrmBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -386,22 +351,14 @@ func runShellCmd(ctx context.Context, shell *winrm.Shell, cmd string, stdin io.R
 	return winrmCmd.ExitCode(), nil
 }
 
-// StreamFile copies localPath to remotePath via streaming base64 over the
-// remote PowerShell process's stdin. The file is encoded chunk-by-chunk
-// on the runner side (no in-memory buffering of the whole payload) and
-// decoded line-by-line by a small receiver script on the host (constant
-// memory pressure regardless of file size).
-//
-// Performance note: WinRM's WS-Management transport adds 33% encoding
-// overhead and is empirically ~10x slower than the SSH backend's SCP
-// path for the same payload. No wall-clock cap is applied -- arbitrarily
-// large payloads transfer at the cost of arbitrarily long apply times.
-// For multi-GiB artifacts prefer the SSH backend or stage out-of-band
-// and use host_path-mode.
-//
-// The remote parent directory must already exist; the receiver does not
-// mkdir. Resources that need parent-dir creation should issue a one-line
-// `New-Item -ItemType Directory -Force` via RunScript before calling.
+// StreamFile copies localPath to remotePath by streaming base64 over
+// the remote PowerShell process's stdin, encoded chunk-by-chunk on the
+// runner and decoded line-by-line by a receiver script on the host, so
+// memory use stays constant regardless of file size. WinRM's transport
+// adds ~33% encoding overhead and runs roughly 10x slower than the SSH
+// backend's SCP path; prefer SSH or host_path-mode for multi-GiB
+// artifacts. The remote parent directory must already exist; the
+// receiver doesn't create it.
 func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath string) error {
 	b.mu.Lock()
 	client := b.client
@@ -417,16 +374,7 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	}
 	defer func() { _ = src.Close() }()
 
-	// Pipe: file bytes -> base64 encoder -> line-wrapped writer -> bufio
-	// writer (pw side) -> io.Pipe -> bufio reader (pr side) -> WinRM stdin.
-	// bufio.Writer coalesces the 76-byte line writes into streamFileBufSize
-	// pipe flushes, so commandWriter sees large chunks rather than one per
-	// base64 line. The line wrap lets the PS receiver decode each line
-	// independently via ReadLine + FromBase64String.
-	//
-	// Close order is load-bearing: enc must flush its padding bytes into
-	// lw before lw emits its trailing newline into bufW, and bufW must
-	// flush its remaining bytes into pw before pw signals EOF.
+	// Close order matters: enc flushes into lw before lw's newline into bufW, before bufW flushes into pw.
 	pr, pw := io.Pipe()
 	bufW := bufio.NewWriterSize(pw, streamFileBufSize)
 	lw := newLineWrappedWriter(bufW, base64LineLen)
@@ -455,13 +403,7 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	cmdStr := fmt.Sprintf("%s -NoProfile -NonInteractive -EncodedCommand %s",
 		b.opts.PwshPath, encodePSScript(buildWinRMStreamFileScript(remotePath)))
 
-	// Feed stdin via our own loop instead of RunWithContextWithInput.
-	// RunWithContextWithInput discards stdin write errors with
-	//   _, _ = io.Copy(cmd.Stdin, stdin)
-	// so a failed sendInput call causes silent stream truncation that only
-	// surfaces as a checksum mismatch after the full staging+verify pass.
-	// Our loop tracks the written count on partial writes, advances past
-	// confirmed bytes, and retries zero-progress failures with backoff.
+	// Own loop, not RunWithContextWithInput: that discards stdin write errors, causing silent truncation.
 	if err := b.acquireShell(ctx); err != nil {
 		return err
 	}
@@ -495,14 +437,7 @@ func (b *winrmBackend) StreamFile(ctx context.Context, localPath, remotePath str
 	_ = pr.Close() // unblock encoder goroutine if we exited early
 	_ = winrmCmd.Stdin.Close()
 
-	// winrmCmd.Wait() polls GetCommandState until the PS script exits.
-	// If the host crashes or the PS script hangs after receiving stdin, Wait
-	// blocks forever. Run it in a goroutine and enforce a ceiling so we
-	// surface a clean error instead of hanging the apply indefinitely.
-	// In the timeout path we return immediately rather than blocking on
-	// winrmCmd.Close() -- Close() itself can hang if the server is
-	// unresponsive, and the goroutine will be reaped when the provider
-	// process exits after Terraform surfaces the error.
+	// Wait() can block forever if the host hangs; a goroutine plus timeout surfaces a clean error instead.
 	const streamWaitTimeout = 10 * time.Minute
 	waitDone := make(chan struct{})
 	go func() {
@@ -612,8 +547,10 @@ const base64LineLen = 76
 //	bufSize ≤ (512 000 − 40 000) × 3/4 ≈ 354 000 bytes
 //
 // 256 KB (262 144 bytes) gives an on-wire payload of ~341 KB and leaves
-// ~130 KB of headroom — conservative enough to survive hosts with a
+// ~130 KB of headroom, conservative enough to survive hosts with a
 // slightly lower effective limit due to NTLM session overhead.
+//
+// lint:allow-long-comment
 const streamFileBufSize = 256 * 1024
 
 // buildWinRMStreamFileScript emits a single-statement PS body that reads
@@ -633,8 +570,8 @@ func buildWinRMStreamFileScript(remotePath string) string {
 }
 
 // lineWrappedWriter inserts a newline after every lineLen bytes written
-// to the underlying writer. Used to break a continuous base64 stream
-// into per-line chunks so the WinRM receive script can decode each line
+// to the underlying writer, breaking a continuous base64 stream into
+// per-line chunks so the WinRM receive script can decode each line
 // independently via ReadLine + FromBase64String, keeping host memory
 // proportional to one line rather than the whole payload.
 //
@@ -689,34 +626,28 @@ func (l *lineWrappedWriter) Close() error {
 }
 
 // ntlmEncryptionTransporter implements winrm.Transporter for NTLM-
-// authenticated, message-level encrypted WinRM sessions over HTTP.
+// authenticated, message-level encrypted WinRM sessions over HTTP. It
+// keeps a persistent NTLM session so the full 3-way handshake is paid
+// once per connection, not on every Post(): without reuse, each 256KB
+// chunk costs 4-5 RTTs of NTLM overhead, turning a 335MB transfer over
+// a ~300ms-RTT VPN link into 30+ minutes instead of ~3.
 //
-// The transporter maintains a persistent NTLM session so that the full
-// 3-way NTLM handshake is paid only once per connection lifetime rather than
-// on every Post() call. Without session reuse, each 256KB sendInput chunk
-// costs 4–5 RTTs of NTLM overhead before any data moves — at typical VPN
-// latency (~300ms TCP RTT) that adds ~1.5s of fixed overhead per chunk,
-// making 335MB ISO transfers take 30+ minutes instead of ~3 min.
+// The first Post() does a raw-TCP 3-way handshake (dial a raw
+// net.Conn, Type1/Type2/Type3, then encrypted SOAP on the same
+// socket); raw sockets matter because http.Transport can silently
+// retry on a fresh connection when the idle one closes, landing the
+// Type3 token on a connection with no NTLM context. The authenticated
+// conn is then promoted into the fast-path httpTransport via
+// injectedConn, so later calls skip the handshake (one RTT); any
+// auth/transport error invalidates the session and retries the full
+// handshake once. The mutex guards session state, so Post() is safe
+// for concurrent callers.
 //
-// Session lifecycle:
-//   - First Post(): raw-TCP 3-way NTLM handshake — dials a raw net.Conn,
-//     writes Type1 directly, reads the Type2 challenge, derives session keys,
-//     then writes Type3 + encrypted SOAP on the same socket. Using raw sockets
-//     is load-bearing: Go's http.Transport may silently retry on a new
-//     connection when the idle connection is closed, which would land the Type3
-//     authenticate token on a connection the server has no NTLM context for.
-//     A raw net.Conn prevents that.
-//   - After the first Post() the authenticated net.Conn is promoted into the
-//     fast-path httpTransport via injectedConn. Subsequent calls skip the
-//     handshake and send encrypted SOAP directly (one RTT).
-//   - On any auth/transport error: invalidates the cached session and retries
-//     the full 3-way handshake + encrypted SOAP once.
+// bodgit/ntlmssp negotiates the full NTLM flag set (SIGN/SEAL/
+// KEY_EXCHANGE); Azure/go-ntlmssp negotiates a reduced set that
+// Windows Server 2019 rejects.
 //
-// The mutex guards session state; Post() is safe for concurrent callers.
-//
-// bodgit/ntlmssp negotiates the full NTLM flag set (SIGN/SEAL/KEY_EXCHANGE).
-// Azure/go-ntlmssp (ClientNTLM) negotiates a reduced set; Windows Server 2019
-// rejects the resulting AUTHENTICATE token.
+// lint:allow-long-comment
 type ntlmEncryptionTransporter struct {
 	username string
 	password string
@@ -811,8 +742,7 @@ func (t *ntlmEncryptionTransporter) ensureClients() {
 		tlsCfg.RootCAs = pool
 	}
 
-	// DialContext injects the authenticated conn produced by the slow-path
-	// raw-TCP handshake so the first fast-path request reuses it.
+	// Injects the slow-path handshake's authenticated conn so the first fast-path request reuses it.
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	httpTransport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -853,8 +783,7 @@ func (t *ntlmEncryptionTransporter) dialRaw() (net.Conn, error) {
 func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMessage) (string, error) {
 	result, err := t.postOnce(message)
 	if err != nil {
-		// Auth errors may mean the server dropped or expired the session.
-		// Invalidate and retry once with a fresh handshake.
+		// Auth errors may mean a dropped/expired session; invalidate and retry once.
 		t.mu.Lock()
 		t.invalidateSession()
 		t.mu.Unlock()
@@ -863,17 +792,13 @@ func (t *ntlmEncryptionTransporter) Post(_ *winrm.Client, message *soap.SoapMess
 	return result, err
 }
 
-// postOnce sends a single SOAP message. Two paths:
-//
-//   - Slow path (sessionReady=false): dials a raw net.Conn and performs the
-//     3-way NTLM handshake manually, writing Type1/Type3 and reading the
-//     Type2 challenge all on the same socket. After the handshake the
-//     authenticated conn is injected into httpTransport so the next fast-path
-//     call picks it up without re-dialing.
-//
-//   - Fast path (sessionReady=true): sends encrypted SOAP directly on the
-//     keep-alive connection via httpClient. One RTT. On any error, returns it
-//     so Post() can invalidate and retry via the slow path.
+// postOnce sends a single SOAP message via one of two paths: the slow
+// path (sessionReady=false) dials a raw net.Conn and does the 3-way
+// NTLM handshake manually, injecting the authenticated conn into
+// httpTransport so the next fast-path call skips re-dialing; the fast
+// path (sessionReady=true) sends encrypted SOAP directly on the
+// keep-alive connection in one RTT, returning any error so Post() can
+// invalidate and retry via the slow path.
 func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string, error) {
 	t.mu.Lock()
 	t.ensureClients()
@@ -886,11 +811,7 @@ func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string,
 	encCT := `multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"`
 
 	if !sessionReady {
-		// --- Slow path: raw-TCP NTLM handshake ---
-		// Create a fresh client per invocation — ntlmssp.Client is a stateful
-		// state machine and is not safe for concurrent Authenticate calls.
-		// Sharing it across simultaneous re-auth goroutines corrupts the Type3
-		// token, causing Windows to reject the handshake with 401.
+		// Fresh client per call: ntlmssp.Client isn't safe for concurrent Authenticate, corrupting the Type3 token.
 		ntlmClient, err := t.newNTLMClient()
 		if err != nil {
 			return "", err
@@ -914,9 +835,7 @@ func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string,
 			return "", fmt.Errorf("winrm: ntlm negotiate: %w", err)
 		}
 
-		// Step 2: write Type1 to rawConn, read Type2 challenge back.
-		// Using req.Write / http.ReadResponse on the raw socket guarantees that
-		// the challenge and the Type3+SOAP request share the exact same TCP conn.
+		// req.Write/http.ReadResponse on the raw socket keeps the challenge and Type3+SOAP on the same conn.
 		req1, err := http.NewRequest(http.MethodPost, t.endpointURL, nil)
 		if err != nil {
 			return "", fmt.Errorf("winrm: build challenge request: %w", err)
@@ -988,8 +907,7 @@ func (t *ntlmEncryptionTransporter) postOnce(message *soap.SoapMessage) (string,
 			return "", fmt.Errorf("winrm: processSoapResponse: %w", err)
 		}
 
-		// Promote to fast path: inject the authenticated conn into httpTransport
-		// so the next httpClient.Do picks it up via the custom DialContext.
+		// Promotes to fast path: the next httpClient.Do picks this up via the custom DialContext.
 		wrapped := &bufReaderConn{Conn: rawConn, br: br}
 		closeConn = false // transfer ownership; don't close in defer
 		t.mu.Lock()
@@ -1099,24 +1017,19 @@ func buildWinRMEncryptedBody(plaintext, sealed, signature []byte) []byte {
 	return buf.Bytes()
 }
 
-// decryptWinRMEncryptedResponse parses the WS-Management multipart/encrypted
-// response body and decrypts each MIME part using the NTLM session.
-//
-// The WS-Management format uses tab-indented pseudo-headers with no blank line
-// between headers and the binary body — it is not standard MIME and cannot be
-// parsed by mime/multipart. Instead we locate the octet-stream anchor (an ASCII
-// string) to find where binary data starts, then extract exactly
-// 4 + sigLen + originalContentLen bytes using the OriginalContent: Length value
-// from the preceding metadata part. This avoids any boundary search inside
-// binary ciphertext, which bytes.Split would misparse if the ciphertext happened
-// to contain the boundary bytes.
+// decryptWinRMEncryptedResponse parses the WS-Management
+// multipart/encrypted response body and decrypts each MIME part using
+// the NTLM session. The format uses tab-indented pseudo-headers with no
+// blank line before the binary body, so it isn't standard MIME and
+// mime/multipart can't parse it; instead this locates the octet-stream
+// anchor and extracts exactly 4 + sigLen + originalContentLen bytes
+// using the preceding OriginalContent: Length value, avoiding a
+// boundary search that bytes.Split would misparse if ciphertext
+// happened to contain the boundary bytes.
 func decryptWinRMEncryptedResponse(respBody []byte, session interface {
 	Unwrap([]byte, []byte) ([]byte, error)
 }) ([]byte, error) {
-	// anchor is the fixed ASCII string that precedes the binary payload in every
-	// WS-Management encrypted part. Searching for it is safe: it is long enough
-	// that the probability of collision inside ciphertext is negligible, and we
-	// advance rest past each extracted payload so binary data is never scanned.
+	// anchor precedes the binary payload; long enough that a ciphertext collision is negligible.
 	anchor := []byte("--" + winrmMIMEBoundary + "\r\n\tContent-Type: application/octet-stream\r\n")
 	const origPrefix = "\tOriginalContent: "
 
@@ -1129,9 +1042,7 @@ func decryptWinRMEncryptedResponse(respBody []byte, session interface {
 			break
 		}
 
-		// Parse OriginalContent: Length=N from the metadata part that precedes
-		// this anchor. LastIndex is used so that any preamble (or an earlier
-		// part in a multi-part response) doesn't shadow the relevant header.
+		// LastIndex so an earlier part's header in a multi-part response doesn't shadow this one.
 		meta := rest[:idx]
 		origIdx := bytes.LastIndex(meta, []byte(origPrefix))
 		if origIdx < 0 {
@@ -1191,22 +1102,15 @@ func parseWinRMOriginalContentLength(line string) (int, error) {
 	return 0, fmt.Errorf("OriginalContent header missing Length field in %q", line)
 }
 
-// buildWinRMParams constructs the per-backend WSMan parameters from the
-// resolved options. Critically, it copies winrm.DefaultParameters by value
-// rather than aliasing the package-level pointer -- the upstream library
-// declares DefaultParameters as a *Parameters, so naive `params := winrm.
-// DefaultParameters` followed by `params.Timeout = ...` would mutate the
-// shared global, racing across concurrent Open calls and persisting
-// across them (a Basic-auth Open clearing TransportDecorator would
-// silently affect later NTLM Opens). The value-copy isolates each
-// backend's params.
-//
-// masterzen/winrm's DefaultParameters has a nil TransportDecorator, which
-// causes NewClientWithParameters to fall back to clientRequest -- a plain
-// Basic-auth transport. NTLM uses ntlmEncryptionTransporter (backed by
-// winrm.Encryption / bodgit/ntlmssp) for message-level encrypted requests.
-// Basic auth is the lib's raw fallback (nil decorator); kerberos swaps in
-// masterzen's own ClientKerberos.
+// buildWinRMParams constructs per-backend WSMan parameters from the
+// resolved options, copying winrm.DefaultParameters by value rather
+// than aliasing the package-level *Parameters pointer: a naive
+// `params := winrm.DefaultParameters` would mutate the shared global
+// across concurrent Opens, letting a Basic-auth Open's cleared
+// TransportDecorator silently affect a later NTLM Open. A nil
+// TransportDecorator (the default) falls back to masterzen's plain
+// Basic-auth transport; NTLM sets ntlmEncryptionTransporter and
+// kerberos swaps in masterzen's own ClientKerberos.
 func buildWinRMParams(opts WinRMOptions) *winrm.Parameters {
 	pCopy := *winrm.DefaultParameters
 	params := &pCopy
@@ -1218,14 +1122,7 @@ func buildWinRMParams(opts WinRMOptions) *winrm.Parameters {
 		}
 	}
 	if opts.Auth == "kerberos" {
-		// Swap the default NTLM/Negotiate transport for the masterzen-
-		// supplied Kerberos transport, which uses jcmturner/gokrb5 to
-		// obtain a TGT (password mode via inline AS-REQ, or ccache
-		// mode by reading a pre-existing ticket file) and sets the
-		// SPNEGO Authorization header per request. NewWinRM has
-		// already validated realm + password-XOR-ccache + filled in
-		// SPN/krb5.conf defaults, so the values handed off here are
-		// the resolved final config.
+		// masterzen's Kerberos transport uses jcmturner/gokrb5 for a TGT (password or ccache mode) and sets SPNEGO per request.
 		proto := "http"
 		if opts.UseHTTPS {
 			proto = "https"
@@ -1292,23 +1189,16 @@ func (b *winrmBackend) RunScript(ctx context.Context, script string, stdinJSON [
 	return b.runScriptOnClient(ctx, client, script, stdinJSON)
 }
 
-// runScriptOnClient is the shared body of RunScript and Healthcheck. Open
-// can call this with its still-being-constructed client without flipping
-// the opened flag.
-//
-// Opens a single WinRM shell and runs three commands on it sequentially:
-//  1. Stage: write the script body to a remote temp file via stdin. Staging
-//     exists because WSMan's default MaxCommandLine is 8192 chars — a
-//     preamble + verb script base64-encodes to ~5-9KB and gets rejected with
-//     "command line too long" when shipped via -EncodedCommand. Same fix SSH
-//     uses (see ssh.go's stageScript).
-//  2. Execute: run the staged script with optional stdin.
-//  3. Cleanup: remove the temp file. Runs on the same shell with a fresh
-//     background context so a canceled apply still cleans up.
-//
-// All three steps share one shell, keeping the peak open-shell count at 1
-// per RunScript call regardless of Terraform's -parallelism setting. The
-// shellSem semaphore then caps total concurrent shells across the backend.
+// runScriptOnClient is the shared body of RunScript and Healthcheck;
+// Open can call this with its still-being-constructed client without
+// flipping the opened flag. It opens a single shell and runs three
+// commands on it: stage the script body to a remote temp file via
+// stdin (WSMan's 8192-char MaxCommandLine rejects a base64'd script
+// via -EncodedCommand directly), execute the staged script, then clean
+// up the temp file on a fresh background context so a canceled apply
+// still runs the delete. Sharing one shell across all three keeps the
+// peak open-shell count at 1 per call regardless of parallelism;
+// shellSem caps total concurrent shells backend-wide.
 func (b *winrmBackend) runScriptOnClient(ctx context.Context, client *winrm.Client, script string, stdinJSON []byte) (Result, error) {
 	if b.opts.CommandTimeout > 0 {
 		var cancel context.CancelFunc
@@ -1323,9 +1213,7 @@ func (b *winrmBackend) runScriptOnClient(ctx context.Context, client *winrm.Clie
 	name := "hyperv-" + hex.EncodeToString(suffix[:]) + ".ps1"
 	remotePath := `C:/Windows/Temp/` + name
 
-	// Read stdin as UTF-8 (overrides the system codepage default), write
-	// the bytes to the file with a UTF-8 BOM. Single semicolon-joined
-	// expression so it stays a one-liner that fits under any MaxCommandLine.
+	// UTF-8 in and out, overriding the system codepage; one semicolon-joined expression to fit MaxCommandLine.
 	stagingScript := `[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); ` +
 		`[IO.File]::WriteAllText('` + remotePath + `', [Console]::In.ReadToEnd(), ` +
 		`[Text.UTF8Encoding]::new($true))`
@@ -1371,9 +1259,7 @@ func (b *winrmBackend) runScriptOnClient(ctx context.Context, client *winrm.Clie
 	exitCode, runErr := runShellCmd(ctx, shell, execCmd, stdinReader, &stdout, &stderr)
 	duration := time.Since(start)
 
-	// Step 3: cleanup temp file. Best-effort on a fresh context so a
-	// canceled apply still runs the delete. Windows auto-cleans %TEMP%
-	// periodically, so failures here are not fatal.
+	// Best-effort on a fresh context; Windows auto-cleans %TEMP%, so a failure here isn't fatal.
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cleanupCancel()
 	_, _ = runShellCmd(cleanupCtx, shell, cleanupCmd, nil, io.Discard, io.Discard)

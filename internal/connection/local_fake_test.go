@@ -12,18 +12,12 @@ import (
 	"time"
 )
 
-// writeFakePwsh drops a tiny shell script in a fresh temp dir and returns
-// its path. The script branches on $FAKE_PWSH_BEHAVIOR so a single binary
-// can stand in for several pwsh failure modes without per-test scripts.
-//
-// This lets us exercise localBackend.RunScript end-to-end on Linux CI
-// (where no real PowerShell is installed) — covering the non-zero exit,
-// CLIXML stripping, transport failure, and ctx cancellation paths that
-// the skip-if-no-pwsh integration tests can't reach there.
-//
-// Build-gated to !windows because Windows can't execute /bin/sh shebangs.
-// On Windows, the existing skipIfNoPwsh-gated integration tests cover the
-// equivalent behavior against a real powershell.exe.
+// writeFakePwsh drops a tiny shell script in a fresh temp dir, branching
+// on $FAKE_PWSH_BEHAVIOR to stand in for several pwsh failure modes. It
+// lets RunScript's exit-code, CLIXML-stripping, transport-failure, and
+// ctx-cancellation paths run on Linux CI, where no real PowerShell
+// exists; Windows keeps the equivalent coverage in the skipIfNoPwsh
+// integration tests instead, since it can't execute /bin/sh shebangs.
 func writeFakePwsh(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -187,8 +181,7 @@ func TestLocalBackend_Healthcheck_FailsLoudlyOnNonZeroExit(t *testing.T) {
 }
 
 func TestLocalBackend_Healthcheck_FailsOnUnexpectedStdout(t *testing.T) {
-	// echo_ok emits `"hello"`, not `"pong"` — so Healthcheck's stdout
-	// match should fail and surface a helpful error.
+	// echo_ok emits "hello", not "pong", so the stdout match should fail.
 	t.Setenv("FAKE_PWSH_BEHAVIOR", "echo_ok")
 	b := &localBackend{pwshPath: writeFakePwsh(t)}
 
@@ -202,9 +195,7 @@ func TestLocalBackend_Healthcheck_FailsOnUnexpectedStdout(t *testing.T) {
 }
 
 func TestLocalBackend_Healthcheck_SuccessOnPongStdout(t *testing.T) {
-	// echo_pong is what a real pwsh would emit for the 'pong' | ConvertTo-Json
-	// round-trip Healthcheck runs. Lock the success path so a future
-	// refactor of Healthcheck doesn't silently break the round-trip.
+	// echo_pong mimics a real pwsh's 'pong' | ConvertTo-Json round-trip.
 	t.Setenv("FAKE_PWSH_BEHAVIOR", "echo_pong")
 	b := &localBackend{pwshPath: writeFakePwsh(t)}
 
@@ -214,9 +205,7 @@ func TestLocalBackend_Healthcheck_SuccessOnPongStdout(t *testing.T) {
 }
 
 func TestNewLocal_AcceptsExplicitOverride(t *testing.T) {
-	// Pass an arbitrary path; NewLocal trusts it (the user opted in via
-	// HYPERV_PWSH_PATH or local.pwsh_path). Construction succeeds even if
-	// the binary doesn't exist — Healthcheck is what actually invokes it.
+	// NewLocal trusts an explicit override; Healthcheck is what actually invokes it.
 	t.Parallel()
 
 	conn, err := NewLocal(LocalOptions{PwshPath: "/some/path/that/need/not/exist"})
@@ -229,8 +218,7 @@ func TestNewLocal_AcceptsExplicitOverride(t *testing.T) {
 }
 
 func TestNewLocal_FailsWhenNothingOnPATH(t *testing.T) {
-	// Empty PATH and no override → discoverPwsh returns the actionable
-	// error pointing at the env-var escape hatch.
+	// Empty PATH, no override: error should point at the env-var escape hatch.
 	t.Setenv("PATH", t.TempDir())
 
 	_, err := NewLocal(LocalOptions{})
@@ -243,10 +231,7 @@ func TestNewLocal_FailsWhenNothingOnPATH(t *testing.T) {
 }
 
 func TestDiscoverPwsh_FindsBinaryOnIsolatedPATH(t *testing.T) {
-	// Drop a fake "pwsh" in a temp dir, then point PATH at only that dir
-	// to verify discoverPwsh actually walks PATH (not just uses the
-	// override). Caveat: this test is order-sensitive on PATH, so it's
-	// not t.Parallel.
+	// Order-sensitive on PATH, so this is not t.Parallel.
 	dir := t.TempDir()
 	fakePath := filepath.Join(dir, "pwsh")
 	if err := os.WriteFile(fakePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {

@@ -29,18 +29,10 @@ type SSHOptions struct {
 	Port     int    // default 22
 	Username string // required
 
-	// Auth methods, in priority order:
-	//
-	//   1. PrivateKey       (raw key contents -- wins if both PrivateKey and PrivateKeyPath are set)
-	//   2. PrivateKeyPath   (path read at Open time)
-	//   3. Password         (fallback only -- key auth is preferred)
-	//
-	// Passphrase decrypts the key when set.
-	//
-	// All three sensitive fields use []byte so Close() can zero the
-	// long-lived copy held by the backend. Libraries we hand the value
-	// to (golang.org/x/crypto/ssh) make their own copies; zeroing here
-	// covers the provider's own state, not theirs.
+	// Auth priority: PrivateKey (raw contents, wins over PrivateKeyPath)
+	// beats PrivateKeyPath (read at Open time) beats Password (fallback).
+	// Passphrase decrypts the key. All three use []byte so Close() can
+	// zero the provider's copy; golang.org/x/crypto/ssh makes its own.
 	PrivateKey     []byte
 	PrivateKeyPath string
 	Passphrase     []byte
@@ -71,15 +63,11 @@ type SSHOptions struct {
 	// or "pwsh.exe" to prefer PS 7+ if installed.
 	PwshPath string
 
-	// MaxConcurrentSessions caps the number of in-flight RunScript calls
-	// against the persistent ssh.Client. OpenSSH's per-connection
-	// MaxSessions limit (default 10, often 4-6 on hardened Windows
-	// builds) rejects late session opens with "rejected: connect failed
-	// (open failed)" once exceeded. Default 4 stays well under typical
-	// Windows OpenSSH caps; raise it on hosts with sshd_config tuned
-	// upward, lower it if the bench surfaces the error under heavier
-	// fanout. Set to 0 to use the default; negative values disable the
-	// cap entirely (not recommended).
+	// MaxConcurrentSessions caps in-flight RunScript calls against the
+	// persistent ssh.Client. OpenSSH's per-connection MaxSessions limit
+	// (default 10, often 4-6 on hardened Windows builds) rejects late
+	// session opens once exceeded; the default of 4 stays under typical
+	// caps. 0 uses the default; negative disables the cap (not recommended).
 	MaxConcurrentSessions int
 }
 
@@ -247,8 +235,7 @@ func (b *sshBackend) Open(ctx context.Context) error {
 		}
 		b.client = ssh.NewClient(r.sshConn, r.chans, r.reqs)
 		b.alive.Store(true)
-		// Capture client+done as locals so a Close()+Open() cycle
-		// can't leak this loop onto the new client.
+		// Locals here so a Close()+Open() cycle can't leak this loop onto the new client.
 		if b.opts.KeepaliveInterval > 0 {
 			b.keepaliveDone = make(chan struct{})
 			go b.keepaliveLoop(b.client, b.keepaliveDone, b.opts.KeepaliveInterval)
@@ -257,8 +244,7 @@ func (b *sshBackend) Open(ctx context.Context) error {
 	case <-ctx.Done():
 		select {
 		case r := <-done:
-			// Race: handshake completed before we observed ctx-cancel.
-			// Close the ssh.Conn to send SSH_MSG_DISCONNECT, not just TCP.
+			// Handshake won the race; close ssh.Conn to send SSH_MSG_DISCONNECT, not just TCP.
 			if r.err == nil && r.sshConn != nil {
 				_ = r.sshConn.Close()
 			} else {
@@ -361,12 +347,11 @@ func newSessionWithRetry(ctx context.Context, client *ssh.Client) (*ssh.Session,
 	return nil, fmt.Errorf("ssh: open session after %d attempts: %w", len(delays)+1, lastErr)
 }
 
-// isSessionRejected returns true for the OpenSSH "rejected: connect
-// failed (open failed)" error that surfaces from NewSession when the
-// server hits its MaxSessions cap. Match on the error-string
-// substring rather than the concrete *ssh.OpenChannelError type --
-// crypto/ssh has shifted the wrapping shape across releases, and the
-// "open failed" suffix is the stable signal across all of them.
+// isSessionRejected reports whether err is OpenSSH's "rejected: connect
+// failed (open failed)" error from NewSession hitting the server's
+// MaxSessions cap. Matches on the error-string substring, not
+// *ssh.OpenChannelError, since crypto/ssh has changed how it wraps this
+// across releases but the "open failed" suffix stays stable.
 func isSessionRejected(err error) bool {
 	if err == nil {
 		return false
@@ -390,13 +375,12 @@ func (b *sshBackend) Healthcheck(ctx context.Context) error {
 	return nil
 }
 
-// RunScript executes a PowerShell script on the remote host. The script
-// body is staged as a temp file via SCP and executed with `powershell.exe
-// -File`, leaving stdin free for input JSON. This sidesteps the effective
-// command-line length cliff we hit with Windows OpenSSH (~1.3 KB on the
-// test host, well below cmd.exe's documented 8191 limit) -- both raw
-// `-EncodedCommand` of a typical preamble + verb script and a gzip+base64
-// bootstrap variant exceeded that ceiling.
+// RunScript executes a PowerShell script on the remote host, staged as
+// a temp file via SCP and run with `powershell.exe -File`, leaving
+// stdin free for input JSON. This sidesteps a command-line length
+// cliff hit on Windows OpenSSH (~1.3 KB observed, well below cmd.exe's
+// 8191 limit): both raw -EncodedCommand and a gzip+base64 bootstrap
+// variant exceeded it.
 func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []byte) (Result, error) {
 	b.mu.Lock()
 	client := b.client
@@ -405,12 +389,7 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 		return Result{}, errors.New("ssh: backend not open -- call Open first")
 	}
 
-	// Cap in-flight sessions so the backend stays under the bench's
-	// per-connection MaxSessions limit. The slot covers SCP staging,
-	// the main exec session, and the deferred cleanup -- they run
-	// sequentially within one RunScript, so one slot = one concurrent
-	// SSH session against the server. Honor ctx so a canceled apply
-	// doesn't wedge waiting on a slot.
+	// One slot covers SCP staging + exec + cleanup, sequential within one call.
 	if b.sem != nil {
 		select {
 		case b.sem <- struct{}{}:
@@ -420,8 +399,7 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 		}
 	}
 
-	// Lazy reconnect if keepalive saw a dead client. Never retry
-	// mid-call -- see reconnect's docstring.
+	// Lazy reconnect if keepalive marked the client dead; never retry mid-call (see reconnect's doc).
 	if !b.alive.Load() {
 		if err := b.reconnect(ctx); err != nil {
 			return Result{}, fmt.Errorf("ssh: reconnect after keepalive failure: %w", err)
@@ -431,9 +409,7 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 		b.mu.Unlock()
 	}
 
-	// Per-call timeout so a wedged remote cmdlet surfaces as
-	// ErrTimeout. Note: ends the operator's wait, not the remote
-	// process -- it keeps running until vmms unblocks.
+	// Ends the operator's wait, not the remote process, which keeps running until vmms unblocks.
 	if b.opts.CommandTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.opts.CommandTimeout)
@@ -479,15 +455,7 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 				Duration: duration,
 			}, nil
 		}
-		// session.Wait() returns *ssh.ExitMissingError when the channel
-		// closed without an exit-status reply -- typical for "the remote
-		// process probably finished but the network blinked". Mark the
-		// client dead so the next RunScript reconnects on its own (the
-		// keepalive ticker would otherwise notice on its next interval,
-		// up to keepaliveInterval seconds later -- a verify-on-drop
-		// recovery path can't wait that long), and surface the typed
-		// sentinel so typed-client methods can opt into a follow-up
-		// verify when their cmdlet is idempotent.
+		// ExitMissingError: channel closed with no exit status; mark dead for a faster reconnect than the keepalive ticker.
 		var exitMissing *ssh.ExitMissingError
 		if errors.As(runErr, &exitMissing) {
 			b.alive.Store(false)
@@ -504,26 +472,17 @@ func (b *sshBackend) RunScript(ctx context.Context, script string, stdinJSON []b
 	}, nil
 }
 
-// stageScript writes `script` to a remote temp file via SCP-over-SSH and
-// returns the remote path plus a cleanup func that deletes the file. The
-// returned path is the right argument for `powershell.exe -File`; stdin
-// stays free for input JSON.
-//
-// Why SCP instead of -EncodedCommand: Windows OpenSSH server's exec channel
-// silently truncates commands past ~1.3 KB on our test host (no error,
-// command runs with garbled args, stdout empty). cmd.exe's 8191-char limit
-// is a higher ceiling but the SSH layer is the bottleneck. Staging the
-// body as a file removes the wire-size constraint entirely.
-//
-// The body is prefixed with a UTF-8 BOM so PS 5.1's `-File` reader picks
-// the right encoding -- without it, 5.1 defaults to the system codepage
-// (Windows-1252 on en-US) and corrupts any non-ASCII content. All current
-// scripts are pure ASCII, but the BOM future-proofs.
+// stageScript writes `script` to a remote temp file via SCP-over-SSH
+// and returns the path plus a cleanup func that deletes it; the path
+// is the right argument for `powershell.exe -File`, leaving stdin free
+// for input JSON. SCP beats -EncodedCommand because Windows OpenSSH's
+// exec channel silently truncates commands past ~1.3 KB (no error,
+// garbled args, empty stdout) on the test host; staging as a file
+// removes that wire-size ceiling. The body is prefixed with a UTF-8
+// BOM so PS 5.1's -File reader doesn't fall back to the system
+// codepage and corrupt non-ASCII content.
 func stageScript(ctx context.Context, client *ssh.Client, script string) (string, func(), error) {
-	// 8 random bytes -- 64 bits of entropy is more than enough to avoid
-	// collision when multiple resources apply concurrently against the same
-	// backend. UnixNano() can collide if two goroutines hit it within the
-	// same nanosecond; crypto/rand removes the wall-clock dependency.
+	// crypto/rand avoids UnixNano()'s same-nanosecond collision risk under concurrent applies.
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return "", nil, fmt.Errorf("ssh: generate temp filename: %w", err)
@@ -547,24 +506,15 @@ func stageScript(ctx context.Context, client *ssh.Client, script string) (string
 	return remotePath, cleanup, nil
 }
 
-// scpSink writes `size` bytes from `body` to `remoteDir/remoteName` via the
-// SCP-sink protocol (`scp -t <dir>` on the server, sink-mode framing on
-// stdin). The size is required up front because SCP's protocol carries a
-// length prefix; callers that don't know the size in advance must buffer
-// or stat the source first.
-//
-// Two callers today: stageScript (script body, in-memory bytes) and
-// StreamFile (arbitrary local file, streamed via os.Open). Both pay the
-// same scp-protocol round trip; the body io.Reader keeps memory pressure
-// proportional to one pipe-buffer's worth of bytes regardless of payload
-// size.
-//
-// ctx is honored on the session.Wait phase: a canceled apply unblocks
-// promptly even if the remote disk is slow. Mid-Copy cancellation is
-// indirect — the goroutine writing to stdinPipe returns when ctx fires
-// only at the next scheduled Read, but for the workloads this primitive
-// serves (multi-MB to multi-GB files), an io.Copy chunk completes well
-// inside any user-perceptible delay.
+// scpSink writes `size` bytes from `body` to `remoteDir/remoteName` via
+// the SCP-sink protocol (`scp -t <dir>` on the server); size is
+// required up front since the protocol carries a length prefix, so an
+// unsized caller must buffer or stat first. stageScript and StreamFile
+// both use it, keeping memory proportional to one pipe-buffer
+// regardless of payload size. ctx is honored on session.Wait, so a
+// canceled apply unblocks promptly even against a slow remote disk;
+// mid-copy cancellation is a Read away, fine for the multi-MB to
+// multi-GB files this serves.
 func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName string, size int64, body io.Reader) error {
 	session, err := newSessionWithRetry(ctx, client)
 	if err != nil {
@@ -572,15 +522,7 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 	}
 	defer func() { _ = session.Close() }()
 
-	// Use *Pipe accessors rather than session.Stdin/Stdout/Stderr
-	// assignment. The library only spawns its internal copy goroutines
-	// for the latter; with all three fields bound to pipes there is
-	// nothing to drain, so we never call session.Wait (and don't hit
-	// the Windows-OpenSSH wedge where the server occasionally fails to
-	// send SSH_MSG_CHANNEL_EOF after exit-status). Reading the SCP
-	// protocol's ACK bytes synchronously gives us the same delivery
-	// guarantee Wait would have, without needing the channel to be
-	// torn down by the server.
+	// *Pipe accessors avoid session.Wait, sidestepping a Windows-OpenSSH bug where SSH_MSG_CHANNEL_EOF sometimes never arrives.
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("ssh: scp stdin pipe: %w", err)
@@ -589,15 +531,7 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 	if err != nil {
 		return fmt.Errorf("ssh: scp stdout pipe: %w", err)
 	}
-	// StderrPipe is called for its side effect only: it sets the
-	// session's stderrpipe flag, which suppresses the default
-	// io.Copy(io.Discard, channel.Stderr()) goroutine the library
-	// would otherwise spawn. That goroutine reads until EOF; on the
-	// Windows-OpenSSH wedge (no EOF after exit-status) it parks
-	// forever -- the same deadlock pattern we just dismantled for
-	// stdout. Returning the channel directly here means no goroutine
-	// gets created, and the unread bytes just sit in the channel
-	// buffer until the deferred session.Close drops them.
+	// Side effect only: suppresses the library's own io.Copy(io.Discard, ...) goroutine, which would hang on the same EOF bug.
 	if _, err := session.StderrPipe(); err != nil {
 		return fmt.Errorf("ssh: scp stderr pipe: %w", err)
 	}
@@ -606,12 +540,7 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 		return fmt.Errorf("ssh: scp start: %w", err)
 	}
 
-	// Each ACK read is wrapped against ctx so a wedged SCP never
-	// blocks the goroutine indefinitely -- closing the session on
-	// ctx-fire causes the read to return EOF/error promptly. scp -t
-	// emits three ACKs in sequence: initial-ready, post-header,
-	// post-body terminator. 0x00 = OK, 0x01 = warning + textual
-	// message until \n, 0x02 = fatal + textual message.
+	// scp -t ACK bytes: 0x00 OK, 0x01 warning, 0x02 fatal, the latter two followed by a message until \n.
 	readAck := func(stage string) error {
 		var b [1]byte
 		ackErr := make(chan error, 1)
@@ -631,9 +560,7 @@ func scpSink(ctx context.Context, client *ssh.Client, remoteDir, remoteName stri
 		if b[0] == 0 {
 			return nil
 		}
-		// Read the textual error message (warning/fatal) up to \n.
-		// Bound the message length so a misbehaving server can't
-		// stream gigabytes into our memory.
+		// Bounded so a misbehaving server can't stream gigabytes of message into memory.
 		const maxMsg = 4096
 		msg := make([]byte, 0, 64)
 		for len(msg) < maxMsg {
@@ -690,9 +617,7 @@ func (b *sshBackend) StreamFile(ctx context.Context, localPath, remotePath strin
 		return errors.New("ssh: backend not open -- call Open first")
 	}
 
-	// Lazy reconnect on dead client, mirroring RunScript's policy. Stream
-	// is one-shot from the user's perspective; reconnecting between
-	// applies is fine, mid-stream is not.
+	// Lazy reconnect on dead client, mirroring RunScript's policy.
 	if !b.alive.Load() {
 		if err := b.reconnect(ctx); err != nil {
 			return fmt.Errorf("ssh: reconnect after keepalive failure: %w", err)
@@ -758,17 +683,14 @@ func waitForDone(ctx context.Context, done <-chan error, closeFn func()) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		// select can pick this case even when done is also ready; prefer
-		// a real result over a manufactured timeout.
+		// select can pick this even when done is also ready; prefer the real result.
 		select {
 		case err := <-done:
 			return err
 		default:
 		}
 		closeFn()
-		// On a truly dead transport this goroutine leaks until the backend
-		// reconnects -- closing the shared client here instead would abort
-		// every other in-flight RunScript call sharing it.
+		// Leaks until reconnect on a truly dead transport; closing the shared client here would abort other in-flight calls.
 		go func() { <-done }()
 		return ctx.Err()
 	}
@@ -798,10 +720,7 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 		}
 		auths = append(auths, ssh.PublicKeys(signer))
 	} else if opts.PrivateKeyPath != "" {
-		// #nosec G304 -- the path is operator-supplied (provider attribute
-		// ssh.private_key_path or env HYPERV_SSH_PRIVATE_KEY_PATH), not
-		// derived from untrusted input. The user explicitly told us to
-		// read this file as their auth credential.
+		// #nosec G304 -- operator-supplied path (ssh.private_key_path or HYPERV_SSH_PRIVATE_KEY_PATH), not untrusted input.
 		keyBytes, err := os.ReadFile(opts.PrivateKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("ssh: read private_key_path %s: %w", opts.PrivateKeyPath, err)
@@ -815,9 +734,7 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 	}
 
 	if len(opts.Password) > 0 {
-		// ssh.Password takes a string; the library copies it into its
-		// own auth-method closure. Our []byte is zeroed by the deferred
-		// zeroBytes above; the library's copy is outside our reach.
+		// ssh.Password copies into its own closure; our []byte is zeroed above, the library's copy isn't reachable.
 		auths = append(auths, ssh.Password(string(opts.Password)))
 	}
 

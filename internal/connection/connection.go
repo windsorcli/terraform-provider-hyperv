@@ -41,17 +41,13 @@ type Connection interface {
 	Backend() string
 }
 
-// Result is what every script invocation returns. The transport layer
-// captures four pieces of information; the typed Hyper-V client maps them
-// into typed Go errors.
-//
-// `Stderr` has CLIXML progress noise stripped before reaching this struct.
-// Real PS errors arrive as a JSON envelope on stderr per the
-// Write-HypervError contract.
-//
-// `error` from RunScript is reserved for transport failures (connection
-// refused, auth failed, ctx canceled). PS-level failures come back via
-// `ExitCode != 0` plus the structured envelope on `Stderr`.
+// Result is what every script invocation returns; the typed Hyper-V
+// client maps its four fields into typed Go errors. Stderr has CLIXML
+// progress noise stripped before reaching this struct; a real PS error
+// arrives as a JSON envelope on Stderr per the Write-HypervError
+// contract. RunScript's error return is reserved for transport failures
+// (connection refused, auth failed, ctx canceled); PS-level failures
+// come back via ExitCode != 0 plus that envelope.
 type Result struct {
 	Stdout   []byte
 	Stderr   []byte
@@ -59,17 +55,14 @@ type Result struct {
 	Duration time.Duration
 }
 
-// zeroBytes overwrites b in place. Used by Close() implementations and
-// the buildSSHAuthMethods hygiene path to scrub credential copies the
-// provider holds (passwords, passphrases, key material).
-//
-// The loop's writes survive because the slice header escapes via a
-// struct field the runtime can see; Go gives no formal guarantee
-// against dead-store elimination, but empirically the compiler treats
-// this case as a possible observer and keeps the stores. This is
-// hygiene for the provider's own state, not a guarantee against
-// memory inspection — copies the libraries we hand credentials to
-// may have made are outside our reach.
+// zeroBytes overwrites b in place; used by Close() implementations and
+// buildSSHAuthMethods to scrub credential copies (passwords,
+// passphrases, key material) the provider holds. The compiler could in
+// principle dead-store-eliminate this loop, but the slice header
+// escaping through a struct field keeps it an observable write in
+// practice; this is hygiene for the provider's own state, not a
+// guarantee against memory inspection of copies other libraries may
+// have made.
 func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0

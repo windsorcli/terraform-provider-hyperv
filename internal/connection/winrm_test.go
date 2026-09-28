@@ -18,7 +18,7 @@ import (
 )
 
 // TestNewWinRM_RequiresHost ensures NewWinRM rejects an empty host with a
-// clear, attribute-anchored message. Same shape as the SSH check.
+// clear, attribute-anchored message, same as the SSH check.
 func TestNewWinRM_RequiresHost(t *testing.T) {
 	_, err := NewWinRM(WinRMOptions{
 		Username: "Administrator",
@@ -266,9 +266,7 @@ func TestBuildWinRMParams_KerberosSetsTransportDecorator(t *testing.T) {
 		t.Fatal("TransportDecorator = nil, want non-nil for kerberos auth")
 	}
 	transport := params.TransportDecorator()
-	// The masterzen library's *ClientKerberos is the only type we expect
-	// here. A drift to a different transport (NTLM/Negotiate decorator,
-	// nil clientRequest) would silently bypass Kerberos at runtime.
+	// A drift to a different transport here would silently bypass Kerberos at runtime.
 	if _, ok := transport.(*winrm.ClientKerberos); !ok {
 		t.Errorf("TransportDecorator returned %T, want *winrm.ClientKerberos", transport)
 	}
@@ -511,18 +509,15 @@ func TestWinRM_CloseIdempotent(t *testing.T) {
 	}
 }
 
-// TestBuildWinRMParams_DoesNotMutateGlobal pins the bugfix that prevents
-// per-backend params from aliasing winrm.DefaultParameters. The upstream
-// library declares DefaultParameters as a *Parameters, so a naive
-// `params := winrm.DefaultParameters; params.Timeout = ...` mutates the
-// shared global -- racing across concurrent Open calls and silently
-// affecting later Opens (e.g., a Basic-auth Open clearing
-// TransportDecorator would persist into a subsequent NTLM Open).
-//
-// This test pins the value-copy contract: build params for two
-// differently-configured backends, mutate the result of the first, and
-// verify both winrm.DefaultParameters and the second backend's params
-// remain untouched.
+// TestBuildWinRMParams_DoesNotMutateGlobal pins the bugfix that
+// prevents per-backend params from aliasing winrm.DefaultParameters:
+// since the upstream library declares it as a *Parameters, a naive
+// assignment-then-mutate would corrupt the shared global across
+// concurrent Opens (e.g. a Basic-auth Open clearing TransportDecorator
+// persisting into a later NTLM Open). This test builds params for two
+// differently-configured backends, mutates the first's result, and
+// verifies both DefaultParameters and the second backend's params stay
+// untouched.
 func TestBuildWinRMParams_DoesNotMutateGlobal(t *testing.T) {
 	originalTimeout := winrm.DefaultParameters.Timeout
 	originalDecorator := winrm.DefaultParameters.TransportDecorator
@@ -536,8 +531,7 @@ func TestBuildWinRMParams_DoesNotMutateGlobal(t *testing.T) {
 		CommandTimeout: 5 * time.Second,
 	})
 
-	// Mutate the first backend's params -- if buildWinRMParams aliased
-	// the global, this write would corrupt subsequent calls.
+	// If buildWinRMParams aliased the global, this write would corrupt subsequent calls.
 	pBasic.Timeout = "PT99H"
 	pBasic.EnvelopeSize = 999
 
@@ -554,8 +548,7 @@ func TestBuildWinRMParams_DoesNotMutateGlobal(t *testing.T) {
 	if pNTLM.EnvelopeSize == 999 {
 		t.Error("second backend's EnvelopeSize aliased the first's")
 	}
-	// And the auth=basic path must clear TransportDecorator on its own
-	// copy without touching the auth=ntlm path's decorator.
+	// auth=basic must clear TransportDecorator on its own copy without touching auth=ntlm's.
 	if pBasic.TransportDecorator != nil {
 		t.Error("auth=basic should clear TransportDecorator on its copy")
 	}
@@ -614,12 +607,12 @@ func TestWinRM_StreamFileBeforeOpen(t *testing.T) {
 	}
 }
 
-// TestBuildWinRMStreamFileScript pins the receiver script's shape. We
-// don't compare the whole string verbatim -- comments would lock readers
-// out of refactors -- but we do verify every load-bearing piece is in
-// place: stdin encoding override, OpenWrite + SetLength(0), the ReadLine
-// loop, FromBase64String, the finally Dispose, and that path escaping
-// doubles single quotes per PS single-string conventions.
+// TestBuildWinRMStreamFileScript pins the receiver script's structure
+// without comparing the whole string verbatim, which would lock
+// readers out of refactors: it verifies every load-bearing piece is
+// present (stdin encoding override, OpenWrite + SetLength(0), the
+// ReadLine loop, FromBase64String, the finally Dispose) and that path
+// escaping doubles single quotes per PS single-string conventions.
 func TestBuildWinRMStreamFileScript(t *testing.T) {
 	t.Parallel()
 
@@ -962,8 +955,8 @@ func (w *chunkWriter) Write(p []byte) (int, error) {
 	return w.dst.Write(p[:n])
 }
 
-// zeroThenOKWriter returns (0, err) for the first fails calls, then forwards
-// to dst. Used to exercise zero-progress backoff and retry recovery.
+// zeroThenOKWriter returns (0, err) for the first fails calls, then
+// forwards to dst, exercising zero-progress backoff and retry recovery.
 type zeroThenOKWriter struct {
 	dst   *bytes.Buffer
 	fails int
@@ -1007,9 +1000,7 @@ func TestStreamFileWriteAll(t *testing.T) {
 	})
 
 	t.Run("one zero-progress failure then recovery", func(t *testing.T) {
-		// First Write returns (0, ErrShortWrite); streamFileWriteAll sleeps
-		// 250 ms then retries. Second call succeeds. The sleep is real but
-		// acceptable for a correctness test.
+		// First Write returns (0, ErrShortWrite); a real 250ms sleep then retry succeeds.
 		data := []byte("retry me")
 		var buf bytes.Buffer
 		w := &zeroThenOKWriter{dst: &buf, fails: 1, err: io.ErrShortWrite}
@@ -1025,8 +1016,7 @@ func TestStreamFileWriteAll(t *testing.T) {
 		if testing.Short() {
 			t.Skip("skipped in -short mode: sleeps ~7.75 s exhausting backoff")
 		}
-		// streamFileMaxSendRetries+1 failures so the backoff counter exceeds
-		// the limit. dst is never reached so nil is safe.
+		// One more failure than the retry limit; dst is never reached so nil is safe.
 		w := &zeroThenOKWriter{fails: streamFileMaxSendRetries + 1, err: io.ErrShortWrite}
 		err := streamFileWriteAll(w, []byte("stall"))
 		if err == nil {
@@ -1068,8 +1058,7 @@ func TestStreamFileStdin(t *testing.T) {
 
 	t.Run("multi-chunk crosses buffer boundaries", func(t *testing.T) {
 		t.Parallel()
-		// 3.5 × streamFileBufSize exercises three full chunks plus a trailing
-		// partial, covering the boundary and flush logic in the read loop.
+		// 3.5x streamFileBufSize: three full chunks plus a trailing partial.
 		size := streamFileBufSize*3 + streamFileBufSize/2
 		data := bytes.Repeat([]byte{0x5A}, size)
 		var buf bytes.Buffer

@@ -33,8 +33,7 @@ func TestLocalBackend_BuildCmd_Encoding(t *testing.T) {
 		}
 	}
 
-	// Last arg is the base64-encoded script. Cheap sanity: it's non-empty
-	// and its length is a multiple of 4 (base64 padding).
+	// Last arg is the base64-encoded script; sanity-check length is a multiple of 4.
 	encoded := cmd.Args[len(cmd.Args)-1]
 	if encoded == "" {
 		t.Error("encoded command is empty")
@@ -276,9 +275,7 @@ func TestLocalBackend_StreamFile_MissingSource(t *testing.T) {
 func TestLocalBackend_StreamFile_ContextCanceledRemovesPartial(t *testing.T) {
 	t.Parallel()
 
-	// Build a source large enough that io.Copy makes more than one read --
-	// otherwise ctxReader's cancel-check never fires before EOF. 4 MiB is
-	// well past io.Copy's 32 KiB default buffer.
+	// 4 MiB: past io.Copy's 32 KiB buffer, so the cancel-check fires before EOF.
 	dir := t.TempDir()
 	src := filepath.Join(dir, "big.bin")
 	dst := filepath.Join(dir, "out.bin")

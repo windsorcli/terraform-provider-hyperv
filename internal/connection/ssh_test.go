@@ -121,9 +121,7 @@ func TestBuildSSHAuthMethods_RawKeyWinsOverPath(t *testing.T) {
 
 	keyBytes := generateTestKey(t)
 
-	// PrivateKey set + PrivateKeyPath pointing at a non-existent file:
-	// since raw bytes win, the path is never read so the missing file
-	// must NOT cause an error.
+	// Raw bytes win, so the non-existent PrivateKeyPath is never read and must NOT error.
 	auths, err := buildSSHAuthMethods(SSHOptions{
 		PrivateKey:     keyBytes,
 		PrivateKeyPath: "/this/path/does/not/exist",
@@ -208,9 +206,7 @@ func TestLoadKnownHostsCallback_MissingFileIsFatal(t *testing.T) {
 func TestLoadKnownHostsCallback_EmptyPathResolvesToHomeDefault(t *testing.T) {
 	t.Parallel()
 
-	// If the user's known_hosts exists, the call succeeds; if it doesn't,
-	// the error message should mention .ssh/known_hosts so the operator
-	// knows where the loader looked.
+	// If known_hosts is missing, the error should name .ssh/known_hosts.
 	cb, err := loadKnownHostsCallback("")
 	if err != nil {
 		if !strings.Contains(err.Error(), "known_hosts") {
@@ -503,8 +499,7 @@ func TestSSHBackend_OpenRespectsContextCancelDuringHandshake(t *testing.T) {
 	if !strings.Contains(err.Error(), "canceled") {
 		t.Errorf("error = %v, want \"canceled\" hint", err)
 	}
-	// Generous bound: we asked for 200ms; anything past 2s would mean
-	// ctx-cancel didn't break the handshake's read.
+	// Generous bound past the 200ms ctx; past 2s means ctx-cancel didn't break the read.
 	if elapsed > 2*time.Second {
 		t.Errorf("Open took %v after 200ms ctx; ctx-cancel didn't propagate to the handshake", elapsed)
 	}
@@ -530,12 +525,11 @@ func TestSSHBackend_BackendIdentifier(t *testing.T) {
 	}
 }
 
-// TestSCPStartCmd_QuotesRemoteDir locks the wire shape of the `scp -t`
-// command. Without the quotes a destination_path containing spaces
+// TestSCPStartCmd_QuotesRemoteDir locks the format of the `scp -t`
+// command: without quotes, a destination_path containing spaces
 // (e.g. C:/Program Files/hyperv) splits into two arguments on the
-// remote shell -- cmd.exe on Windows OpenSSH does this verbatim, and
-// SCP exits with a confusing error. Quoting fixes both the cmd.exe
-// and pwsh cases without needing per-shell branching.
+// remote shell, and SCP exits with a confusing error. Quoting fixes
+// both the cmd.exe and pwsh cases without per-shell branching.
 func TestSCPStartCmd_QuotesRemoteDir(t *testing.T) {
 	t.Parallel()
 
