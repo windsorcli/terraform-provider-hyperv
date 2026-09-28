@@ -33,8 +33,7 @@ func main() {
 
 	c := hyperv.NewClient(conn)
 
-	// Mimic terraform's parallel refresh: 10 concurrent reads over the
-	// shared SSH client.
+	// Mimic terraform's parallel refresh: 10 concurrent reads over the shared SSH client.
 	const fanout = 10
 	type result struct {
 		idx  int

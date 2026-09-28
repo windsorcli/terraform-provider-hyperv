@@ -1,17 +1,11 @@
-// Maintainer-only WinRM script runner against the Hyper-V bench. Lets
-// you run an arbitrary PowerShell script (incl. PSDirect into running
-// guests, Mount-VHD, panther-log greps) without standing up a full
-// terraform plan/apply. Reads HYPERV_HOST/USERNAME/PASSWORD from env.
-//
-// Usage:
+// Maintainer-only WinRM script runner against the Hyper-V bench, for
+// arbitrary PowerShell without a full terraform plan/apply. Reads
+// HYPERV_HOST/USERNAME/PASSWORD from env:
 //
 //	set -a; source .env.local; set +a
 //	go run ./hack/bench-run 'Get-VM | Select-Object Name, State'
 //
-// Used heavily during docs/spikes/09 to grep Setup logs from inside
-// the partially-installed lab DC. Kept under hack/ rather than
-// promoted to a cmd/ binary because it's deliberately small and the
-// usage pattern is "edit the script literal at the call site."
+// Kept under hack/, not a cmd/ binary, since usage is editing the script literal at the call site.
 package main
 
 import (

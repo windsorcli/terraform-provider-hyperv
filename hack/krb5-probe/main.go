@@ -44,12 +44,7 @@ func main() {
 	cl := client.NewWithPassword(username, realm, password, cfg,
 		client.DisablePAFXFAST(true), client.AssumePreAuthentication(true))
 	if err := cl.Login(); err != nil {
-		// gokrb5 wraps KRBError in krberror.Krberror, which has its own
-		// Error() but doesn't implement Unwrap() — so errors.As can't
-		// reach the inner KRBError to read ErrorCode/EText/EData. The
-		// formatted error message already contains the numeric code,
-		// symbolic name, and e-text in human-readable form, which is
-		// what a maintainer eyeballs anyway.
+		// gokrb5's wrapped KRBError doesn't implement Unwrap(), but the formatted message already has the code/text a maintainer needs.
 		fmt.Fprintln(os.Stderr, "Login:", err)
 		os.Exit(1)
 	}
