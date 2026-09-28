@@ -91,3 +91,21 @@ func TestLintPS1File_ExemptionMustBeLastLine(t *testing.T) {
 		t.Errorf("marker on last line: want no violations, got %v", vLast)
 	}
 }
+
+func TestLintPS1File_BlockCommentCloserNotCountedAsLineComment(t *testing.T) {
+	content := "<#\n.SYNOPSIS\nfoo\n#>\n" + strings.Repeat("# filler line\n", maxBlockLines) + "Write-Host 'hi'\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "closer.ps1")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := lintPS1File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 0 {
+		t.Errorf("#> should not be swept into the following comment block, got violations: %v", v)
+	}
+}

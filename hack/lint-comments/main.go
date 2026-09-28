@@ -263,7 +263,8 @@ func lintPS1File(path string) ([]violation, error) {
 	for scanner.Scan() {
 		lineNo++
 		trimmed := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "#!") && !strings.HasPrefix(trimmed, "#Requires") {
+		if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "#!") &&
+			!strings.HasPrefix(trimmed, "#Requires") && !strings.HasPrefix(trimmed, "#>") {
 			if len(block) == 0 {
 				blockStart = lineNo
 			}
