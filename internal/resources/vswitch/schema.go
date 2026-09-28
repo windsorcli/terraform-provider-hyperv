@@ -30,8 +30,8 @@ func resourceSchema() schema.Schema {
 			"Manages a Hyper-V virtual switch: `External`, `Internal`, `Private`, or `NAT`.\n\n" +
 			"~> **Note:** If `New-VMSwitch` succeeds on the host but the provider fails to record " +
 			"the result, for example on a transient stdout decode error, the switch exists on the " +
-			"host with no Terraform state, and the next `terraform apply` fails with " +
-			"\"switch already exists.\" Recover with " +
+			"host with no Terraform state, and the next `terraform apply` fails because a switch " +
+			"with that name already exists. Recover with " +
 			"`terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{

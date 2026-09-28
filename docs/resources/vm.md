@@ -92,6 +92,8 @@ The dynamic memory buffer percentage and balancer priority are not exposed. (see
 
 Any difference between plan and state sets the entire list in one `Set-VMFirmware -BootOrder` call; there is no partial reorder. The VM must generally be `Off` for the change to apply.
 
+Any File- or Unknown-type UEFI boot entry Hyper-V already has, a boot path this schema doesn't model, is preserved in that call rather than dropped, so a VM with such entries keeps them across every `boot_order` update.
+
 Not supported on generation 1 VMs, which use `Set-VMBios -StartupOrder` instead; a config validator rejects `boot_order` on a generation 1 VM.
 
 For an OS install from ISO, apply once with `dvd_drive` first in `boot_order`, install the OS, then re-apply with `hard_disk_drive` first and the DVD removed from `dvd_drive`. (see [below for nested schema](#nestedatt--boot_order))
