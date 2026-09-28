@@ -34,6 +34,44 @@ before authoring a new title.
   the workflow owns that surface.
 - See `.claude/skills/create-pr/SKILL.md` for the full procedure.
 
+## Code comments
+
+- **Length**: package doc ≤ 3 lines. Exported type/func doc: one summary
+  sentence, plus up to two more only for a non-obvious contract — 6
+  lines hard cap. Field or inline comment: 1 line, never wrapped.
+- **Wire-contract exception**: a block documenting an external format
+  (a script's stdin/stdout JSON shape, a wire protocol) is reference
+  data, not prose, and is exempt from the length cap. Mark it by making
+  `lint:allow-long-comment` the block's first line.
+- **One job per comment.** A struct comment covering five different
+  concerns is a sign each concern belongs on the field it explains, not
+  in a preamble above the type.
+- **No process or ticket narration**: no PR or issue numbers, no
+  "previously", no "used to be". A comment states current behavior, not
+  its history — put history in the commit message.
+- **No `docs/PLAN.md` / `docs/spikes/` / `docs/adr/` references** — see
+  above; paraphrase the finding instead.
+
+`task lint:comments` (`hack/lint-comments`) enforces the length cap and
+the two bullets above; it runs in CI. Its only override is the
+`lint:allow-long-comment` marker on a wire-contract block — if a comment
+still needs an exception, shorten it instead.
+
+Two rules above don't have a mechanical check and won't get one:
+
+- **No uncited platform claims.** State what was directly observed
+  (`parallel writes have returned ERROR_SHARING_VIOLATION`), not an
+  unverified claim about how Windows or another external system works
+  internally, unless a source is linked.
+- **Dash overuse is a symptom, not the target.** Reaching for `--` as
+  the connector for every clause is usually standing in for a staged
+  contrast or a clause bolted onto another instead of a real sentence —
+  the same tells the `technical-writing` skill catalogs. Swapping the
+  dash for a colon and leaving the sentence's structure alone doesn't
+  fix that; rewrite the sentence. A regex can't distinguish a real
+  rewrite from a punctuation swap, so this gets caught by reading the
+  comment against that skill during review, not by `lint:comments`.
+
 ## Working in this repo
 
 - All PowerShell scripts must run on PS 5.1 (Server 2022 floor) and PS

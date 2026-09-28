@@ -139,6 +139,8 @@ Default to no comments. When you do write one, it states a hidden constraint or 
 
 The PR description and commit message own narrative. Pester tests pin behavior. Comments should be terse.
 
+Same length caps as [CLAUDE.md "Code comments"](../../../CLAUDE.md) apply here. `task lint:comments` checks `*.ps1` files too — a wire-contract header (stdin/stdout JSON shape) is the one exemption, and only when marked `lint:allow-long-comment`.
+
 ## What NOT to do
 - ❌ String-concatenate PowerShell from Go — script bodies always pass through `-EncodedCommand`
 - ❌ Reference `$args` as a hashtable — that's the auto-variable for unbound function arguments. Use `$obj` or `$data` for parsed input

@@ -52,12 +52,17 @@ tasks:
 
   lint:
     desc: Run all linters
-    deps: [lint:go, lint:ps, lint:yaml]
+    deps: [lint:go, lint:ps, lint:yaml, lint:comments]
 
   lint:go:
     desc: golangci-lint
     cmds:
       - golangci-lint run
+
+  lint:comments:
+    desc: Enforce CLAUDE.md's code-comment rules on *.go and *.ps1
+    cmds:
+      - go run ./hack/lint-comments .
 
   lint:ps:
     desc: PSScriptAnalyzer on production scripts in internal/scripts

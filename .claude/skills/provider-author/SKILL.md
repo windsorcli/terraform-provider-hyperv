@@ -113,6 +113,8 @@ Default to no comments. When you do write one, it states a hidden constraint or 
 
 If a reviewer wonders "why doesn't this filter more aggressively?" the test cases answer that. Write the test, not the apology.
 
+Same length caps as [CLAUDE.md "Code comments"](../../../CLAUDE.md) apply here — 6 lines for an exported type/func doc, 3 for a package doc. `task lint:comments` checks this on every `*.go` file; a wire-contract block (a JSON DTO's shape) is the one exemption, and only when marked `lint:allow-long-comment`.
+
 ## Anti-patterns to avoid
 
 - ❌ `d.SetId("")` to delete state → ✅ `resp.State.RemoveResource(ctx)`

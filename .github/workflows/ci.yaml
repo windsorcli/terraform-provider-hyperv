@@ -38,6 +38,7 @@ jobs:
           version: 3.x
       - run: task tools
       - run: task lint:go
+      - run: task lint:comments
 
   yamllint:
     name: Lint (YAML)
