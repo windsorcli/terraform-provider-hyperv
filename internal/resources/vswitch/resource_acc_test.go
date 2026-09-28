@@ -1,18 +1,14 @@
 package vswitch_test
 
-// Acceptance tests for hyperv_virtual_switch. These run only when TF_ACC=1
-// is set (terraform-plugin-testing's default gate); `go test ./...` without
-// it skips the framework-managed bodies.
+// Acceptance tests for hyperv_virtual_switch. These run only when
+// TF_ACC=1 is set; `go test ./...` without it skips the
+// framework-managed bodies. The bench setup is documented in
+// docs/contributing/acceptance-tests.md: at minimum HYPERV_BACKEND and
+// the per-backend vars (HYPERV_HOST, HYPERV_USERNAME for ssh/winrm)
+// must be loaded, typically via .env.local (task test:acc reads it).
 //
-// The bench setup is documented in docs/contributing/acceptance-tests.md.
-// At minimum HYPERV_BACKEND and the per-backend vars (HYPERV_HOST,
-// HYPERV_USERNAME for ssh/winrm) must be loaded -- task test:acc reads
-// .env.local so a maintainer's bench creds stay out of the repo.
-//
-// Why Private as the first scenario: it requires no host NIC and no
-// management-OS toggle, so the test is independent of the bench's
-// network topology. External-switch tests come in a follow-up that
-// gates on HYPERV_TEST_NET_ADAPTER for the bench's bound NIC name.
+// Private is the first scenario since it needs no host NIC or
+// management-OS toggle, independent of the bench's network topology.
 
 import (
 	"context"
@@ -30,16 +26,15 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/acctest"
 )
 
-// TestAcc_VirtualSwitch_basic exercises the create-read-update-import-delete
-// path on a Private switch. The Step list is the canonical resource.Test
-// shape: every Step is a separate `terraform plan && apply`, with the
-// framework asserting on state and (where Configured) plan actions.
+// TestAcc_VirtualSwitch_basic exercises the create-read-update-import-
+// delete path on a Private switch; each Step below is a separate
+// plan-and-apply, with the framework asserting on state and (where
+// configured) plan actions.
 //
 // Steps:
 //  1. Create with notes = "<initial>". Verify name, switch_type, notes.
-//  2. Update notes to "<updated>". Verify in-place update -- not a replace
-//     (the schema marks `notes` as in-place updatable; a regression to
-//     RequiresReplace would surface here).
+//  2. Update notes to "<updated>". Verify in-place update, not a
+//     replace (a regression to RequiresReplace would surface here).
 //  3. Import the resource by name and verify state matches.
 func TestAcc_VirtualSwitch_basic(t *testing.T) {
 	name := acctest.RandomName("vswitch-private")
@@ -48,10 +43,7 @@ func TestAcc_VirtualSwitch_basic(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		// CheckDestroy verifies the switch is actually gone from the
-		// bench after destroy, not just absent from Terraform state.
-		// Without this, a silently-failing Remove-VMSwitch would let
-		// the test pass green while leaving an orphan switch behind.
+		// Verifies the switch is gone from the bench, not just absent from state, catching a silently-failing Remove-VMSwitch.
 		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch",
 			func(ctx context.Context, name string) (*hyperv.VMSwitch, error) {
 				return client.GetVMSwitch(ctx, name, "")
@@ -79,11 +71,7 @@ func TestAcc_VirtualSwitch_basic(t *testing.T) {
 			},
 			{
 				Config: vswitchPrivateConfig(name, "updated notes"),
-				// Plan-action assertion: a RequiresReplace regression on
-				// `notes` would silently destroy-and-recreate the switch,
-				// and the state checks below would still pass against the
-				// fresh resource. Pin the action to Update so a schema
-				// regression fails this step explicitly.
+				// Pins the action to Update: a RequiresReplace regression would destroy-recreate but still pass the state checks below.
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(
@@ -98,10 +86,7 @@ func TestAcc_VirtualSwitch_basic(t *testing.T) {
 						tfjsonpath.New("notes"),
 						knownvalue.StringExact("updated notes"),
 					),
-					// Name is immutable (RequiresReplace); confirm it
-					// survived the update unchanged. A regression that
-					// flipped name to in-place updatable would trip a
-					// different state-check failure.
+					// Confirms name (RequiresReplace) survived the update unchanged.
 					statecheck.ExpectKnownValue(
 						"hyperv_virtual_switch.test",
 						tfjsonpath.New("name"),
@@ -114,8 +99,7 @@ func TestAcc_VirtualSwitch_basic(t *testing.T) {
 				ImportState:       true,
 				ImportStateId:     name,
 				ImportStateVerify: true,
-				// `id` is a Computed mirror of `name`; it round-trips
-				// cleanly through import without divergence.
+				// id is a Computed mirror of name; it round-trips cleanly through import without divergence.
 			},
 		},
 	})
@@ -136,20 +120,12 @@ resource "hyperv_virtual_switch" "test" {
 }
 
 // TestAcc_VirtualSwitch_internal exercises the Internal-switch create
-// path. Distinct from the Private scenario in TestAcc_VirtualSwitch_basic
-// because Internal switches go through a different New-VMSwitch
-// parameter set (one that does NOT accept -AllowManagementOS) -- a
-// regression that forwards AllowManagementOS to the cmdlet for Internal
-// switches surfaces here as a "Parameter set cannot be resolved" error
-// at apply time.
-//
-// Why this test didn't exist before: the original TestAcc_VirtualSwitch_basic
-// used Private only, and the Pester unit tests mock New-VMSwitch so the
-// parameter-set ambiguity is invisible at the script-test layer. The
-// bug only surfaces against a real cmdlet on a real host.
-//
-// Internal switches need no host NIC binding, so the test is independent
-// of bench network topology -- same property as the Private scenario.
+// path. Distinct from Private because Internal switches go through a
+// different New-VMSwitch parameter set that doesn't accept
+// -AllowManagementOS; a regression that forwards it surfaces here as
+// "Parameter set cannot be resolved" at apply time. Internal switches
+// need no host NIC binding, so the test is topology-independent, like
+// the Private scenario.
 func TestAcc_VirtualSwitch_internal(t *testing.T) {
 	name := acctest.RandomName("vswitch-internal")
 	client := acctest.NewClient(t)
@@ -195,21 +171,15 @@ resource "hyperv_virtual_switch" "test" {
 }
 
 // TestAcc_VirtualSwitch_nat exercises the NAT switch_type. NAT switches
-// orchestrate three host-side cmdlets (New-VMSwitch + New-NetIPAddress +
-// New-NetNat) and are constrained by Microsoft's one-NetNat-per-host rule
-// -- both wrinkles only show up against a real bench. Topology-independent
-// like the Private and Internal scenarios; no bound NIC required.
-//
-// Update step exercises Notes -- the only in-place mutation that reaches
-// Update for a NAT switch (every NAT-specific input is RequiresReplace,
-// because Set-NetNat does not accept -InternalIPInterfaceAddressPrefix
-// on the bench: verified by an earlier draft of this test against Server
-// 2022 + PS 5.1, which failed with "A parameter cannot be found that
-// matches parameter name 'InternalIPInterfaceAddressPrefix'.").
-//
-// CheckDestroy passes nat_name through GetVMSwitch so the read joins
-// NetNat + NetIPAddress -- a half-torn-down NAT triple would surface
-// here rather than silently leaving orphan state on the host.
+// orchestrate three host-side cmdlets (New-VMSwitch, New-NetIPAddress,
+// New-NetNat) and are constrained by Microsoft's one-NetNat-per-host
+// rule, both only visible against a real bench; topology-independent
+// like Private and Internal. The update step exercises Notes, the only
+// in-place mutation NAT reaches, since Set-NetNat doesn't accept
+// -InternalIPInterfaceAddressPrefix and every other NAT input is
+// RequiresReplace. CheckDestroy passes nat_name through GetVMSwitch so
+// the read joins NetNat and NetIPAddress, surfacing a half-torn-down
+// NAT triple here instead of leaving orphan state on the host.
 func TestAcc_VirtualSwitch_nat(t *testing.T) {
 	name := acctest.RandomName("vswitch-nat")
 	natName := acctest.RandomName("nat")
@@ -242,9 +212,7 @@ func TestAcc_VirtualSwitch_nat(t *testing.T) {
 				},
 			},
 			{
-				// In-place update: notes mutation routes through
-				// Set-VMSwitch on the underlying Internal switch. No
-				// teardown of NetNat or NetIPAddress.
+				// notes routes through Set-VMSwitch on the underlying Internal switch; no NetNat/NetIPAddress teardown.
 				Config: vswitchNATConfig(name, natName, "192.168.100.0/24", "192.168.100.1", "updated notes"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{

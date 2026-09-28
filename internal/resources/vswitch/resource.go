@@ -85,8 +85,7 @@ func (v privateAllowMgmtOSValidator) ValidateResource(ctx context.Context, req r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// Skip if any input is unknown -- a deferred dep hasn't resolved yet;
-	// the next plan pass will validate with concrete values.
+	// Skip when unknown: a deferred dep hasn't resolved; the next plan pass validates with concrete values.
 	if data.SwitchType.IsUnknown() || data.AllowManagementOS.IsUnknown() {
 		return
 	}
@@ -169,7 +168,7 @@ func (r *Resource) Configure(_ context.Context, req resource.ConfigureRequest, r
 }
 
 // Create runs new.ps1 with the plan's attributes and writes the post-create
-// read shape back to state.
+// read result back to state.
 func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -203,7 +202,7 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Read fetches the current shape via get.ps1 and reconciles state.
+// Read fetches the current state via get.ps1 and reconciles it.
 //
 // ErrNotFound -> RemoveResource so Terraform plans recreate.
 // ErrUnavailable -> AddError so a transient vmms outage doesn't drop the
@@ -234,10 +233,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	// net_adapter_names is user intent and isn't reconstructible from the
-	// cmdlet's read shape (Get-VMSwitch reports NetAdapterInterfaceDescription
-	// -- a friendly NIC label -- not the original adapter name list). Keep
-	// the prior state's value so subsequent plans don't show phantom diffs.
+	// net_adapter_names isn't reconstructible from Get-VMSwitch's output; keep the prior state's value to avoid phantom diffs.
 	newState := modelFromVMSwitch(ctx, sw, state.NetAdapterNames, state.ForceManagementOSMigration, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
@@ -246,7 +242,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 }
 
 // Update runs set.ps1 with the plan's mutable attributes (net_adapter_names,
-// allow_management_os, notes) and writes the post-update read shape back.
+// allow_management_os, notes) and writes the post-update read result back.
 //
 // switch_type is taken from STATE -- the schema marks it RequiresReplace, so
 // any change there forces destroy+recreate rather than reaching Update --
@@ -286,23 +282,15 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Delete runs remove.ps1. ErrNotFound is treated as success -- the switch
-// is already gone, no need to error.
-//
-// Pre-flight: External + AllowManagementOS=true triggers an asynchronous
-// IP migration back to the physical NIC during teardown. If the SSH
-// session traverses the switch's vNIC, a mid-migration drop can leave
-// the host LAN-unreachable -- recoverable only via console / IPMI.
-// The force_management_os_migration attribute is the operator's
-// acknowledgement; without it, refuse the destroy with a clear error
-// so the user picks a safer path (console session, NAT-first topology,
-// or explicit opt-in).
-//
-// This pre-flight is config-aware (state.ForceManagementOSMigration)
-// rather than network-topology-aware: detecting whether the SSH
-// session's source IP lies inside the vNIC subnet from inside the
-// provider would require introspection across heterogeneous backends
-// (local/SSH/WinRM). The flag is the simpler, explicit handshake.
+// Delete runs remove.ps1; ErrNotFound is success. An External switch
+// with AllowManagementOS=true triggers an asynchronous IP migration
+// back to the physical NIC during teardown; if the SSH session
+// traverses this switch's vNIC, a mid-migration drop can leave the
+// host LAN-unreachable, recoverable only via console or IPMI. Destroy
+// refuses without force_management_os_migration as the operator's
+// explicit acknowledgement, since detecting the actual network
+// topology from inside the provider would need cross-backend
+// introspection this flag sidesteps.
 func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -394,11 +382,7 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 		diags.Append(plan.NetAdapterNames.ElementsAs(ctx, &names, false)...)
 		in.NetAdapterNames = names
 	}
-	// Don't forward allow_management_os for Private/NAT switches. The
-	// attribute is Optional+Computed, so plan carries the prior-state value
-	// (false on Private/NAT since there's no toggle) even when the user
-	// never set it -- forwarding it would trip set.ps1's "not valid"
-	// guards on every Update of a non-External switch.
+	// Not forwarded for Private/NAT: plan carries the prior-state value even when unset, which would trip set.ps1's guard.
 	stateType := state.SwitchType.ValueString()
 	if stateType != "Private" && stateType != "NAT" &&
 		!plan.AllowManagementOS.IsNull() && !plan.AllowManagementOS.IsUnknown() {
@@ -409,10 +393,7 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
-	// NAT updates: every NAT-specific input is RequiresReplace, so the
-	// only in-place mutation that reaches Update for a NAT switch is
-	// Notes. nat_name is carried from state purely as read-back routing
-	// context (set.ps1 uses it to synthesize SwitchType=NAT).
+	// nat_name is read-back routing context only: every other NAT input is RequiresReplace, so only Notes reaches Update.
 	if stateType == "NAT" {
 		in.NatName = state.NatName.ValueString()
 	}
@@ -421,15 +402,13 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetVMSwitchIn
 
 // modelFromVMSwitch hydrates a Model from a typed VMSwitch DTO. Caller
 // supplies the net_adapter_names list separately because that attribute is
-// user intent (config/plan) -- the cmdlet's read shape exposes only
+// user intent (config/plan) -- the cmdlet's read result exposes only
 // NetAdapterInterfaceDescription, which is a friendly label, not the
 // adapter-name list the user originally passed. forceMigration is
 // preserved similarly: it's a destroy-time toggle that doesn't round-trip
 // through the wire, so plan/state carries it.
 func modelFromVMSwitch(ctx context.Context, sw *hyperv.VMSwitch, netAdapterNames types.List, forceMigration types.Bool, diags *diag.Diagnostics) Model {
-	// Preserve the user's net_adapter_names if it's known; fall back to an
-	// empty list when unknown/null so state doesn't end up holding an
-	// unknown value across an apply.
+	// Falls back to an empty list when unknown/null so state never holds an unknown value across an apply.
 	adapterNames := netAdapterNames
 	if adapterNames.IsNull() || adapterNames.IsUnknown() {
 		empty, d := types.ListValueFrom(ctx, types.StringType, []string{})

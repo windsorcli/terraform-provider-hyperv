@@ -64,11 +64,7 @@ func TestCheckNATPrefix(t *testing.T) {
 		},
 		{
 			name: "host-bit form returns canonical equivalent",
-			// The reviewer's example: net.ParseCIDR accepts this as
-			// ip=192.168.100.1, ipnet=192.168.100.0/24, but Windows
-			// New-NetNat rejects host-bit forms. The validator must
-			// surface the canonical equivalent so the operator knows
-			// what to type instead.
+			// net.ParseCIDR accepts this as ip=192.168.100.1, ipnet=192.168.100.0/24; Windows New-NetNat rejects host-bit forms.
 			input:     "192.168.100.1/24",
 			wantIssue: natPrefixIssueHostBits,
 			wantCanon: "192.168.100.0/24",

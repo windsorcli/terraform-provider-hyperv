@@ -305,7 +305,7 @@ func TestBuildSetInput_OmitsAllowManagementOSForPrivate(t *testing.T) {
 }
 
 // modelFromVMSwitch must take net_adapter_names from the caller, not the
-// script's read shape -- the cmdlet's NetAdapterInterfaceDescription is a
+// script's read result: the cmdlet's NetAdapterInterfaceDescription is a
 // friendly NIC label, not the original adapter-name list the user passed.
 // Caller-supplied list is the only source of truth for that attribute.
 func TestModelFromVMSwitch_PreservesNetAdapterNames(t *testing.T) {
@@ -375,7 +375,7 @@ func TestModelFromVMSwitch_FillsEmptyListForUnknownNames(t *testing.T) {
 }
 
 // NAT plan threads nat_name / nat_internal_address_prefix / nat_host_address
-// into the wire shape. The script-side NAT branch reads each by snake_case
+// into the wire format. The script-side NAT branch reads each by snake_case
 // key; missing any of the three for a NAT switch is a contract violation
 // the Go-side validator already catches at plan time.
 func TestBuildNewInput_NATForwardsAllNATFields(t *testing.T) {
@@ -474,7 +474,7 @@ func TestBuildSetInput_OmitsAllowManagementOSForNAT(t *testing.T) {
 	}
 }
 
-// modelFromVMSwitch hydrates NAT fields when the wire shape carries them
+// modelFromVMSwitch hydrates NAT fields when the wire format carries them
 // (NAT switches), and leaves them null for non-NAT switches (empty wire
 // strings). Locking this round-trip keeps the schema's Optional+Computed
 // NAT attributes from drifting between the typed-client and resource
@@ -514,8 +514,7 @@ func TestModelFromVMSwitch_NullsNatFieldsForNonNAT(t *testing.T) {
 		Name:       "ext0",
 		SwitchType: "External",
 		ID:         "guid-here",
-		// NAT fields all empty (the script emits empty strings for
-		// non-NAT switches).
+		// NAT fields all empty: the script emits empty strings for non-NAT switches.
 	}
 
 	var diags diag.Diagnostics

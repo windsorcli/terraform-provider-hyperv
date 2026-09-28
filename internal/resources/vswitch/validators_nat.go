@@ -159,7 +159,7 @@ func (v natAttrsRejectedOnNonNatValidator) ValidateResource(ctx context.Context,
 		!data.NatHostAddress.IsNull() && !data.NatHostAddress.IsUnknown())
 }
 
-// natPrefixIssue identifies which CIDR-shape rule a candidate
+// natPrefixIssue identifies which CIDR-format rule a candidate
 // nat_internal_address_prefix failed. natPrefixOK means the prefix is
 // usable as-is.
 type natPrefixIssue int
@@ -182,8 +182,10 @@ type natPrefixCheckResult struct {
 	Canonical string // populated when Issue == natPrefixIssueHostBits (the ipnet.String() form)
 }
 
-// checkNATPrefix runs the CIDR-shape rules for nat_internal_address_prefix
-// in order and returns the first one that fails (or natPrefixOK).
+// checkNATPrefix runs the CIDR rules for nat_internal_address_prefix in
+// order and returns the first one that fails (or natPrefixOK). Pure
+// function so unit tests pin each rule without constructing a
+// tfsdk.Config to drive the validator end-to-end.
 //
 // Rules:
 //  1. Parseable as CIDR.
@@ -193,8 +195,7 @@ type natPrefixCheckResult struct {
 //  4. Canonical network-address form: net.ParseCIDR accepts host-bit
 //     forms like "192.168.100.1/24"; Windows New-NetNat rejects them.
 //
-// Pure function so unit tests pin each rule without constructing a
-// tfsdk.Config to drive the validator end-to-end.
+// lint:allow-long-comment
 func checkNATPrefix(prefix string) natPrefixCheckResult {
 	ip, ipnet, err := net.ParseCIDR(prefix)
 	if err != nil {
@@ -306,15 +307,14 @@ func (v natHostAddressInPrefixValidator) ValidateResource(ctx context.Context, r
 		)
 		return
 	}
-	// Skip the in-prefix check if the prefix is missing/unknown -- the
-	// other validator already surfaces a diagnostic in that case.
+	// Skips when prefix is missing/unknown; the other validator already surfaces that diagnostic.
 	if data.NatInternalAddressPrefix.IsNull() || data.NatInternalAddressPrefix.IsUnknown() {
 		return
 	}
 	prefix := strings.TrimSpace(data.NatInternalAddressPrefix.ValueString())
 	_, ipnet, err := net.ParseCIDR(prefix)
 	if err != nil {
-		// natPrefixCIDRValidator surfaces the prefix-shape diagnostic.
+		// natPrefixCIDRValidator surfaces the prefix-format diagnostic.
 		return
 	}
 	if !ipnet.Contains(ip) {
@@ -327,18 +327,15 @@ func (v natHostAddressInPrefixValidator) ValidateResource(ctx context.Context, r
 	}
 }
 
-// forceMigrationRejectedOnNonExternalValidator: force_management_os_migration
-// is meaningful only for External + allow_management_os = true destroy
-// paths. The Delete gate keys on switch_type == "External" explicitly, so
-// setting it on NAT / Internal / Private is a silent no-op. Worse, the
-// specific scenario where a user sets it on a NAT switch then mutates
-// the value triggers Update with no other diff, which set.ps1 surfaces
-// as "requires at least one mutable attribute (notes)" -- a confusing
-// error masking the real problem (the attribute does not apply).
-//
-// Symmetric with natRejectsNonNatAttrsValidator and privateAllowMgmtOSValidator
-// in shape: catch the misconfiguration at plan time with a clear,
-// attribute-anchored diagnostic.
+// forceMigrationRejectedOnNonExternalValidator catches
+// force_management_os_migration set on a non-External switch, where
+// it's a silent no-op (Delete's gate keys on switch_type ==
+// "External" explicitly). Worse, changing it alone on a NAT switch
+// triggers an Update with no real diff, which set.ps1 rejects as
+// "requires at least one mutable attribute (notes)": a confusing error
+// that masks the actual problem. Same pattern as
+// natRejectsNonNatAttrsValidator and privateAllowMgmtOSValidator: a
+// clear, attribute-anchored diagnostic at plan time.
 type forceMigrationRejectedOnNonExternalValidator struct{}
 
 func (v forceMigrationRejectedOnNonExternalValidator) Description(_ context.Context) string {
