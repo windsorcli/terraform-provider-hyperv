@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -591,5 +592,45 @@ func TestSSH_NewSSHZerosCredentialBytes(t *testing.T) {
 		if b != 0 {
 			t.Errorf("privateKey[%d] = %d, want 0", i, b)
 		}
+	}
+}
+
+// Must return promptly on ctx cancellation even when done never fires.
+func TestWaitForDone_ReturnsOnCtxCancelEvenIfDoneNeverFires(t *testing.T) {
+	t.Parallel()
+
+	done := make(chan error) // never sent to
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	var closed atomic.Bool
+	start := time.Now()
+	err := waitForDone(ctx, done, func() { closed.Store(true) })
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("waitForDone took %v after a 50ms ctx; it blocked on the drain", elapsed)
+	}
+	if !closed.Load() {
+		t.Error("close callback was not invoked on ctx cancellation")
+	}
+}
+
+// Must return the done result, not ctx.Err(), when done fires first.
+func TestWaitForDone_ReturnsDoneResultBeforeCtxExpires(t *testing.T) {
+	t.Parallel()
+
+	done := make(chan error, 1)
+	sentinel := errors.New("run failed")
+	done <- sentinel
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := waitForDone(ctx, done, func() { t.Error("close callback should not run") }); !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want %v", err, sentinel)
 	}
 }

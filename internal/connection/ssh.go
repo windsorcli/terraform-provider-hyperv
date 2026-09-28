@@ -744,20 +744,22 @@ func splitRemotePath(p string) (dir, name string) {
 	return norm[:idx], norm[idx+1:]
 }
 
-// runSessionWithCtx wraps session.Run with ctx-cancel propagation. Cancel
-// triggers a session.Close which causes the remote process to receive
-// SIGHUP / connection-closed and exit; session.Run returns a transport
-// error that the caller maps to ErrTimeout via ctx.Err() check.
+// runSessionWithCtx runs cmd, returning ctx.Err() if ctx is canceled first.
 func runSessionWithCtx(ctx context.Context, session *ssh.Session, cmd string) error {
 	done := make(chan error, 1)
 	go func() { done <- session.Run(cmd) }()
+	return waitForDone(ctx, done, func() { _ = session.Close() })
+}
 
+// waitForDone drains done in the background on cancel instead of blocking on
+// it -- closeFn can't force an unblock over a wedged transport.
+func waitForDone(ctx context.Context, done <-chan error, closeFn func()) error {
 	select {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		_ = session.Close()
-		<-done // drain the run goroutine
+		closeFn()
+		go func() { <-done }()
 		return ctx.Err()
 	}
 }
