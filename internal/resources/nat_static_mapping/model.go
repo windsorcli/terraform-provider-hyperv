@@ -12,12 +12,11 @@ import (
 
 // Model is the tfsdk-bound struct backing the resource state. Field
 // tags align with schema.go attribute names; conversion to/from the
-// typed hyperv.NatStaticMapping DTO lives in resource.go.
-//
-// Lookup tuple (NatName, Protocol, ExternalIP, ExternalPort) is
-// RequiresReplace at the schema layer -- it identifies the mapping
-// uniquely and Hyper-V has no rename. internal_ip / internal_port and
-// the firewall sub-attributes are in-place mutable.
+// typed hyperv.NatStaticMapping DTO lives in resource.go. The lookup
+// tuple (NatName, Protocol, ExternalIP, ExternalPort) is RequiresReplace
+// at the schema layer, since it identifies the mapping uniquely and
+// Hyper-V has no rename; internal_ip / internal_port and the firewall
+// sub-attributes are in-place mutable.
 type Model struct {
 	ID            types.String `tfsdk:"id"`
 	NatName       types.String `tfsdk:"nat_name"`

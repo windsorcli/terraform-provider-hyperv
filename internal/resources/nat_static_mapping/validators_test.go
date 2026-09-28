@@ -9,12 +9,11 @@ import (
 )
 
 // TestIPv4Validator pins the rule that external_ip / internal_ip are
-// rejected at plan time unless they parse as dotted-quad IPv4. Without
-// the validator a malformed value reaches Add-NetNatStaticMapping and
-// fails with an opaque remote error.
-//
-// Null and unknown short-circuit per framework convention -- Required
-// vs Optional gating is elsewhere, and unknowns get re-validated when
+// rejected at plan time unless they parse as dotted-quad IPv4, since
+// without the validator a malformed value reaches
+// Add-NetNatStaticMapping and fails with an opaque remote error. Null
+// and unknown short-circuit per framework convention: Required vs
+// Optional gating is elsewhere, and unknowns get re-validated when
 // they resolve to known values.
 func TestIPv4Validator(t *testing.T) {
 	t.Parallel()

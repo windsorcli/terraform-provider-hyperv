@@ -4,14 +4,13 @@ package vswitch
 
 import "github.com/hashicorp/terraform-plugin-framework/types"
 
-// Model is the tfsdk-bound struct backing the resource state. Field tags
-// align with schema.go attribute names; conversion to/from the typed
-// hyperv.VMSwitch DTO lives in resource.go.
-//
-// NAT fields (NatName, NatInternalAddressPrefix, NatHostAddress) are
-// required when SwitchType == "NAT" and rejected on other types via the
-// resource-layer validators. ForceManagementOSMigration is opt-in for
-// External-switch destroy paths -- see resource.go.
+// Model is the tfsdk-bound struct backing the resource state. Field
+// tags align with schema.go attribute names; conversion to/from the
+// typed hyperv.VMSwitch DTO lives in resource.go. NAT fields (NatName,
+// NatInternalAddressPrefix, NatHostAddress) are required when
+// SwitchType == "NAT" and rejected on other types via the
+// resource-layer validators; ForceManagementOSMigration is opt-in for
+// External-switch destroy paths (see resource.go).
 type Model struct {
 	ID                             types.String `tfsdk:"id"`
 	Name                           types.String `tfsdk:"name"`
