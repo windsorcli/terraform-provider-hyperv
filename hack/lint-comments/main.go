@@ -44,7 +44,6 @@ type bannedPattern struct {
 // from a punctuation swap, and the swap alone is worse than no fix. Catch
 // those in review against the technical-writing skill instead.
 var bannedPatterns = []bannedPattern{
-	{regexp.MustCompile(`#\d+\b`), "references a PR/issue number"},
 	{regexp.MustCompile(`(?i)\bpreviously\b`), "narrates history instead of current behavior"},
 	{regexp.MustCompile(`(?i)\bused to\b`), "narrates history instead of current behavior"},
 	{regexp.MustCompile(`docs/PLAN\.md`), "links a gitignored maintainer-only doc"},
@@ -57,6 +56,28 @@ type violation struct {
 	path   string
 	line   int
 	reason string
+}
+
+var issueRefPattern = regexp.MustCompile(`(\w+)?[ \t]*#(\d+)\b`)
+
+// ordinalWords precede "#N" as an enumerator, not a PR/issue citation
+// (e.g. "option #1", "Step #2"); RE2 has no lookbehind, so
+// referencesIssueNumber filters on the captured word instead.
+var ordinalWords = map[string]bool{
+	"step": true, "option": true, "item": true, "case": true,
+	"slot": true, "phase": true, "priority": true, "line": true,
+	"figure": true, "table": true, "note": true, "rule": true,
+}
+
+// referencesIssueNumber reports whether text cites a PR or issue
+// number, as opposed to an ordinal like "step #2".
+func referencesIssueNumber(text string) bool {
+	for _, m := range issueRefPattern.FindAllStringSubmatch(text, -1) {
+		if !ordinalWords[strings.ToLower(m[1])] {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
@@ -122,6 +143,9 @@ func isExemptLine(text string) bool {
 
 func checkBanned(path string, lineNo int, text string) []violation {
 	var violations []violation
+	if referencesIssueNumber(text) {
+		violations = append(violations, violation{path: path, line: lineNo, reason: "references a PR/issue number"})
+	}
 	for _, bp := range bannedPatterns {
 		if bp.re.MatchString(text) {
 			violations = append(violations, violation{path: path, line: lineNo, reason: bp.reason})
