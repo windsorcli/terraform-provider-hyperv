@@ -36,13 +36,27 @@ before authoring a new title.
 
 ## Code comments
 
-- **Length**: package doc ≤ 3 lines. Exported type/func doc: one summary
-  sentence, plus up to two more only for a non-obvious contract — 6
-  lines hard cap. Field or inline comment: 1 line, never wrapped.
-- **Wire-contract exception**: a block documenting an external format
-  (a script's stdin/stdout JSON shape, a wire protocol) is reference
-  data, not prose, and is exempt from the length cap. Mark it by making
-  `lint:allow-long-comment` the block's first line.
+- **Length**: package doc ≤ 3 lines. A doc comment on an exported
+  type/func, or on a field guarding a real invariant (a lock's scope,
+  an ordering requirement): one summary sentence, plus up to two more
+  only for that invariant — 6 lines hard cap. Everything else inline:
+  1 line, never wrapped. `task lint:comments` enforces a flat 10-line
+  backstop on a doc comment (it can't tell which of the sub-caps above
+  applies), so treat those as the actual target, not the ceiling.
+- **A comment inside a function body: one line, always.** No exception,
+  no escape hatch — not even the wire-contract one below. A doc comment
+  sitting right above a multi-line internal comment at the top of the
+  same function is its own smell: say the thing once, in the doc
+  comment, not twice. If a line of code needs more than one line of
+  explanation, that's a sign that the WHY belongs in the doc comment
+  above the function, in a well-named helper extracted from that
+  section, or in the commit message.
+- **Wire-contract exception**: a *doc* comment documenting an external
+  format (a script's stdin/stdout JSON contract, a wire protocol) is
+  reference data, not prose, and is exempt from the length cap. Mark it
+  by making `lint:allow-long-comment` the block's last line, so it
+  doesn't become the godoc synopsis for an exported identifier. This
+  exception never applies inside a function body.
 - **One job per comment.** A struct comment covering five different
   concerns is a sign each concern belongs on the field it explains, not
   in a preamble above the type.
@@ -51,10 +65,17 @@ before authoring a new title.
   its history — put history in the commit message.
 - **No `docs/PLAN.md` / `docs/spikes/` / `docs/adr/` references** — see
   above; paraphrase the finding instead.
+- **No lazy stand-in words.** `shape` is this repo's worst offender —
+  say format, structure, contract, schema, or layout instead, whichever
+  one is actually true. The `technical-writing` skill's §13 catalog
+  (leverage, seamless, robust, ensure, essentially, and the rest) is the
+  general list; this repo adds `shape` to it.
 
-`task lint:comments` (`hack/lint-comments`) enforces the length cap and
-the two bullets above; it runs in CI. Its only override is the
-`lint:allow-long-comment` marker on a wire-contract block — if a comment
+`task lint:comments` (`hack/lint-comments`) enforces the four bullets
+above; it runs in CI. For `*.go` files it parses the AST to tell a doc
+comment from a function-body comment, so the one-line body rule is
+exact, not a heuristic. Its only override is the `lint:allow-long-comment`
+marker on a doc comment — if a body comment or an unmarked doc comment
 still needs an exception, shorten it instead.
 
 Two rules above don't have a mechanical check and won't get one:

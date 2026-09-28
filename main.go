@@ -39,21 +39,12 @@ func main() {
 		Debug:   debug,
 	}
 
-	// Cancel rootCtx on SIGINT/SIGTERM so providerserver.Serve unwinds
-	// cleanly. Pair with provider.CloseActive() to send SSH_MSG_DISCONNECT
-	// before the process exits -- otherwise an orphaned plugin (terraform
-	// parent died via Ctrl-C, OOM, or panic, and forwarded SIGTERM to
-	// children) would hold the bench-side OpenSSH MaxSessions slot until
-	// SO_KEEPALIVE timeouts reap the half-open socket. SIGKILL is
-	// unreachable -- nothing in userspace can clean up after that.
+	// CloseActive on this signal path sends SSH_MSG_DISCONNECT so an orphaned plugin doesn't hold a bench SSH slot.
 	rootCtx, stop := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Belt-and-suspenders: close backends from a goroutine the moment
-	// the signal lands, then force-exit at shutdownGrace if Serve's
-	// own gRPC drain hangs. The deferred CloseActive below covers the
-	// normal-return path for graceful Serve exits.
+	// Force-exit at shutdownGrace if Serve's own gRPC drain hangs after the signal.
 	go func() {
 		<-rootCtx.Done()
 		provider.CloseActive()
@@ -62,8 +53,7 @@ func main() {
 
 	err := providerserver.Serve(rootCtx, provider.New(version), opts)
 	provider.CloseActive()
-	// context.Canceled here is the signal-driven exit path -- not an
-	// error. Anything else (real Serve failure) still surfaces.
+	// context.Canceled is the signal-driven exit path, not a real error.
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err.Error())
 	}

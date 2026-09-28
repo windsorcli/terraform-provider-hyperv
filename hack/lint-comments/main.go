@@ -1,16 +1,21 @@
 // Comment-style gate for CLAUDE.md's code-comment rules. Flags overlong
-// comment blocks and phrases the rules ban outright (PR/issue references,
-// "previously"/"used to" narration, links to gitignored maintainer docs,
-// "--" used as a dash). Run via `task lint:comments`.
+// comment blocks, multi-line comments inside a function body, and
+// banned phrases: PR/issue references, historical narration, and links
+// to gitignored maintainer docs. Run via `task lint:comments`.
 //
-// A block that's genuinely reference data (a wire contract, a JSON shape)
-// rather than prose is exempt from the length check if its first line,
-// stripped of the comment marker, is exactly "lint:allow-long-comment".
+// A doc comment that's genuinely reference data (a wire contract, a
+// JSON schema) is exempt from the length check if one of its lines,
+// stripped of the marker, reads exactly "lint:allow-long-comment",
+// placed last so it doesn't become the godoc synopsis. There's no such
+// exemption inside a function body: those are capped at one line, always.
 package main
 
 import (
 	"bufio"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,6 +50,7 @@ var bannedPatterns = []bannedPattern{
 	{regexp.MustCompile(`docs/PLAN\.md`), "links a gitignored maintainer-only doc"},
 	{regexp.MustCompile(`docs/spikes`), "links a gitignored maintainer-only doc"},
 	{regexp.MustCompile(`docs/adr`), "links a gitignored maintainer-only doc"},
+	{regexp.MustCompile(`(?i)\bshape\b`), `"shape" is a lazy stand-in; name the actual noun (format, structure, contract, schema, layout)`},
 }
 
 type violation struct {
@@ -71,12 +77,15 @@ func main() {
 				}
 				return nil
 			}
+			var fileViolations []violation
 			switch filepath.Ext(path) {
-			case ".go", ".ps1":
+			case ".go":
+				fileViolations, err = lintGoFile(path)
+			case ".ps1":
+				fileViolations, err = lintPS1File(path)
 			default:
 				return nil
 			}
-			fileViolations, err := lintFile(path)
 			if err != nil {
 				return err
 			}
@@ -105,12 +114,103 @@ func main() {
 	}
 }
 
-func lintFile(path string) ([]violation, error) {
-	marker := "//"
-	if filepath.Ext(path) == ".ps1" {
-		marker = "#"
+func isExemptLine(text string) bool {
+	text = strings.TrimPrefix(text, "//")
+	text = strings.TrimPrefix(text, "#")
+	return strings.TrimSpace(text) == "lint:allow-long-comment"
+}
+
+func checkBanned(path string, lineNo int, text string) []violation {
+	var violations []violation
+	for _, bp := range bannedPatterns {
+		if bp.re.MatchString(text) {
+			violations = append(violations, violation{path: path, line: lineNo, reason: bp.reason})
+		}
+	}
+	return violations
+}
+
+// lintGoFile parses path's AST so it can tell a doc comment (attached to
+// a package, type, func, var, or field) from a comment inside a function
+// or closure body. Doc comments get the shared length backstop and its
+// escape hatch; body comments are capped at one line, no exceptions.
+func lintGoFile(path string) ([]violation, error) {
+	fset := token.NewFileSet()
+	astFile, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return nil, err
 	}
 
+	var bodies []*ast.BlockStmt
+	ast.Inspect(astFile, func(n ast.Node) bool {
+		switch fn := n.(type) {
+		case *ast.FuncDecl:
+			if fn.Body != nil {
+				bodies = append(bodies, fn.Body)
+			}
+		case *ast.FuncLit:
+			if fn.Body != nil {
+				bodies = append(bodies, fn.Body)
+			}
+		}
+		return true
+	})
+	inBody := func(pos token.Pos) bool {
+		for _, b := range bodies {
+			if pos > b.Lbrace && pos < b.Rbrace {
+				return true
+			}
+		}
+		return false
+	}
+
+	var violations []violation
+	for _, cg := range astFile.Comments {
+		var lines []string
+		var lineNos []int
+		for _, c := range cg.List {
+			for i, l := range strings.Split(c.Text, "\n") {
+				lines = append(lines, l)
+				lineNos = append(lineNos, fset.Position(c.Slash).Line+i)
+			}
+		}
+		if len(lines) == 0 {
+			continue
+		}
+
+		if inBody(cg.Pos()) {
+			if len(lines) > 1 {
+				violations = append(violations, violation{
+					path:   path,
+					line:   lineNos[0],
+					reason: fmt.Sprintf("comment inside a function body is %d lines; one line max, always", len(lines)),
+				})
+			}
+		} else {
+			exempt := false
+			for _, l := range lines {
+				if isExemptLine(l) {
+					exempt = true
+					break
+				}
+			}
+			if !exempt && len(lines) > maxBlockLines {
+				violations = append(violations, violation{
+					path:   path,
+					line:   lineNos[0],
+					reason: fmt.Sprintf("comment block is %d lines (max %d); add a %q line (last line, so it doesn't become the godoc synopsis) if this is reference data, not prose", len(lines), maxBlockLines, "lint:allow-long-comment"),
+				})
+			}
+		}
+
+		for i, l := range lines {
+			violations = append(violations, checkBanned(path, lineNos[i], l)...)
+		}
+	}
+	return violations, nil
+}
+
+func lintPS1File(path string) ([]violation, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -125,24 +225,22 @@ func lintFile(path string) ([]violation, error) {
 		if len(block) == 0 {
 			return
 		}
-		exempt := strings.TrimSpace(strings.TrimPrefix(block[0], marker)) == "lint:allow-long-comment"
+		exempt := false
+		for _, line := range block {
+			if isExemptLine(line) {
+				exempt = true
+				break
+			}
+		}
 		if !exempt && len(block) > maxBlockLines {
 			violations = append(violations, violation{
 				path:   path,
 				line:   blockStart,
-				reason: fmt.Sprintf("comment block is %d lines (max %d); add %q as the block's first line if this is reference data, not prose", len(block), maxBlockLines, "lint:allow-long-comment"),
+				reason: fmt.Sprintf("comment block is %d lines (max %d); add a %q line (last line) if this is reference data, not prose", len(block), maxBlockLines, "lint:allow-long-comment"),
 			})
 		}
 		for i, line := range block {
-			for _, bp := range bannedPatterns {
-				if bp.re.MatchString(line) {
-					violations = append(violations, violation{
-						path:   path,
-						line:   blockStart + i,
-						reason: bp.reason,
-					})
-				}
-			}
+			violations = append(violations, checkBanned(path, blockStart+i, line)...)
 		}
 		block = nil
 	}
@@ -152,9 +250,8 @@ func lintFile(path string) ([]violation, error) {
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, marker) && !strings.HasPrefix(trimmed, "#!") && !strings.HasPrefix(trimmed, "#Requires") {
+		trimmed := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "#!") && !strings.HasPrefix(trimmed, "#Requires") {
 			if len(block) == 0 {
 				blockStart = lineNo
 			}
