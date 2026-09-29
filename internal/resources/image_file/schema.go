@@ -315,8 +315,9 @@ func resourceSchema() schema.Schema {
 					"when the VM is also being destroyed in a subsequent apply, the usual reason " +
 					"to set this flag; set it only on image files whose VM consumers are " +
 					"themselves transient or being torn down.\n\n" +
-					"No-op for `host_path` mode, where destroy already never deleted the file. " +
-					"Toggling this flag never forces replacement.",
+					"No-op for `host_path` mode, where destroy already never deleted the file, " +
+					"and no-op whenever `keep_on_destroy` is `true`, since that skips the " +
+					"delete entirely. Toggling this flag never forces replacement.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
