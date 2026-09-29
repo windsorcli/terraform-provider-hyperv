@@ -309,6 +309,7 @@ To change `notes`, write a different non-empty value. To remove notes from a VM,
 
 **Order is host-driven and not stable across VM restarts.** Hyper-V's per-NIC, per-IP order can shuffle on a reboot or when a NIC re-acquires a DHCP lease, so downstream resources that reference `hyperv_vm.web.ip_addresses[0]` may see the value flip when the host happens to surface a different IP first, planning a spurious update. **Index into this list only when the VM is single-NIC, single-IP and the user trusts that contract operationally.** Multi-homed VMs should use the per-NIC `network_adapter[*].ip_addresses` view instead -- it pins the NIC selector by deterministic display `name`, eliminating the cross-NIC ordering ambiguity. The List-vs-Set trade-off here is intentional: indexing is the dominant single-IP use case, and the type may flip to `Set` in a future major release if multi-homed users surface real pain.
 - `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
+- `vm_id` (String) Hyper-V's own VM identifier (`(Get-VM).Id`), a GUID assigned fresh by `New-VM` on every create. Unlike `id` -- which mirrors `name` and only changes on a rename -- `vm_id` changes on any replace, including one not caused by a rename (e.g. a `generation` change). Use it, not `id`, to detect "this VM was replaced" downstream (e.g. a `replace_triggered_by` on a dependent resource).
 
 <a id="nestedatt--cpu"></a>
 ### Nested Schema for `cpu`

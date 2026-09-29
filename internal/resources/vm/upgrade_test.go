@@ -432,3 +432,50 @@ func TestUpgradeStateRegistration_V4Entry(t *testing.T) {
 		t.Error("UpgradeState[4].StateUpgrader: got nil, want non-nil migration func")
 	}
 }
+
+// TestUpgradeV5ToV6_PopulatesNullVMID pins the only v5 -> v6 schema
+// change: vm_id lands null after migration since v5 state files carry
+// no Hyper-V VM GUID; the next refresh fills it from the host. Every
+// other field carries through unchanged.
+func TestUpgradeV5ToV6_PopulatesNullVMID(t *testing.T) {
+	prior := priorModelV5{
+		ID:                 types.StringValue("vm01"),
+		Name:               types.StringValue("vm01"),
+		Generation:         types.Int64Value(2),
+		CPU:                &CPUModel{Count: types.Int64Value(2)},
+		Memory:             &MemoryModel{StartupBytes: types.Int64Value(4294967296)},
+		SecureBoot:         types.BoolValue(true),
+		SecureBootTemplate: types.StringValue("MicrosoftWindows"),
+		Notes:              types.StringNull(),
+		Path:               types.StringValue("C:/foo"),
+	}
+
+	got := upgradeV5ToV6(t.Context(), prior)
+
+	if !got.VMID.IsNull() {
+		t.Errorf("VMID = %+v, want null (next refresh fills from host)", got.VMID)
+	}
+	if got.ID.ValueString() != "vm01" {
+		t.Errorf("ID: got %q, want vm01 (carries through unchanged)", got.ID.ValueString())
+	}
+	if got.SecureBootTemplate.ValueString() != "MicrosoftWindows" {
+		t.Errorf("SecureBootTemplate: got %q, want MicrosoftWindows (carries through unchanged)",
+			got.SecureBootTemplate.ValueString())
+	}
+}
+
+// TestUpgradeStateRegistration_V5Entry verifies the v5 upgrader is
+// registered alongside the v0/v1/v2/v3/v4 ones.
+func TestUpgradeStateRegistration_V5Entry(t *testing.T) {
+	r := &Resource{}
+	upgraders := r.UpgradeState(t.Context())
+	if _, ok := upgraders[5]; !ok {
+		t.Fatalf("UpgradeState: missing v5 upgrader; got versions %+v", keysOf(upgraders))
+	}
+	if upgraders[5].PriorSchema == nil {
+		t.Error("UpgradeState[5].PriorSchema: got nil, want priorSchemaV5()")
+	}
+	if upgraders[5].StateUpgrader == nil {
+		t.Error("UpgradeState[5].StateUpgrader: got nil, want non-nil migration func")
+	}
+}

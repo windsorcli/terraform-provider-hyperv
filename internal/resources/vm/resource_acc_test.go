@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-testing/compare"
 	"github.com/hashicorp/terraform-plugin-testing/config"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
@@ -40,6 +41,8 @@ const (
 func TestAcc_VM_basic(t *testing.T) {
 	name := acctest.RandomName("vm-basic")
 	client := acctest.NewClient(t)
+	// Shared across both steps: each AddStateValue call records one step's value.
+	vmIDStable := statecheck.CompareValue(compare.ValuesSame())
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { acctest.PreCheck(t) },
@@ -74,6 +77,12 @@ func TestAcc_VM_basic(t *testing.T) {
 						tfjsonpath.New("notes"),
 						knownvalue.StringExact("initial notes"),
 					),
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("vm_id"),
+						knownvalue.NotNull(),
+					),
+					vmIDStable.AddStateValue("hyperv_vm.test", tfjsonpath.New("vm_id")),
 				},
 			},
 			{
@@ -90,6 +99,8 @@ func TestAcc_VM_basic(t *testing.T) {
 						tfjsonpath.New("name"),
 						knownvalue.StringExact(name),
 					),
+					// vm_id is UseStateForUnknown: an in-place notes update must not touch it.
+					vmIDStable.AddStateValue("hyperv_vm.test", tfjsonpath.New("vm_id")),
 				},
 			},
 			{
@@ -101,6 +112,57 @@ func TestAcc_VM_basic(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAcc_VM_vmIDChangesAcrossRenamelessReplace pins the reason
+// vm_id exists: secure_boot_template forces a replace without
+// changing `name`, so `id` (which mirrors name) reads identically
+// across both steps while `vm_id` -- Hyper-V's own GUID, fresh on
+// every New-VM call -- must differ.
+func TestAcc_VM_vmIDChangesAcrossRenamelessReplace(t *testing.T) {
+	name := acctest.RandomName("vm-vmid-replace")
+	client := acctest.NewClient(t)
+	idStable := statecheck.CompareValue(compare.ValuesSame())
+	vmIDDiffers := statecheck.CompareValue(compare.ValuesDiffer())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				Config: vmSecureBootTemplateConfig(name, "MicrosoftWindows"),
+				ConfigStateChecks: []statecheck.StateCheck{
+					idStable.AddStateValue("hyperv_vm.test", tfjsonpath.New("id")),
+					vmIDDiffers.AddStateValue("hyperv_vm.test", tfjsonpath.New("vm_id")),
+				},
+			},
+			{
+				Config: vmSecureBootTemplateConfig(name, "MicrosoftUEFICertificateAuthority"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("hyperv_vm.test", plancheck.ResourceActionReplace),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					idStable.AddStateValue("hyperv_vm.test", tfjsonpath.New("id")),
+					vmIDDiffers.AddStateValue("hyperv_vm.test", tfjsonpath.New("vm_id")),
+				},
+			},
+		},
+	})
+}
+
+func vmSecureBootTemplateConfig(name, template string) string {
+	return fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name                  = %q
+  generation            = 2
+  cpu                   = { count = 2 }
+  memory                = { startup_bytes = %d }
+  secure_boot_template  = %q
+}
+`, name, vmMinimumMemoryBytes, template)
 }
 
 // TestAcc_VM_withDvdDrive exercises the inline dvd_drive list across
