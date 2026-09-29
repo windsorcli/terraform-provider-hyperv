@@ -15,4 +15,4 @@ packages:
   - name: goreleaser/goreleaser@v2.18.2
   - name: securego/gosec@v2.29.0
   - name: hashicorp/terraform@v1.16.4
-  - name: mikefarah/yq@v4.53.6
+  - name: mikefarah/yq@v4.54.1
