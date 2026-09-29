@@ -185,7 +185,8 @@ func resourceSchema() schema.Schema {
 					"its hash, and renames it into place. For example, " +
 					"`content_base64 = data.hyperv_iso_volume.cidata.content_base64` wires a " +
 					"runner-side ISO9660 synthesizer directly into this resource without a " +
-					"`local_file` in between. Mutually exclusive with `url` and `local_path`.\n\n" +
+					"`local_file` in between. Mutually exclusive with `url`, `local_path`, and " +
+					"`source_path`.\n\n" +
 					"Changing this to a different payload forces a new resource. A content change " +
 					"with the same `destination_path` and a matching hash does not replace; it " +
 					"passes through as a no-op.",
