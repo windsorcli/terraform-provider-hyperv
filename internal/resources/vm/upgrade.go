@@ -119,6 +119,18 @@ func (r *Resource) UpgradeState(_ context.Context) map[int64]resource.StateUpgra
 				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
+		5: {
+			PriorSchema: ptrSchema(priorSchemaV5()),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior priorModelV5
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				upgraded := upgradeV5ToV6(ctx, prior)
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
 	}
 }
 
@@ -588,6 +600,146 @@ func priorSchemaV4() schema.Schema {
 			"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
 			"path":         schema.StringAttribute{Computed: true},
 		},
+	}
+}
+
+// priorModelV5 mirrors the v5 Model exactly except it lacks the
+// v6-only vm_id field. Every nested type already matches the current
+// Model at v5 (mac_address / vlan_id on NetworkAdapterModel and
+// secure_boot_template both landed in the v4->v5 bump), so this
+// struct reuses them directly.
+type priorModelV5 struct {
+	ID                 types.String `tfsdk:"id"`
+	Name               types.String `tfsdk:"name"`
+	Generation         types.Int64  `tfsdk:"generation"`
+	CPU                *CPUModel    `tfsdk:"cpu"`
+	Memory             *MemoryModel `tfsdk:"memory"`
+	HardDiskDrives     types.List   `tfsdk:"hard_disk_drive"`
+	NetworkAdapters    types.List   `tfsdk:"network_adapter"`
+	DvdDrives          types.List   `tfsdk:"dvd_drive"`
+	BootOrder          types.List   `tfsdk:"boot_order"`
+	SecureBoot         types.Bool   `tfsdk:"secure_boot"`
+	SecureBootTemplate types.String `tfsdk:"secure_boot_template"`
+	Notes              types.String `tfsdk:"notes"`
+	State              *StateModel  `tfsdk:"state"`
+	IPAddresses        types.List   `tfsdk:"ip_addresses"`
+	Path               types.String `tfsdk:"path"`
+}
+
+// priorSchemaV5 mirrors the v5 schema: the v4 attributes plus
+// network_adapter[].{mac_address, vlan_id} and the top-level
+// secure_boot_template, all added in the v4->v5 bump. vm_id is the
+// lone v5->v6 change. Same structure-only rule as priorSchemaV4.
+func priorSchemaV5() schema.Schema {
+	return schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id":         schema.StringAttribute{Computed: true},
+			"name":       schema.StringAttribute{Required: true},
+			"generation": schema.Int64Attribute{Required: true},
+			"cpu": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"count": schema.Int64Attribute{Required: true},
+				},
+			},
+			"memory": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"startup_bytes": schema.Int64Attribute{Required: true},
+					"dynamic":       schema.BoolAttribute{Optional: true, Computed: true},
+					"min_bytes":     schema.Int64Attribute{Optional: true, Computed: true},
+					"max_bytes":     schema.Int64Attribute{Optional: true, Computed: true},
+				},
+			},
+			"hard_disk_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"path":                schema.StringAttribute{CustomType: pathtype.Type, Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"network_adapter": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name":         schema.StringAttribute{Required: true},
+						"switch_name":  schema.StringAttribute{Required: true},
+						"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+						"mac_address":  schema.StringAttribute{CustomType: mactype.Type, Optional: true},
+						"vlan_id":      schema.Int64Attribute{Optional: true},
+					},
+				},
+			},
+			"dvd_drive": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"iso_path":            schema.StringAttribute{CustomType: pathtype.Type, Optional: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Required: true},
+						"controller_location": schema.Int64Attribute{Required: true},
+					},
+				},
+			},
+			"boot_order": schema.ListNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type":                schema.StringAttribute{Required: true},
+						"controller_type":     schema.StringAttribute{Optional: true, Computed: true},
+						"controller_number":   schema.Int64Attribute{Optional: true, Computed: true},
+						"controller_location": schema.Int64Attribute{Optional: true, Computed: true},
+						"name":                schema.StringAttribute{Optional: true, Computed: true},
+					},
+				},
+			},
+			"secure_boot":          schema.BoolAttribute{Optional: true, Computed: true},
+			"secure_boot_template": schema.StringAttribute{Optional: true, Computed: true},
+			"notes":                schema.StringAttribute{Optional: true, Computed: true},
+			"state": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"desired":       schema.StringAttribute{Optional: true},
+					"current":       schema.StringAttribute{Computed: true},
+					"shutdown_mode": schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"ip_addresses": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+			"path":         schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+// upgradeV5ToV6 maps a v5 state struct into the current Model. The
+// only change is vm_id being added; v5 state files carry no Hyper-V
+// VM GUID, so it migrates null and the next refresh populates it
+// from the host.
+func upgradeV5ToV6(_ context.Context, prior priorModelV5) Model {
+	return Model{
+		ID:                 prior.ID,
+		VMID:               types.StringNull(),
+		Name:               prior.Name,
+		Generation:         prior.Generation,
+		CPU:                prior.CPU,
+		Memory:             prior.Memory,
+		HardDiskDrives:     prior.HardDiskDrives,
+		NetworkAdapters:    prior.NetworkAdapters,
+		DvdDrives:          prior.DvdDrives,
+		BootOrder:          prior.BootOrder,
+		SecureBoot:         prior.SecureBoot,
+		SecureBootTemplate: prior.SecureBootTemplate,
+		Notes:              prior.Notes,
+		State:              prior.State,
+		IPAddresses:        prior.IPAddresses,
+		Path:               prior.Path,
 	}
 }
 

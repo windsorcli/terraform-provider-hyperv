@@ -611,6 +611,27 @@ func TestModelFromVM_Gen1SecureBootIsNull(t *testing.T) {
 	}
 }
 
+// TestModelFromVM_VMIDIsHostGUIDNotName confirms vm_id carries the
+// wire Id field (Hyper-V's own VM GUID) while id keeps mirroring
+// Name, so a rename-free replace is still detectable via vm_id.
+func TestModelFromVM_VMIDIsHostGUIDNotName(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(t.Context(), &hyperv.VM{
+		Name:       "vm01",
+		ID:         "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+		Generation: 2,
+		State:      "Off",
+	})
+
+	if got.VMID.ValueString() != "3fa85f64-5717-4562-b3fc-2c963f66afa6" {
+		t.Errorf("VMID: got %q, want the wire Id GUID", got.VMID.ValueString())
+	}
+	if got.ID.ValueString() != "vm01" {
+		t.Errorf("ID: got %q, want vm01 (still mirrors Name)", got.ID.ValueString())
+	}
+}
+
 // TestModelFromVM_EmptyNotesBecomesNull confirms the empty-vs-null
 // collapse for Notes. Without this, omitting `notes` from config would
 // produce a phantom diff every plan (config null vs state "").

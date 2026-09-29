@@ -138,6 +138,7 @@ Changing this forces a new resource; the template is set at create time via `Set
 
 ~> **Note:** Order is host-driven and not stable across VM restarts; a reboot or DHCP lease renewal can change which IP appears first, so indexing `ip_addresses[0]` can plan a spurious update. Index into this list only for a single-NIC, single-IP VM. A multi-homed VM should use the per-NIC `network_adapter[*].ip_addresses` instead, which pins the selector to a NIC's deterministic display `name`.
 - `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
+- `vm_id` (String) Hyper-V's own VM identifier (`(Get-VM).Id`), a GUID assigned fresh by `New-VM` on every create. Unlike `id` -- which mirrors `name` and only changes on a rename -- `vm_id` changes on any replace, including one not caused by a rename (e.g. a `generation` change). Use it, not `id`, to detect "this VM was replaced" downstream (e.g. a `replace_triggered_by` on a dependent resource).
 
 <a id="nestedatt--cpu"></a>
 ### Nested Schema for `cpu`

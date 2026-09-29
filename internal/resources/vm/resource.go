@@ -1041,6 +1041,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 
 	return Model{
 		ID:                 types.StringValue(v.Name),
+		VMID:               types.StringValue(v.ID),
 		Name:               types.StringValue(v.Name),
 		Generation:         types.Int64Value(int64(v.Generation)),
 		CPU:                &CPUModel{Count: types.Int64Value(int64(v.ProcessorCount))},

@@ -75,11 +75,14 @@ func bootOrderObjectAttrTypes() map[string]attr.Type {
 //	    same way. Adding fields to a SingleNestedAttribute changes the
 //	    nested object's tftype, so a v2->v3 upgrader in upgrade.go
 //	    bridges old state by filling the new fields with null.
+//	v6: vm_id added -- Hyper-V's own VM GUID, stable across a rename
+//	    but fresh on every New-VM call, so a replace that doesn't
+//	    change `name` is still detectable.
 //
 // lint:allow-long-comment
 func resourceSchema() schema.Schema {
 	return schema.Schema{
-		Version: 5,
+		Version: 6,
 		MarkdownDescription: "**Requirements:** Membership in the **Hyper-V Administrators** " +
 			"group on the target host, or equivalent rights granted through a JEA endpoint.\n\n" +
 			"Manages a Hyper-V virtual machine: `name`, `generation`, the nested `cpu` and " +
@@ -98,6 +101,17 @@ func resourceSchema() schema.Schema {
 			"id": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Resource identifier, matching `name` since VM names are unique per host.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"vm_id": schema.StringAttribute{
+				Computed: true,
+				MarkdownDescription: "Hyper-V's own VM identifier (`(Get-VM).Id`), a GUID assigned " +
+					"fresh by `New-VM` on every create. Unlike `id` -- which mirrors `name` and only " +
+					"changes on a rename -- `vm_id` changes on any replace, including one not caused " +
+					"by a rename (e.g. a `generation` change). Use it, not `id`, to detect \"this VM " +
+					"was replaced\" downstream (e.g. a `replace_triggered_by` on a dependent resource).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},

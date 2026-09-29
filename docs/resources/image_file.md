@@ -73,14 +73,14 @@ resource "hyperv_image_file" "preplaced_iso" {
 
 ### Optional
 
-- `content_base64` (String, Sensitive) Base64-encoded byte payload to land at `destination_path`. Setting this puts the resource in literal_bytes mode: the provider decodes the payload, streams it to a `.part` sibling of `destination_path`, verifies its hash, and renames it into place. For example, `content_base64 = data.hyperv_iso_volume.cidata.content_base64` wires a runner-side ISO9660 synthesizer directly into this resource without a `local_file` in between. Mutually exclusive with `url` and `local_path`.
+- `content_base64` (String, Sensitive) Base64-encoded byte payload to land at `destination_path`. Setting this puts the resource in literal_bytes mode: the provider decodes the payload, streams it to a `.part` sibling of `destination_path`, verifies its hash, and renames it into place. For example, `content_base64 = data.hyperv_iso_volume.cidata.content_base64` wires a runner-side ISO9660 synthesizer directly into this resource without a `local_file` in between. Mutually exclusive with `url`, `local_path`, and `source_path`.
 
 Changing this to a different payload forces a new resource. A content change with the same `destination_path` and a matching hash does not replace; it passes through as a no-op.
 - `force_destroy` (Boolean) When `true`, `terraform destroy` detaches the file from any Hyper-V VM DVD slot that currently mounts it before removing it from disk. This solves cross-module destroy ordering: when a `hyperv_image_file`, typically a cidata seed, lives in one Terraform state and the `hyperv_vm` that mounts it lives in another, Terraform can't model the dependency, and destroying the image file hits a sharing-violation error naming the VM that still holds it open. With this flag set, the provider detaches the file from each holder and retries the delete; a locked-file error can still surface if the retry fails, for example if antivirus or Explorer holds its own lock.
 
 ~> **Note:** Detaching the DVD slot changes state the `hyperv_vm` resource tracks, so its next refresh surfaces the detached slot as drift. That's fine when the VM is also being destroyed in a subsequent apply, the usual reason to set this flag; set it only on image files whose VM consumers are themselves transient or being torn down.
 
-No-op for `host_path` mode, where destroy already never deleted the file. Toggling this flag never forces replacement.
+No-op for `host_path` mode, where destroy already never deleted the file, and no-op whenever `keep_on_destroy` is `true`, since that skips the delete entirely. Toggling this flag never forces replacement.
 - `keep_on_destroy` (Boolean) When `true`, `terraform destroy` removes this resource from state but leaves the file at `destination_path` on the host. Useful for large vendor artifacts, such as multi-GiB ISOs or sysprepped VHDXs, where a destroy/apply cycle would otherwise re-stream the same bytes every time; re-creating with the same `destination_path` and matching content is a fast no-op. It is also a no-op for `host_path` mode, where destroy already never deleted the file.
 
 ~> **Note:** The bytes outlive the resource, so files accumulate on the host over time if this stays set. There is no provider-level sweep; clean up out-of-band or with a `null_resource` and `local-exec` if you need automated reclamation.

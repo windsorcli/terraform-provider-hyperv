@@ -19,6 +19,7 @@ import (
 // hyperv.VM DTO lives in resource.go.
 type Model struct {
 	ID         types.String `tfsdk:"id"`
+	VMID       types.String `tfsdk:"vm_id"`
 	Name       types.String `tfsdk:"name"`
 	Generation types.Int64  `tfsdk:"generation"`
 	// CPU and Memory are pointer-typed: ImportState briefly leaves state with only `name` set, which a value type can't represent.
