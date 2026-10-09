@@ -2,7 +2,7 @@ module github.com/windsorcli/terraform-provider-hyperv
 
 go 1.26.0
 
-toolchain go1.27.1
+toolchain go1.27.2
 
 require (
 	github.com/bodgit/ntlmssp v0.0.0-20240506230425-31973bb52d9b
