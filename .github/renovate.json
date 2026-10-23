@@ -9,7 +9,6 @@
     {
       "description": "Pin GitHub Actions to specific commit SHAs",
       "matchManagers": ["github-actions"],
-      "versioning": "github-tags",
       "pinDigests": true,
       "automerge": true,
       "automergeType": "pr",
