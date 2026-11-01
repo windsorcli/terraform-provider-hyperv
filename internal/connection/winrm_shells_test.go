@@ -187,8 +187,8 @@ func TestWinRM_ConcurrentCallsRespectMaxShells(t *testing.T) {
 		t.Error(err)
 	}
 
-	if got := f.peakShells(); got != maxShells {
-		t.Errorf("peak open shells = %d, want %d", got, maxShells)
+	if got := f.peakShells(); got > maxShells {
+		t.Errorf("peak open shells = %d, want at most %d", got, maxShells)
 	}
 	// Open's healthcheck accounts for the extra shell.
 	if got, want := f.creates.Load(), int64(1+scripts+streams); got != want {

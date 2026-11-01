@@ -325,10 +325,14 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		return nil
 	}
 	if maxShells < 0 {
+		detail := fmt.Sprintf("max_shells must be at least 1; got %d.", maxShells)
+		if winrmAttrs.MaxShells.IsNull() || winrmAttrs.MaxShells.IsUnknown() {
+			detail = fmt.Sprintf("max_shells must be at least 1; got %d from HYPERV_WINRM_MAX_SHELLS.", maxShells)
+		}
 		diags.AddAttributeError(
 			path.Root("winrm").AtName("max_shells"),
 			"Invalid WinRM max_shells",
-			fmt.Sprintf("max_shells must be at least 1; got %d.", maxShells),
+			detail,
 		)
 		return nil
 	}

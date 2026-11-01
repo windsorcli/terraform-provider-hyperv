@@ -657,6 +657,9 @@ func TestNewConnection_WinRMRejectsNegativeMaxShells(t *testing.T) {
 			if !strings.Contains(diags[0].Detail(), "at least 1") {
 				t.Errorf("error detail = %q, want substring 'at least 1'", diags[0].Detail())
 			}
+			if fromEnv := strings.Contains(diags[0].Detail(), "HYPERV_WINRM_MAX_SHELLS"); fromEnv != (tc.env != "") {
+				t.Errorf("error detail = %q; names HYPERV_WINRM_MAX_SHELLS = %v, want %v", diags[0].Detail(), fromEnv, tc.env != "")
+			}
 		})
 	}
 }
