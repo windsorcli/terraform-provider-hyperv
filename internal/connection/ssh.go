@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
@@ -707,6 +708,15 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 
 	var auths []ssh.AuthMethod
 
+	// Auto-detect SSH agent socket (Unix: $SSH_AUTH_SOCK, Win: OpenSSH pipe).
+	// Agent keys are tried first, matching standard SSH client behaviour.
+	var agentErr error
+	agentConn, agentErr := dialAgent()
+	if agentConn != nil {
+		ag := agent.NewClient(agentConn)
+		auths = append(auths, ssh.PublicKeysCallback(ag.Signers))
+	}
+
 	if len(opts.PrivateKey) > 0 {
 		signer, err := parsePrivateKey(opts.PrivateKey, opts.Passphrase)
 		if err != nil {
@@ -730,6 +740,14 @@ func buildSSHAuthMethods(opts SSHOptions) ([]ssh.AuthMethod, error) {
 	if len(opts.Password) > 0 {
 		// ssh.Password copies into its own closure; our []byte is zeroed above, the library's copy isn't reachable.
 		auths = append(auths, ssh.Password(string(opts.Password)))
+	}
+
+	if len(auths) == 0 && agentErr != nil {
+		// The agent was attempted (socket set, or Windows pipe tried)
+		// but the dial failed. Surfacing this beats the generic
+		// "no auth method configured" message, which would leave the
+		// user guessing why their seemingly-set agent never helped.
+		return nil, fmt.Errorf("ssh: SSH agent dial failed: %w", agentErr)
 	}
 
 	return auths, nil
