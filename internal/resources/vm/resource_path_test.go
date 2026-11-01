@@ -61,6 +61,10 @@ func TestResource_Schema_PathValidator(t *testing.T) {
 		{`D:\vms\web01\`, true},
 		{`D:/vms/web01/`, true},
 		{"", true},
+		{`vms\web01`, true},
+		{`C:vms`, true},
+		{`\\server`, true},
+		{`//server/share/vms`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.value, func(t *testing.T) {

@@ -31,8 +31,8 @@ import (
 // case so a refresh against Hyper-V's canonical echo doesn't diff.
 var macAddressRegex = regexp.MustCompile(`(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$|^[0-9a-f]{2}(-[0-9a-f]{2}){5}$|^[0-9a-f]{12}$`)
 
-// vmPathRegex rejects a trailing separator: Hyper-V has read paths back without one, and pathtype equality does not fold it.
-var vmPathRegex = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|.*[^\\/])$`)
+// vmPathRegex accepts a drive-letter or UNC path with no trailing separator, since Hyper-V reads paths back without one.
+var vmPathRegex = regexp.MustCompile(`^(?:[A-Za-z]:[\\/](?:.*[^\\/])?|[\\/]{2}[^\\/]+[\\/].*[^\\/])$`)
 
 // hardDiskObjectAttrTypes is the framework's attr.Type representation
 // of one element in the `hard_disk_drive` list, for constructing the
@@ -629,7 +629,8 @@ func resourceSchema() schema.Schema {
 				MarkdownDescription: "Absolute path of the folder on the host that holds the VM's " +
 					"configuration, checkpoint, and smart-paging files. Omit it to use the host's default " +
 					"folder (`Get-VMHost` `VirtualMachinePath`), which is then read back into state. Forward and back slashes are equivalent, and comparison " +
-					"is case-insensitive. A trailing separator is rejected, except on a drive root such as " +
+					"is case-insensitive. The path MUST start with a drive letter or a UNC prefix, and a " +
+					"trailing separator is rejected, except on a drive root such as " +
 					"`D:\\`.\n\n" +
 					"Changing `path` moves the files in place with `Move-VMStorage`, which works on a " +
 					"running VM, so the VM keeps its ID and checkpoints. The move puts all three kinds of " +
@@ -639,7 +640,7 @@ func resourceSchema() schema.Schema {
 					"Removing `path` from the configuration keeps the files where they are.",
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(vmPathRegex,
-						"must be a non-empty path without a trailing separator, except a drive root such as D:\\"),
+						"must be an absolute drive-letter or UNC path without a trailing separator, except a drive root such as D:\\"),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
