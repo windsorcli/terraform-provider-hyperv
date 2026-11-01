@@ -39,6 +39,8 @@ type Model struct {
 	State              *StateModel  `tfsdk:"state"`
 	IPAddresses        types.List   `tfsdk:"ip_addresses"`
 	Path               types.String `tfsdk:"path"`
+	// WaitForGuestIPTimeout is config-only: the host has no value for it, so every state write copies it from config.
+	WaitForGuestIPTimeout types.String `tfsdk:"wait_for_guest_ip_timeout"`
 }
 
 // CPUModel is the nested `cpu` block. Static count only in this slice;

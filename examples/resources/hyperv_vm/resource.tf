@@ -45,3 +45,27 @@ resource "hyperv_vm" "elastic" {
     max_bytes     = 8589934592 # 8 GiB
   }
 }
+
+# DHCP guest: Create returns once the guest's KVP daemon reports an IPv4 address, or fails after 5 minutes.
+resource "hyperv_vm" "dhcp" {
+  name       = "dhcp-node"
+  generation = 2
+  cpu        = { count = 2 }
+  memory     = { startup_bytes = 4294967296 } # 4 GiB
+
+  network_adapter = [
+    { name = "primary", switch_name = "lab-private" },
+  ]
+  hard_disk_drive = [
+    { path = "C:/hyperv/vhds/dhcp-node-root.vhdx", controller_number = 0, controller_location = 0 },
+  ]
+
+  state = {
+    desired = "Running"
+  }
+  wait_for_guest_ip_timeout = "5m"
+}
+
+output "dhcp_node_ip" {
+  value = [for ip in hyperv_vm.dhcp.network_adapter[0].ip_addresses : ip if !strcontains(ip, ":")][0]
+}

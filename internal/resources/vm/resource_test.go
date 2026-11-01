@@ -43,7 +43,7 @@ func TestResource_Schema(t *testing.T) {
 	wantAttrs := []string{
 		"id", "name", "generation", "cpu", "memory",
 		"hard_disk_drive", "network_adapter", "dvd_drive",
-		"secure_boot", "notes", "state", "path",
+		"secure_boot", "notes", "state", "path", "wait_for_guest_ip_timeout",
 	}
 	for _, name := range wantAttrs {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
@@ -242,8 +242,8 @@ func TestResource_ConfigValidators_RegistersAll(t *testing.T) {
 		t.Fatal("New() did not return *Resource")
 	}
 	got := r.ConfigValidators(t.Context())
-	if len(got) != 5 {
-		t.Fatalf("got %d ConfigValidators, want 5 (secure_boot rejected for gen 1, secure_boot_template rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1, dynamic memory bounds)", len(got))
+	if len(got) != 6 {
+		t.Fatalf("got %d ConfigValidators, want 6 (secure_boot rejected for gen 1, secure_boot_template rejected for gen 1, network_adapter unique names, boot_order rejected for gen 1, dynamic memory bounds, wait_for_guest_ip_timeout requires Running)", len(got))
 	}
 }
 

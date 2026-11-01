@@ -1,6 +1,8 @@
 package vm_test
 
 import (
+	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -113,6 +115,42 @@ resource "hyperv_vm" "vms" {
 }
 `,
 				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestValidate_WaitForGuestIPTimeoutRequiresRunning pins the plan-time
+// rejection of a guest-IP wait on a VM that Create leaves Off, through
+// Terraform's own validate pass.
+func TestValidate_WaitForGuestIPTimeoutRequiresRunning(t *testing.T) {
+	t.Parallel()
+
+	cfg := func(stateBlock string) string {
+		return fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name       = "wait-validate"
+  generation = 2
+  cpu        = { count = 1 }
+  memory     = { startup_bytes = 1073741824 }
+
+  wait_for_guest_ip_timeout = "5m"
+  %s
+}
+`, stateBlock)
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cfg(""),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`requires state.desired = "Running"`),
+			},
+			{
+				Config:      cfg(`state = { desired = "Off" }`),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`requires state.desired = "Running"`),
 			},
 		},
 	})

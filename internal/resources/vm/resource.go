@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -29,6 +30,8 @@ var (
 // Resource implements hyperv_vm.
 type Resource struct {
 	client *hyperv.Client
+	// pollInterval overrides defaultGuestIPPollInterval; tests set it.
+	pollInterval time.Duration
 }
 
 // New is the framework factory.
@@ -54,6 +57,7 @@ func (r *Resource) ConfigValidators(_ context.Context) []resource.ConfigValidato
 		networkAdapterUniqueNamesValidator{},
 		bootOrderRejectedForGen1Validator{},
 		dynamicMemoryBoundsValidator{},
+		waitForGuestIPRequiresRunningValidator{},
 	}
 }
 
@@ -495,11 +499,16 @@ func (r *Resource) Create(ctx context.Context, req resource.CreateRequest, resp 
 		}
 	}
 
+	// State is written even when the wait fails, so the framework records the VM as tainted instead of orphaning it.
+	v, waitDiags := r.waitForGuestIPAfterCreate(ctx, plan, v)
+
 	state := modelFromVM(ctx, v)
 	resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &state, plan.BootOrder)...)
 	state.State = reconcileStateBlock(plan.State, state.State)
 	state.Memory = reconcileMemoryBlock(plan.Memory, state.Memory)
+	state.WaitForGuestIPTimeout = plan.WaitForGuestIPTimeout
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	resp.Diagnostics.Append(waitDiags...)
 }
 
 // Read fetches the current state via get.ps1 and reconciles it:
@@ -536,6 +545,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 	resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &newState, state.BootOrder)...)
 	newState.State = reconcileStateBlock(state.State, newState.State)
 	newState.Memory = reconcileMemoryBlock(state.Memory, newState.Memory)
+	newState.WaitForGuestIPTimeout = state.WaitForGuestIPTimeout
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
@@ -707,6 +717,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 		resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &newState, plan.BootOrder)...)
 		newState.State = reconcileStateBlock(plan.State, newState.State)
 		newState.Memory = reconcileMemoryBlock(plan.Memory, newState.Memory)
+		newState.WaitForGuestIPTimeout = plan.WaitForGuestIPTimeout
 		resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 		return
 	}
@@ -736,6 +747,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	resp.Diagnostics.Append(reconcileBootOrderInState(ctx, &newState, plan.BootOrder)...)
 	newState.State = reconcileStateBlock(plan.State, newState.State)
 	newState.Memory = reconcileMemoryBlock(plan.Memory, newState.Memory)
+	newState.WaitForGuestIPTimeout = plan.WaitForGuestIPTimeout
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
