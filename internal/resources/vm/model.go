@@ -38,7 +38,9 @@ type Model struct {
 	Notes              types.String `tfsdk:"notes"`
 	State              *StateModel  `tfsdk:"state"`
 	IPAddresses        types.List   `tfsdk:"ip_addresses"`
-	Path               types.String `tfsdk:"path"`
+
+	// Path is null in a plan that leaves it unset, so Create keeps the host's default folder.
+	Path pathtype.Path `tfsdk:"path"`
 }
 
 // CPUModel is the nested `cpu` block. Static count only in this slice;
