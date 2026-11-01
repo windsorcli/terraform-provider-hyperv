@@ -324,6 +324,14 @@ func newWinRMConnection(m HypervProviderModel, diags *diag.Diagnostics) connecti
 		)
 		return nil
 	}
+	if maxShells < 0 {
+		diags.AddAttributeError(
+			path.Root("winrm").AtName("max_shells"),
+			"Invalid WinRM max_shells",
+			fmt.Sprintf("max_shells must be at least 1; got %d.", maxShells),
+		)
+		return nil
+	}
 
 	// []byte(string) copies; connection.zeroBytes can scrub our copy but not the framework-owned original string.
 	conn, err := connection.NewWinRM(connection.WinRMOptions{

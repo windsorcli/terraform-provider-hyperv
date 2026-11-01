@@ -8,8 +8,11 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
@@ -183,6 +186,40 @@ func TestProvider_ConfigValidators_RegistersAll(t *testing.T) {
 // (Terraform doesn't model conditional requirements at schema), so the
 // validator is the seam where "auth=kerberos but no realm" surfaces at
 // `terraform validate` instead of waiting until plan/apply.
+// TestProvider_Schema_MaxShellsAtLeastOne verifies winrm.max_shells rejects
+// values below 1 at plan time.
+func TestProvider_Schema_MaxShellsAtLeastOne(t *testing.T) {
+	t.Parallel()
+
+	p := New("test")()
+	resp := &provider.SchemaResponse{}
+	p.Schema(t.Context(), provider.SchemaRequest{}, resp)
+
+	winrmAttr, ok := resp.Schema.Attributes["winrm"].(schema.SingleNestedAttribute)
+	if !ok {
+		t.Fatal("winrm attribute is not a SingleNestedAttribute")
+	}
+	attr, ok := winrmAttr.Attributes["max_shells"].(schema.Int64Attribute)
+	if !ok {
+		t.Fatal("winrm.max_shells is not an Int64Attribute")
+	}
+
+	for value, wantError := range map[int64]bool{-1: true, 0: true, 1: false, 25: false} {
+		var diags diag.Diagnostics
+		for _, v := range attr.Int64Validators() {
+			vresp := &validator.Int64Response{}
+			v.ValidateInt64(t.Context(), validator.Int64Request{
+				Path:        path.Root("winrm").AtName("max_shells"),
+				ConfigValue: types.Int64Value(value),
+			}, vresp)
+			diags.Append(vresp.Diagnostics...)
+		}
+		if diags.HasError() != wantError {
+			t.Errorf("max_shells = %d: HasError = %v, want %v", value, diags.HasError(), wantError)
+		}
+	}
+}
+
 func TestKerberosRealmRequiredValidator(t *testing.T) {
 	t.Parallel()
 

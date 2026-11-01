@@ -175,6 +175,9 @@ func NewWinRM(opts WinRMOptions) (Connection, error) {
 	}
 
 	maxShells := opts.MaxShells
+	if maxShells < 0 {
+		return nil, fmt.Errorf("winrm: max_shells must be at least 1; got %d", maxShells)
+	}
 	if maxShells == 0 {
 		maxShells = defaultWinRMMaxShells
 	}
@@ -345,6 +348,8 @@ func runShellCmd(ctx context.Context, shell *winrm.Shell, cmd string, stdin io.R
 		_ = winrmCmd.Stdin.Close()
 	}
 	wg.Wait()
+	// fetchOutput sets Error() after closing the output pipes; only Wait orders that write before our read.
+	winrmCmd.Wait()
 	if err := winrmCmd.Error(); err != nil {
 		return 1, err
 	}

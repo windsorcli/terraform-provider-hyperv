@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -259,7 +260,10 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 					},
 					"max_shells": schema.Int64Attribute{
 						Optional:            true,
-						MarkdownDescription: "Maximum concurrent WinRM shells. Windows' default `MaxShellsPerUser` is 5; Terraform's default `-parallelism=10` can exceed it and trigger HTTP 400 errors. Default: `3`. Falls back to `HYPERV_WINRM_MAX_SHELLS`.",
+						MarkdownDescription: "Maximum concurrent WinRM shells. Windows' default `MaxShellsPerUser` is 5; Terraform's default `-parallelism=10` can exceed it and trigger HTTP 400 errors. Default: `3`. Must be at least `1`. Falls back to `HYPERV_WINRM_MAX_SHELLS`.",
+						Validators: []validator.Int64{
+							int64validator.AtLeast(1),
+						},
 					},
 					"kerberos": schema.SingleNestedAttribute{
 						Optional: true,
