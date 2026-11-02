@@ -12,7 +12,8 @@
 # Flags 19 is 3 plus 16. On the bench, 16 put the network in HNS's
 # persistent store so it survived a host reboot; with 3 alone it did not.
 # If the read after create fails, the script deletes the network so no
-# untracked network remains.
+# untracked network remains. If that delete also fails, the error names
+# the leftover network ID.
 #
 # lint:allow-long-comment
 
@@ -62,10 +63,31 @@ function New-HypervIcsNetwork {
         $network = Read-HypervIcsNetwork -Id $id
     }
     catch {
-        [void](Invoke-HypervHcnDelete -Id $id)
-        throw
+        $readError = $_
+        $delete = Invoke-HypervHcnDelete -Id $id
+        if ($delete.HResult -ne 0 -and -not (Test-HypervHcnNotFound -HResult $delete.HResult)) {
+            throw (Add-HypervRollbackFailure -ErrorRecord $readError -Id $id -HResult $delete.HResult)
+        }
+        throw $readError
     }
     $network | Write-HypervResult
+}
+
+# Add-HypervRollbackFailure appends a failed rollback delete to the read error, keeping its category.
+function Add-HypervRollbackFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [System.Management.Automation.ErrorRecord] $ErrorRecord,
+        [Parameter(Mandatory)] [guid] $Id,
+        [Parameter(Mandatory)] [int] $HResult
+    )
+    $code = Format-HypervHResult -HResult $HResult
+    $message = "$($ErrorRecord.Exception.Message); rollback delete of network '$Id' failed with $code, so it remains on the host"
+    [System.Management.Automation.ErrorRecord]::new(
+        [System.InvalidOperationException]::new($message, $ErrorRecord.Exception),
+        $ErrorRecord.FullyQualifiedErrorId,
+        $ErrorRecord.CategoryInfo.Category,
+        $ErrorRecord.TargetObject)
 }
 
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').

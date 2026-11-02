@@ -70,4 +70,25 @@ Describe 'New-HypervIcsNetwork' {
         { New-HypervIcsNetwork -Name 'lab' -AddressPrefix '172.30.97.0/24' -HostAddress '172.30.97.1' } | Should -Throw
         Should -Invoke Invoke-HypervHcnDelete -Times 1 -Exactly
     }
+
+    It 'names the leftover network when the rollback delete also fails' {
+        Mock Invoke-HypervHcnQuery { New-HypervHcnQueryResult -HResult $script:HypervHrDuplicateName -Result '' }
+        Mock Invoke-HypervHcnDelete { New-HypervHcnCallResult -HResult $script:HypervHrServiceMissing }
+
+        $err = $null
+        try { New-HypervIcsNetwork -Name 'lab' -AddressPrefix '172.30.97.0/24' -HostAddress '172.30.97.1' } catch { $err = $_ }
+
+        $err.Exception.Message | Should -BeLike "*HCN query*"
+        $err.Exception.Message | Should -BeLike "*rollback delete of network '*' failed with 0x800706D9*"
+    }
+
+    It 'treats an already-gone network as a successful rollback' {
+        Mock Invoke-HypervHcnQuery { New-HypervHcnQueryResult -HResult $script:HypervHrDuplicateName -Result '' }
+        Mock Invoke-HypervHcnDelete { New-HypervHcnCallResult -HResult $script:HypervHrElementNotFound }
+
+        $err = $null
+        try { New-HypervIcsNetwork -Name 'lab' -AddressPrefix '172.30.97.0/24' -HostAddress '172.30.97.1' } catch { $err = $_ }
+
+        $err.Exception.Message | Should -Not -BeLike '*rollback*'
+    }
 }
