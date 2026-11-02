@@ -617,6 +617,53 @@ func TestNewConnection_WinRMRejectsMalformedBoolEnv(t *testing.T) {
 	}
 }
 
+// TestNewConnection_WinRMRejectsNegativeMaxShells verifies a negative cap
+// from either the attribute or HYPERV_WINRM_MAX_SHELLS surfaces as an
+// attribute diagnostic rather than reaching the connection layer.
+func TestNewConnection_WinRMRejectsNegativeMaxShells(t *testing.T) {
+	cases := []struct {
+		name string
+		attr types.Int64
+		env  string
+	}{
+		{name: "attribute", attr: types.Int64Value(-1)},
+		{name: "env var", attr: types.Int64Null(), env: "-2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HYPERV_BACKEND", "")
+			t.Setenv("HYPERV_HOST", "")
+			t.Setenv("HYPERV_USERNAME", "")
+			t.Setenv("HYPERV_PASSWORD", "")
+			t.Setenv("HYPERV_WINRM_MAX_SHELLS", tc.env)
+
+			m := HypervProviderModel{
+				Backend:  types.StringValue("winrm"),
+				Host:     types.StringValue("hv01.example.com"),
+				Username: types.StringValue("Administrator"),
+				Password: types.StringValue("placeholder"),
+				WinRM:    &WinRMConfig{MaxShells: tc.attr},
+			}
+			conn, diags := newConnection(t.Context(), m)
+			if conn != nil {
+				t.Error("expected nil connection for a negative max_shells")
+			}
+			if !diags.HasError() {
+				t.Fatal("expected an error diagnostic")
+			}
+			if !strings.Contains(diags[0].Summary(), "max_shells") {
+				t.Errorf("error summary = %q, want substring 'max_shells'", diags[0].Summary())
+			}
+			if !strings.Contains(diags[0].Detail(), "at least 1") {
+				t.Errorf("error detail = %q, want substring 'at least 1'", diags[0].Detail())
+			}
+			if fromEnv := strings.Contains(diags[0].Detail(), "HYPERV_WINRM_MAX_SHELLS"); fromEnv != (tc.env != "") {
+				t.Errorf("error detail = %q; names HYPERV_WINRM_MAX_SHELLS = %v, want %v", diags[0].Detail(), fromEnv, tc.env != "")
+			}
+		})
+	}
+}
+
 func TestNewConnection_InvalidBackend(t *testing.T) {
 	t.Setenv("HYPERV_BACKEND", "")
 
