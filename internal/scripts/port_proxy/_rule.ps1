@@ -1,5 +1,5 @@
 # port_proxy/_rule.ps1 -- helpers shared by the port_proxy verb scripts.
-# The Go side prepends this body to each verb; Pester dot-sources it.
+# The Go side prepends this body, after common/firewall-rule.ps1, to each verb; Pester dot-sources both.
 
 # Invoke-HypervNetsh runs netsh with the given arguments and throws its output when it exits nonzero.
 function Invoke-HypervNetsh {
@@ -115,40 +115,6 @@ function Get-HypervFirewallLocalAddress {
     if ($ListenAddress -eq '0.0.0.0') { 'Any' } else { $ListenAddress }
 }
 
-# New-HypervPortProxyFirewallRule opens listen_port inbound, scoped to the rule's listen address.
-function New-HypervPortProxyFirewallRule {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [string] $FirewallName,
-        [Parameter(Mandatory)] [string] $ListenAddress,
-        [Parameter(Mandatory)] [int]    $ListenPort,
-        [Parameter(Mandatory)] [string] $FirewallProfile
-    )
-    New-NetFirewallRule `
-        -DisplayName $FirewallName `
-        -Direction 'Inbound' `
-        -Action 'Allow' `
-        -Protocol 'TCP' `
-        -LocalAddress (Get-HypervFirewallLocalAddress -ListenAddress $ListenAddress) `
-        -LocalPort $ListenPort `
-        -Profile $FirewallProfile `
-        -ErrorAction Stop | Out-Null
-}
-
-# Get-HypervPortProxyFirewallState reports the firewall rule as present only when it exists and is
-# enabled, since set.ps1 disables the rule rather than deleting it when firewall_rule.enabled is false.
-function Get-HypervPortProxyFirewallState {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [string] $FirewallName
-    )
-    $rule = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue | Select-Object -First 1
-    [pscustomobject]@{
-        Present = $null -ne $rule -and $rule.Enabled.ToString() -eq 'True'
-        Profile = if ($null -ne $rule) { $rule.Profile.ToString() } else { '' }
-    }
-}
-
 # Write-HypervPortProxyResult emits the canonical eight-field read result for a rule and its firewall rule.
 function Write-HypervPortProxyResult {
     [CmdletBinding()]
@@ -156,7 +122,7 @@ function Write-HypervPortProxyResult {
         [Parameter(Mandatory)] $Rule,
         [Parameter(Mandatory)] [string] $FirewallName
     )
-    $firewall = Get-HypervPortProxyFirewallState -FirewallName $FirewallName
+    $firewall = Get-HypervFirewallRuleState -Name $FirewallName
     [pscustomobject]@{
         Id                  = "$($Rule.ListenAddress):$($Rule.ListenPort)"
         ListenAddress       = $Rule.ListenAddress

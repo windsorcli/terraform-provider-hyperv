@@ -10,7 +10,7 @@ import "embed"
 // client prepends preamble.ps1 to every resource-script body before sending
 // it through the connection layer.
 //
-//go:embed common/*.ps1
+//go:embed common/preamble.ps1 common/firewall-rule.ps1
 var Common embed.FS
 
 // Vswitch holds the four verb scripts for hyperv_virtual_switch. The typed
@@ -35,11 +35,16 @@ func VswitchScript(verb string) ([]byte, error) {
 	return Vswitch.ReadFile("vswitch/" + verb + ".ps1")
 }
 
+// FirewallRule returns common/firewall-rule.ps1, the firewall_rule helpers the client prepends to
+// every nat_static_mapping and port_proxy verb script.
+func FirewallRule() ([]byte, error) {
+	return Common.ReadFile("common/firewall-rule.ps1")
+}
+
 // NatStaticMapping holds the four verb scripts for hyperv_nat_static_mapping
-// plus the shared _retry.ps1 helper prepended to new/set on the Go
-// side (mirror of the vm/read-result.ps1 pattern). Pester *.Tests.ps1
-// and the _test_helpers.ps1 stub file are deliberately excluded from
-// the embed glob.
+// plus the shared _retry.ps1 helper the client prepends to each verb.
+// Pester *.Tests.ps1 and the _test_helpers.ps1 stub file are deliberately
+// excluded from the embed glob.
 //
 //go:embed nat_static_mapping/get.ps1 nat_static_mapping/new.ps1 nat_static_mapping/set.ps1 nat_static_mapping/remove.ps1
 //go:embed nat_static_mapping/_retry.ps1
@@ -52,8 +57,8 @@ func NatStaticMappingScript(verb string) ([]byte, error) {
 }
 
 // NatStaticMappingRetry returns nat_static_mapping/_retry.ps1, the shared
-// Invoke-WithDupNameRetry helper. The Go-side hyperv.Client prepends its
-// body to the new and set verb scripts at runtime.
+// Invoke-WithNetNatRetry helper. The Go-side hyperv.Client prepends its
+// body to every nat_static_mapping verb script at runtime.
 func NatStaticMappingRetry() ([]byte, error) {
 	return NatStaticMapping.ReadFile("nat_static_mapping/_retry.ps1")
 }

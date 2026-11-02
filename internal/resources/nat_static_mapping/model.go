@@ -6,7 +6,6 @@
 package nat_static_mapping
 
 import (
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -27,26 +26,4 @@ type Model struct {
 	InternalIP    types.String `tfsdk:"internal_ip"`
 	InternalPort  types.Int64  `tfsdk:"internal_port"`
 	FirewallRule  types.Object `tfsdk:"firewall_rule"`
-}
-
-// FirewallRuleModel is the nested-attribute model. Carried through
-// types.Object on the parent Model so the framework can serialize it.
-// Defaults applied at the schema layer (enabled=true, profile=Any);
-// name derived in resource.go from protocol + external_port when
-// unset.
-type FirewallRuleModel struct {
-	Enabled types.Bool   `tfsdk:"enabled"`
-	Name    types.String `tfsdk:"name"`
-	Profile types.String `tfsdk:"profile"`
-}
-
-// firewallRuleAttrTypes returns the tftypes-level type map for
-// FirewallRuleModel. Must match the schema's Attributes block exactly;
-// drift here surfaces as "type mismatch" at plan time.
-func firewallRuleAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"enabled": types.BoolType,
-		"name":    types.StringType,
-		"profile": types.StringType,
-	}
 }

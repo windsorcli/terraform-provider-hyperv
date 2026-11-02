@@ -6,6 +6,7 @@
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
     . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/../common/firewall-rule.ps1
     . $PSScriptRoot/_retry.ps1
     . $PSScriptRoot/new.ps1
 }
@@ -474,7 +475,7 @@ Describe 'New-HypervNatStaticMapping' {
 # Diagnostic translation for the misleading sharing-violation error
 # Add-NetNatStaticMapping surfaces when the requested port falls in a
 # Windows TCP exclusion range. Defined in nat_static_mapping/_retry.ps1,
-# prepended to new.ps1 at runtime via loadNatStaticMappingWithRetry.
+# prepended to new.ps1 at runtime via loadNatStaticMappingScript.
 Describe 'Resolve-NetNatPortConflictMessage' {
 
     Context 'signature match' {

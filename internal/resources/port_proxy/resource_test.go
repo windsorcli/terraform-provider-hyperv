@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
 
 func TestResource_Metadata(t *testing.T) {
@@ -82,11 +83,11 @@ func TestDerivedFirewallRuleName(t *testing.T) {
 	}
 }
 
-func newModel(t *testing.T, fw *FirewallRuleModel) Model {
+func newModel(t *testing.T, fw *firewallrule.Model) Model {
 	t.Helper()
-	obj := types.ObjectNull(firewallRuleAttrTypes())
+	obj := types.ObjectNull(firewallrule.AttrTypes())
 	if fw != nil {
-		o, d := types.ObjectValueFrom(t.Context(), firewallRuleAttrTypes(), *fw)
+		o, d := types.ObjectValueFrom(t.Context(), firewallrule.AttrTypes(), *fw)
 		if d.HasError() {
 			t.Fatalf("ObjectValueFrom: %v", d)
 		}
@@ -124,7 +125,7 @@ func TestBuildNewInput_DefaultsWhenFirewallRuleNull(t *testing.T) {
 func TestBuildNewInput_PassesUserFirewallFields(t *testing.T) {
 	t.Parallel()
 
-	in, diags := buildNewInput(t.Context(), newModel(t, &FirewallRuleModel{
+	in, diags := buildNewInput(t.Context(), newModel(t, &firewallrule.Model{
 		Enabled: types.BoolValue(false),
 		Name:    types.StringValue("talos-api"),
 		Profile: types.StringValue("Private"),
@@ -141,12 +142,12 @@ func TestBuildNewInput_PassesUserFirewallFields(t *testing.T) {
 func TestBuildSetInput_ListenPairFromStateConnectPairFromPlan(t *testing.T) {
 	t.Parallel()
 
-	state := newModel(t, &FirewallRuleModel{
+	state := newModel(t, &firewallrule.Model{
 		Enabled: types.BoolValue(true),
 		Name:    types.StringValue("talos-api"),
 		Profile: types.StringValue("Any"),
 	})
-	plan := newModel(t, &FirewallRuleModel{
+	plan := newModel(t, &firewallrule.Model{
 		Enabled: types.BoolValue(true),
 		Name:    types.StringUnknown(),
 		Profile: types.StringValue("Private"),
@@ -182,7 +183,7 @@ func TestModelFromPortProxy_CoalescesEmptyProfile(t *testing.T) {
 	if diags.HasError() {
 		t.Fatalf("diags: %v", diags)
 	}
-	fw, d := unpackFirewallRule(t.Context(), m.FirewallRule)
+	fw, d := firewallrule.Unpack(t.Context(), m.FirewallRule)
 	if d.HasError() {
 		t.Fatalf("unpack: %v", d)
 	}

@@ -2,15 +2,14 @@ package port_proxy
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
 
 // resourceSchema returns the hyperv_port_proxy schema. The listen pair identifies the rule and
@@ -79,45 +78,17 @@ func resourceSchema() schema.Schema {
 					int64validator.Between(1, 65535),
 				},
 			},
-			"firewall_rule": schema.SingleNestedAttribute{
-				Optional: true,
-				Computed: true,
-				MarkdownDescription: "Inbound firewall allow rule for `listen_port`. Defaults to " +
+			"firewall_rule": firewallrule.Attribute(firewallrule.Descriptions{
+				Attribute: "Inbound firewall allow rule for `listen_port`. Defaults to " +
 					"`{ enabled = true, profile = \"Any\" }`, with `name` derived as " +
 					"`hyperv-pp-<listen_address>-<listen_port>`.",
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.UseStateForUnknown(),
-				},
-				Attributes: map[string]schema.Attribute{
-					"enabled": schema.BoolAttribute{
-						Optional: true,
-						Computed: true,
-						MarkdownDescription: "Whether to manage a `NetFirewallRule` for the listen port. Defaults " +
-							"to `true`. With `false`, the port stays blocked unless another rule opens it.",
-						Default: booldefault.StaticBool(true),
-					},
-					"name": schema.StringAttribute{
-						Optional: true,
-						Computed: true,
-						MarkdownDescription: "Firewall rule `DisplayName`. Defaults to " +
-							"`hyperv-pp-<listen_address>-<listen_port>`. Changing this forces a new resource.",
-						PlanModifiers: []planmodifier.String{
-							stringplanmodifier.RequiresReplace(),
-							stringplanmodifier.UseStateForUnknown(),
-						},
-					},
-					"profile": schema.StringAttribute{
-						Optional: true,
-						Computed: true,
-						MarkdownDescription: "Firewall profile: `Any`, `Domain`, `Private`, or `Public`. " +
-							"Defaults to `Any`.",
-						Default: stringdefault.StaticString("Any"),
-						Validators: []validator.String{
-							stringvalidator.OneOf("Any", "Domain", "Private", "Public"),
-						},
-					},
-				},
-			},
+				Enabled: "Whether to manage a `NetFirewallRule` for the listen port. Defaults " +
+					"to `true`. With `false`, the port stays blocked unless another rule opens it.",
+				Name: "Firewall rule `DisplayName`. Defaults to " +
+					"`hyperv-pp-<listen_address>-<listen_port>`. Changing this forces a new resource.",
+				Profile: "Firewall profile: `Any`, `Domain`, `Private`, or `Public`. " +
+					"Defaults to `Any`.",
+			}),
 		},
 	}
 }

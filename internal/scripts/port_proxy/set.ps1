@@ -37,17 +37,8 @@ function Set-HypervPortProxy {
             "connectaddress=$ConnectAddress", "connectport=$ConnectPort") | Out-Null
     }
 
-    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $existingFw) {
-        # -Enabled binds to the NetSecurity.Enabled enum, whose members are the strings 'True' and 'False'.
-        $enabledValue = if ($FirewallEnabled) { 'True' } else { 'False' }
-        Set-NetFirewallRule -DisplayName $FirewallName -Enabled $enabledValue -Profile $FirewallProfile `
-            -LocalAddress (Get-HypervFirewallLocalAddress -ListenAddress $ListenAddress) -ErrorAction Stop
-    }
-    elseif ($FirewallEnabled) {
-        New-HypervPortProxyFirewallRule -FirewallName $FirewallName -ListenAddress $ListenAddress `
-            -ListenPort $ListenPort -FirewallProfile $FirewallProfile
-    }
+    Sync-HypervFirewallRule -Enabled $FirewallEnabled -Name $FirewallName -Protocol 'TCP' -LocalPort $ListenPort `
+        -FirewallProfile $FirewallProfile -LocalAddress (Get-HypervFirewallLocalAddress -ListenAddress $ListenAddress)
 
     $rule = Get-HypervPortProxyRule -ListenAddress $ListenAddress -ListenPort $ListenPort
     if ($null -eq $rule) {

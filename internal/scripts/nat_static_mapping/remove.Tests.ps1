@@ -5,6 +5,7 @@
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
     . $PSScriptRoot/../common/preamble.ps1
+    . $PSScriptRoot/../common/firewall-rule.ps1
     . $PSScriptRoot/remove.ps1
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/testutil"
@@ -218,5 +219,41 @@ func TestClient_RemoveNatStaticMapping_NotFoundIsSuccess(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("RemoveNatStaticMapping should treat ErrNotFound as success; got %v", err)
+	}
+}
+
+// Every verb runs with firewall-rule.ps1 prepended, since each one calls its helpers.
+func TestClient_NatStaticMapping_PrependsFirewallRuleHelpers(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervNatStaticMapping").Return(testutil.NatStaticMappingTCPFixtureJSON, "", 0).
+		On("function New-HypervNatStaticMapping").Return(testutil.NatStaticMappingTCPFixtureJSON, "", 0).
+		On("function Set-HypervNatStaticMapping").Return(testutil.NatStaticMappingTCPFixtureJSON, "", 0).
+		On("function Remove-HypervNatStaticMapping").Return("", "", 0)
+	c := NewClient(fr)
+	ctx := context.Background()
+
+	if _, err := c.GetNatStaticMapping(ctx, GetNatStaticMappingInput{}); err != nil {
+		t.Fatalf("GetNatStaticMapping: %v", err)
+	}
+	if _, err := c.NewNatStaticMapping(ctx, NewNatStaticMappingInput{}); err != nil {
+		t.Fatalf("NewNatStaticMapping: %v", err)
+	}
+	if _, err := c.SetNatStaticMapping(ctx, SetNatStaticMappingInput{}); err != nil {
+		t.Fatalf("SetNatStaticMapping: %v", err)
+	}
+	if err := c.RemoveNatStaticMapping(ctx, RemoveNatStaticMappingInput{}); err != nil {
+		t.Fatalf("RemoveNatStaticMapping: %v", err)
+	}
+
+	calls := fr.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want 4", len(calls))
+	}
+	for i, call := range calls {
+		if !strings.Contains(call.Script, "function Sync-HypervFirewallRule") {
+			t.Errorf("call %d: script is missing the firewall-rule.ps1 helpers", i)
+		}
 	}
 }

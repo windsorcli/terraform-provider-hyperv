@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
 
 // Schema must lock attribute names + the lookup-tuple RequiresReplace
@@ -91,7 +92,7 @@ func TestBuildNewInput_DefaultsWhenFirewallRuleNull(t *testing.T) {
 		ExternalPort: types.Int64Value(80),
 		InternalIP:   types.StringValue("192.168.100.10"),
 		InternalPort: types.Int64Value(30080),
-		FirewallRule: types.ObjectNull(firewallRuleAttrTypes()),
+		FirewallRule: types.ObjectNull(firewallrule.AttrTypes()),
 	}
 
 	in, fwName, diags := buildNewInput(t.Context(), plan)
@@ -120,12 +121,12 @@ func TestBuildNewInput_DefaultsWhenFirewallRuleNull(t *testing.T) {
 func TestBuildNewInput_PassesUserSuppliedFirewallFields(t *testing.T) {
 	t.Parallel()
 
-	fwModel := FirewallRuleModel{
+	fwModel := firewallrule.Model{
 		Enabled: types.BoolValue(false),
 		Name:    types.StringValue("custom-rule-name"),
 		Profile: types.StringValue("Domain"),
 	}
-	fwObj, diags := types.ObjectValueFrom(t.Context(), firewallRuleAttrTypes(), fwModel)
+	fwObj, diags := types.ObjectValueFrom(t.Context(), firewallrule.AttrTypes(), fwModel)
 	if diags.HasError() {
 		t.Fatalf("ObjectValueFrom: %v", diags)
 	}
@@ -165,12 +166,12 @@ func TestBuildNewInput_PassesUserSuppliedFirewallFields(t *testing.T) {
 func TestBuildSetInput_SourcesLookupTupleFromState(t *testing.T) {
 	t.Parallel()
 
-	stateFw := FirewallRuleModel{
+	stateFw := firewallrule.Model{
 		Enabled: types.BoolValue(true),
 		Name:    types.StringValue("windsor-pf-tcp-80"),
 		Profile: types.StringValue("Any"),
 	}
-	stateFwObj, _ := types.ObjectValueFrom(t.Context(), firewallRuleAttrTypes(), stateFw)
+	stateFwObj, _ := types.ObjectValueFrom(t.Context(), firewallrule.AttrTypes(), stateFw)
 	state := Model{
 		NatName:      types.StringValue("windsor-nat"),
 		Protocol:     types.StringValue("tcp"),
@@ -181,12 +182,12 @@ func TestBuildSetInput_SourcesLookupTupleFromState(t *testing.T) {
 		FirewallRule: stateFwObj,
 	}
 
-	planFw := FirewallRuleModel{
+	planFw := firewallrule.Model{
 		Enabled: types.BoolValue(true),
 		Name:    types.StringValue("windsor-pf-tcp-80"), // RequiresReplace; matches state
 		Profile: types.StringValue("Domain"),            // mutated
 	}
-	planFwObj, _ := types.ObjectValueFrom(t.Context(), firewallRuleAttrTypes(), planFw)
+	planFwObj, _ := types.ObjectValueFrom(t.Context(), firewallrule.AttrTypes(), planFw)
 	plan := state
 	plan.InternalIP = types.StringValue("192.168.100.20") // mutated
 	plan.FirewallRule = planFwObj
@@ -263,7 +264,7 @@ func TestModelFromNatStaticMapping_CoalescesEmptyProfileToAny(t *testing.T) {
 	if diags.HasError() {
 		t.Fatalf("modelFromNatStaticMapping: %v", diags)
 	}
-	var fw FirewallRuleModel
+	var fw firewallrule.Model
 	got.FirewallRule.As(t.Context(), &fw, basetypes.ObjectAsOptions{})
 	if fw.Profile.ValueString() != "Any" {
 		t.Errorf("firewall.profile = %q, want coalesced 'Any'", fw.Profile.ValueString())
