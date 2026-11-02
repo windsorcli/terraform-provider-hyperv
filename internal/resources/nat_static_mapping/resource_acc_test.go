@@ -31,7 +31,8 @@ import (
 // internal_port + destroy. Step 1 creates the mapping with the
 // nested firewall_rule defaults; step 2 mutates internal_port and
 // expects an Update plan (not Replace) -- pinning the in-place
-// mutability of internal_*.
+// mutability of internal_*; step 3 disables the firewall rule on the
+// Private profile and expects the plan after apply to be empty.
 func TestAcc_NatStaticMapping_basic(t *testing.T) {
 	switchName := acctest.RandomName("vswitch-pf")
 	natName := acctest.RandomName("nat-pf")
@@ -59,7 +60,7 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 		),
 		Steps: []resource.TestStep{
 			{
-				Config: netNatStaticMappingConfig(switchName, natName, 30080),
+				Config: netNatStaticMappingConfig(switchName, natName, 30080, true),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue("hyperv_nat_static_mapping.test",
 						tfjsonpath.New("nat_name"),
@@ -80,7 +81,7 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 			},
 			{
 				// In-place update: internal_port mutates via Remove+Add; StaticMappingID changes but the resource ID stays stable.
-				Config: netNatStaticMappingConfig(switchName, natName, 30090),
+				Config: netNatStaticMappingConfig(switchName, natName, 30090, true),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(
@@ -96,6 +97,29 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 					statecheck.ExpectKnownValue("hyperv_nat_static_mapping.test",
 						tfjsonpath.New("id"),
 						knownvalue.StringExact(fmt.Sprintf("%s:tcp:0.0.0.0:8080", natName))),
+				},
+			},
+			{
+				// Disabling the firewall on an existing mapping must settle: the next plan comes back empty.
+				Config: netNatStaticMappingConfig(switchName, natName, 30090, false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(
+							"hyperv_nat_static_mapping.test",
+							plancheck.ResourceActionUpdate,
+						),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("hyperv_nat_static_mapping.test",
+						tfjsonpath.New("firewall_rule").AtMapKey("enabled"),
+						knownvalue.Bool(false)),
+					statecheck.ExpectKnownValue("hyperv_nat_static_mapping.test",
+						tfjsonpath.New("firewall_rule").AtMapKey("profile"),
+						knownvalue.StringExact("Private")),
 				},
 			},
 			{
@@ -120,7 +144,12 @@ func TestAcc_NatStaticMapping_basic(t *testing.T) {
 // (192.168.222.10) lives inside the switch's prefix (192.168.222.0/24).
 // External port 8080 is non-privileged so it doesn't conflict with
 // well-known services on the bench.
-func netNatStaticMappingConfig(switchName, natName string, internalPort int) string {
+func netNatStaticMappingConfig(switchName, natName string, internalPort int, firewallEnabled bool) string {
+	firewallBlock := ""
+	// A non-default profile makes a lost profile read-back on a disabled rule show up as a diff.
+	if !firewallEnabled {
+		firewallBlock = "\n  firewall_rule = {\n    enabled = false\n    profile = \"Private\"\n  }\n"
+	}
 	return fmt.Sprintf(`
 resource "hyperv_virtual_switch" "bench" {
   name                        = %q
@@ -136,6 +165,6 @@ resource "hyperv_nat_static_mapping" "test" {
   external_port = 8080
   internal_ip   = "192.168.222.10"
   internal_port = %d
-}
-`, switchName, natName, internalPort)
+%s}
+`, switchName, natName, internalPort, firewallBlock)
 }

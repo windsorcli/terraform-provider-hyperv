@@ -73,6 +73,22 @@ Describe 'Get-HypervNatStaticMapping' {
             $parsed.FirewallRuleName | Should -Be 'windsor-pf-tcp-80'
         }
 
+        It 'reports FirewallRulePresent=false when the rule exists but is disabled' {
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
+            Mock Get-NetFirewallRule { New-HypervFirewallRuleSample -Profile 'Domain' -Enabled 'False' }
+
+            $parsed = Get-HypervNatStaticMapping `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -FirewallName 'windsor-pf-tcp-80' | ConvertFrom-Json
+
+            $parsed.FirewallRulePresent | Should -BeFalse
+            $parsed.FirewallRuleName | Should -Be 'windsor-pf-tcp-80'
+            $parsed.FirewallRuleProfile | Should -Be 'Domain'
+        }
+
         It 'composite Id encodes (nat_name, protocol, external_ip, external_port) lowercase protocol' {
             Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample }
             Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
