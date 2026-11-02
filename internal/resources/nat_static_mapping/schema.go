@@ -44,7 +44,10 @@ func resourceSchema() schema.Schema {
 			"or `google_compute_forwarding_rule`. Targets an existing `NetNat` instance by name, " +
 			"typically created through `hyperv_virtual_switch` with `switch_type = \"NAT\"`, but " +
 			"any pre-existing NetNat, created out-of-band, through Hyper-V Manager, or through " +
-			"DSC, is also accepted.",
+			"DSC, is also accepted.\n\n" +
+			"Use this resource for a guest behind a `NetNat`, and for UDP. To forward TCP to a guest " +
+			"with no `NetNat` in front of it, such as one on a plain Internal switch, use " +
+			"`hyperv_port_proxy` instead.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,

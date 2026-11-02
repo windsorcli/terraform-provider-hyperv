@@ -4,7 +4,7 @@ page_title: "hyperv_port_proxy Resource - hyperv"
 subcategory: ""
 description: |-
   Requirements: tested with the built-in Administrator account on Windows Server 2022 (build 10.0.20348); a less privileged identity hasn't been tested. The IP Helper service (iphlpsvc) must be running, because it owns every portproxy listener.
-  Manages one netsh interface portproxy https://learn.microsoft.com/en-us/windows-server/networking/technologies/netsh/netsh-interface-portproxy v4tov4 rule, which forwards a TCP port on the host to an IPv4 address and port, plus an optional inbound firewall allow rule. Unlike hyperv_nat_static_mapping, it needs no NetNat instance, so it can forward to a guest on any switch the host can reach. It forwards TCP only.
+  Manages one netsh interface portproxy https://learn.microsoft.com/en-us/windows-server/networking/technologies/netsh/netsh-interface-portproxy v4tov4 rule, which forwards a TCP port on the host to an IPv4 address and port, plus an optional inbound firewall allow rule. It needs no NetNat instance, so it can forward to any address the host can reach. It forwards TCP only. For a guest behind a NetNat, typically on a hyperv_virtual_switch with switch_type = "NAT", or for UDP, use hyperv_nat_static_mapping instead.
   Create checks the port against netsh interface ipv4 show excludedportrange protocol=tcp and then confirms the IP Helper service is listening, because netsh accepts a rule for an excluded port without reporting an error. If either check fails, Create removes the rule.
   A DHCP guest can come back with a different address after a host reboot. Set connect_address from the address the guest reports, for example hyperv_vm.<x>.network_adapter[0].ip_addresses[0], and the next apply retargets the rule in place.
 ---
@@ -13,7 +13,7 @@ description: |-
 
 **Requirements:** tested with the built-in `Administrator` account on Windows Server 2022 (build 10.0.20348); a less privileged identity hasn't been tested. The IP Helper service (`iphlpsvc`) must be running, because it owns every portproxy listener.
 
-Manages one [`netsh interface portproxy`](https://learn.microsoft.com/en-us/windows-server/networking/technologies/netsh/netsh-interface-portproxy) `v4tov4` rule, which forwards a TCP port on the host to an IPv4 address and port, plus an optional inbound firewall allow rule. Unlike `hyperv_nat_static_mapping`, it needs no `NetNat` instance, so it can forward to a guest on any switch the host can reach. It forwards TCP only.
+Manages one [`netsh interface portproxy`](https://learn.microsoft.com/en-us/windows-server/networking/technologies/netsh/netsh-interface-portproxy) `v4tov4` rule, which forwards a TCP port on the host to an IPv4 address and port, plus an optional inbound firewall allow rule. It needs no `NetNat` instance, so it can forward to any address the host can reach. It forwards TCP only. For a guest behind a `NetNat`, typically on a `hyperv_virtual_switch` with `switch_type = "NAT"`, or for UDP, use `hyperv_nat_static_mapping` instead.
 
 Create checks the port against `netsh interface ipv4 show excludedportrange protocol=tcp` and then confirms the IP Helper service is listening, because `netsh` accepts a rule for an excluded port without reporting an error. If either check fails, Create removes the rule.
 
