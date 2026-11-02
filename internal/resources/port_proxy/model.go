@@ -3,7 +3,6 @@
 package port_proxy
 
 import (
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -15,20 +14,4 @@ type Model struct {
 	ConnectAddress types.String `tfsdk:"connect_address"`
 	ConnectPort    types.Int64  `tfsdk:"connect_port"`
 	FirewallRule   types.Object `tfsdk:"firewall_rule"`
-}
-
-// FirewallRuleModel is the firewall_rule nested attribute.
-type FirewallRuleModel struct {
-	Enabled types.Bool   `tfsdk:"enabled"`
-	Name    types.String `tfsdk:"name"`
-	Profile types.String `tfsdk:"profile"`
-}
-
-// firewallRuleAttrTypes must match the firewall_rule attributes in schema.go exactly.
-func firewallRuleAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"enabled": types.BoolType,
-		"name":    types.StringType,
-		"profile": types.StringType,
-	}
 }

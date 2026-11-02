@@ -19,9 +19,9 @@ func (c *Client) GetNatStaticMapping(ctx context.Context, in GetNatStaticMapping
 	// RLock: concurrent reads don't conflict; writers below take the exclusive Lock.
 	c.netNatMu.RLock()
 	defer c.netNatMu.RUnlock()
-	body, err := scripts.NatStaticMappingScript("get")
+	body, err := loadNatStaticMappingScript("get")
 	if err != nil {
-		return nil, fmt.Errorf("load nat_static_mapping/get.ps1: %w", err)
+		return nil, err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
@@ -29,7 +29,7 @@ func (c *Client) GetNatStaticMapping(ctx context.Context, in GetNatStaticMapping
 	}
 
 	var pf NatStaticMapping
-	if err := c.runReadScript(ctx, string(body), stdin, &pf); err != nil {
+	if err := c.runReadScript(ctx, body, stdin, &pf); err != nil {
 		return nil, err
 	}
 	return &pf, nil
@@ -46,7 +46,7 @@ func (c *Client) GetNatStaticMapping(ctx context.Context, in GetNatStaticMapping
 func (c *Client) NewNatStaticMapping(ctx context.Context, in NewNatStaticMappingInput) (*NatStaticMapping, error) {
 	c.netNatMu.Lock()
 	defer c.netNatMu.Unlock()
-	body, err := loadNatStaticMappingWithRetry("new")
+	body, err := loadNatStaticMappingScript("new")
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (c *Client) NewNatStaticMapping(ctx context.Context, in NewNatStaticMapping
 func (c *Client) SetNatStaticMapping(ctx context.Context, in SetNatStaticMappingInput) (*NatStaticMapping, error) {
 	c.netNatMu.Lock()
 	defer c.netNatMu.Unlock()
-	body, err := loadNatStaticMappingWithRetry("set")
+	body, err := loadNatStaticMappingScript("set")
 	if err != nil {
 		return nil, err
 	}
@@ -93,16 +93,16 @@ func (c *Client) SetNatStaticMapping(ctx context.Context, in SetNatStaticMapping
 func (c *Client) RemoveNatStaticMapping(ctx context.Context, in RemoveNatStaticMappingInput) error {
 	c.netNatMu.Lock()
 	defer c.netNatMu.Unlock()
-	body, err := scripts.NatStaticMappingScript("remove")
+	body, err := loadNatStaticMappingScript("remove")
 	if err != nil {
-		return fmt.Errorf("load nat_static_mapping/remove.ps1: %w", err)
+		return err
 	}
 	stdin, err := json.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("marshal remove.ps1 input: %w", err)
 	}
 
-	if err := c.runScript(ctx, string(body), stdin, nil); err != nil {
+	if err := c.runScript(ctx, body, stdin, nil); err != nil {
 		// Defensive: treat ErrNotFound as success even though the script already tolerates it.
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -112,20 +112,19 @@ func (c *Client) RemoveNatStaticMapping(ctx context.Context, in RemoveNatStaticM
 	return nil
 }
 
-// loadNatStaticMappingWithRetry loads a nat_static_mapping verb script (new/set)
-// and prepends the canonical Invoke-WithNetNatRetry body from
-// nat_static_mapping/_retry.ps1 so the verb's call to that function
-// resolves. Mirrors loadVMReadEmitter's prepend pattern; reduces the
-// drift surface between new.ps1 and set.ps1 at the cost of one extra
-// fs read per RunScript.
-func loadNatStaticMappingWithRetry(verb string) (string, error) {
+// loadNatStaticMappingScript returns nat_static_mapping/<verb>.ps1 with the firewall-rule.ps1 and _retry.ps1 helpers prepended.
+func loadNatStaticMappingScript(verb string) (string, error) {
 	body, err := scripts.NatStaticMappingScript(verb)
 	if err != nil {
 		return "", fmt.Errorf("load nat_static_mapping/%s.ps1: %w", verb, err)
+	}
+	firewall, err := scripts.FirewallRule()
+	if err != nil {
+		return "", fmt.Errorf("load common/firewall-rule.ps1: %w", err)
 	}
 	retry, err := scripts.NatStaticMappingRetry()
 	if err != nil {
 		return "", fmt.Errorf("load nat_static_mapping/_retry.ps1: %w", err)
 	}
-	return string(retry) + "\n" + string(body), nil
+	return string(firewall) + "\n" + string(retry) + "\n" + string(body), nil
 }

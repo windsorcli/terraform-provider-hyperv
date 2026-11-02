@@ -281,3 +281,19 @@ func TestPortProxyScript_TestFilesNotEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// FirewallRule is prepended to every nat_static_mapping and port_proxy verb; pin it in the Common embed.
+func TestFirewallRule_LoadsHelpers(t *testing.T) {
+	t.Parallel()
+
+	body, err := FirewallRule()
+	if err != nil {
+		t.Fatalf("FirewallRule: %v", err)
+	}
+	if !bytes.Contains(body, []byte("function Sync-HypervFirewallRule")) {
+		t.Errorf("common/firewall-rule.ps1 missing Sync-HypervFirewallRule")
+	}
+	if _, err := Common.ReadFile("common/firewall-rule.Tests.ps1"); err == nil {
+		t.Errorf("common/firewall-rule.Tests.ps1 should NOT be embedded; check the //go:embed glob")
+	}
+}

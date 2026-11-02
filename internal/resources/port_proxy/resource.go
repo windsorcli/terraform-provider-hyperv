@@ -11,10 +11,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
 
 var (
@@ -232,11 +232,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	}
 
 	// Seeds enabled/profile defaults so the first Read after import starts from a complete object.
-	fwObj, fwDiags := types.ObjectValueFrom(ctx, firewallRuleAttrTypes(), FirewallRuleModel{
-		Enabled: types.BoolValue(true),
-		Name:    types.StringValue(fwName),
-		Profile: types.StringValue("Any"),
-	})
+	fwObj, fwDiags := firewallrule.ImportObject(ctx, fwName)
 	resp.Diagnostics.Append(fwDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -254,61 +250,38 @@ func derivedFirewallRuleName(listenAddress string, listenPort int64) string {
 	return fmt.Sprintf("hyperv-pp-%s-%d", listenAddress, listenPort)
 }
 
-// unpackFirewallRule extracts the nested model; a null or unknown object yields all-null fields.
-func unpackFirewallRule(ctx context.Context, obj types.Object) (FirewallRuleModel, diag.Diagnostics) {
-	var fw FirewallRuleModel
-	if obj.IsNull() || obj.IsUnknown() {
-		return fw, nil
-	}
-	diags := obj.As(ctx, &fw, basetypes.ObjectAsOptions{})
-	return fw, diags
-}
-
 // stateFirewallName returns the firewall rule name recorded in state, or the derived default.
 func stateFirewallName(ctx context.Context, state Model, diags *diag.Diagnostics) string {
-	fw, fwDiags := unpackFirewallRule(ctx, state.FirewallRule)
+	fw, fwDiags := firewallrule.Unpack(ctx, state.FirewallRule)
 	diags.Append(fwDiags...)
-	if name := fw.Name.ValueString(); name != "" {
-		return name
-	}
-	return derivedFirewallRuleName(state.ListenAddress.ValueString(), state.ListenPort.ValueInt64())
+	return fw.NameOr(derivedFirewallRuleName(state.ListenAddress.ValueString(), state.ListenPort.ValueInt64()))
 }
 
-// resolveFirewall applies the runtime defaults for a firewall_rule object; name comes from the caller.
-func resolveFirewall(fw FirewallRuleModel, name string) hyperv.PortProxyFirewallInput {
-	in := hyperv.PortProxyFirewallInput{Enabled: true, Name: name, Profile: "Any"}
-	if !fw.Enabled.IsNull() && !fw.Enabled.IsUnknown() {
-		in.Enabled = fw.Enabled.ValueBool()
-	}
-	if !fw.Profile.IsNull() && !fw.Profile.IsUnknown() {
-		in.Profile = fw.Profile.ValueString()
-	}
-	return in
+// firewallInput converts resolved firewall_rule settings into the script's input.
+func firewallInput(s firewallrule.Settings) hyperv.PortProxyFirewallInput {
+	return hyperv.PortProxyFirewallInput{Enabled: s.Enabled, Name: s.Name, Profile: s.Profile}
 }
 
 // buildNewInput translates a Create plan into new.ps1's input.
 func buildNewInput(ctx context.Context, plan Model) (hyperv.NewPortProxyInput, diag.Diagnostics) {
-	fw, diags := unpackFirewallRule(ctx, plan.FirewallRule)
+	fw, diags := firewallrule.Unpack(ctx, plan.FirewallRule)
 	if diags.HasError() {
 		return hyperv.NewPortProxyInput{}, diags
 	}
-	name := fw.Name.ValueString()
-	if fw.Name.IsNull() || fw.Name.IsUnknown() || name == "" {
-		name = derivedFirewallRuleName(plan.ListenAddress.ValueString(), plan.ListenPort.ValueInt64())
-	}
+	name := fw.NameOr(derivedFirewallRuleName(plan.ListenAddress.ValueString(), plan.ListenPort.ValueInt64()))
 	return hyperv.NewPortProxyInput{
 		ListenAddress:  plan.ListenAddress.ValueString(),
 		ListenPort:     int(plan.ListenPort.ValueInt64()),
 		ConnectAddress: plan.ConnectAddress.ValueString(),
 		ConnectPort:    int(plan.ConnectPort.ValueInt64()),
-		Firewall:       resolveFirewall(fw, name),
+		Firewall:       firewallInput(fw.Resolve(name)),
 	}, diags
 }
 
 // buildSetInput takes the listen pair and firewall name from state, since both force replacement,
 // and the connect pair and firewall settings from plan.
 func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetPortProxyInput, diag.Diagnostics) {
-	fw, diags := unpackFirewallRule(ctx, plan.FirewallRule)
+	fw, diags := firewallrule.Unpack(ctx, plan.FirewallRule)
 	name := stateFirewallName(ctx, state, &diags)
 	if diags.HasError() {
 		return hyperv.SetPortProxyInput{}, diags
@@ -318,21 +291,13 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetPortProxyI
 		ListenPort:     int(state.ListenPort.ValueInt64()),
 		ConnectAddress: plan.ConnectAddress.ValueString(),
 		ConnectPort:    int(plan.ConnectPort.ValueInt64()),
-		Firewall:       resolveFirewall(fw, name),
+		Firewall:       firewallInput(fw.Resolve(name)),
 	}, diags
 }
 
 // modelFromPortProxy hydrates a Model from the read result.
 func modelFromPortProxy(ctx context.Context, pp *hyperv.PortProxy) (Model, diag.Diagnostics) {
-	profile := pp.FirewallRuleProfile
-	if profile == "" {
-		profile = "Any"
-	}
-	fwObj, diags := types.ObjectValueFrom(ctx, firewallRuleAttrTypes(), FirewallRuleModel{
-		Enabled: types.BoolValue(pp.FirewallRulePresent),
-		Name:    types.StringValue(pp.FirewallRuleName),
-		Profile: types.StringValue(profile),
-	})
+	fwObj, diags := firewallrule.StateObject(ctx, pp.FirewallRulePresent, pp.FirewallRuleName, pp.FirewallRuleProfile)
 	return Model{
 		ID:             types.StringValue(pp.ID),
 		ListenAddress:  types.StringValue(pp.ListenAddress),

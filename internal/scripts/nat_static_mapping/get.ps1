@@ -60,21 +60,8 @@ function Get-HypervNatStaticMapping {
         throw $errorRecord
     }
 
-    # Firewall rule is optional. SilentlyContinue + null check captures
-    # both the "user set firewall.enabled=false at create time" path
-    # and the "rule was removed out-of-band" path. The script does NOT
-    # treat a missing firewall rule as resource-gone -- the mapping is
-    # the load-bearing piece; the firewall is a companion convenience.
-    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    # set.ps1 disables the rule rather than deleting it on enabled=false, so a disabled rule counts as absent.
-    $firewallPresent = $null -ne $existingFw -and $existingFw.Enabled.ToString() -eq 'True'
-    # Get-NetFirewallRule reports Profile as a flags enum (Any=0,
-    # Domain=1, Private=2, Public=4, or comma-joined for multi-profile
-    # rules). ToString() yields the named form ("Any", "Domain",
-    # "Domain, Private", etc.); without it the projection emits the
-    # numeric int and the typed client fails to decode the string field.
-    $firewallProfile = if ($null -ne $existingFw) { $existingFw.Profile.ToString() } else { '' }
+    # A missing firewall rule leaves the mapping in state; only the mapping decides whether the resource exists.
+    $firewall = Get-HypervFirewallRuleState -Name $FirewallName
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
@@ -85,9 +72,9 @@ function Get-HypervNatStaticMapping {
         ExternalPort        = [int]$mapping.ExternalPort
         InternalIPAddress   = $mapping.InternalIPAddress
         InternalPort        = [int]$mapping.InternalPort
-        FirewallRulePresent = [bool]$firewallPresent
+        FirewallRulePresent = [bool]$firewall.Present
         FirewallRuleName    = $FirewallName
-        FirewallRuleProfile = $firewallProfile
+        FirewallRuleProfile = $firewall.Profile
     } | Write-HypervResult
 }
 

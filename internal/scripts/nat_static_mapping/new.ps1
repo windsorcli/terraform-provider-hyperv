@@ -25,9 +25,9 @@
 #
 # lint:allow-long-comment
 
-# Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1, which
-# the Go-side loadNatStaticMappingWithRetry prepends to this script body
-# before sending it to the runner.
+# Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1 and the
+# firewall helpers in common/firewall-rule.ps1; the Go-side
+# loadNatStaticMappingScript prepends both to this script body.
 
 # New-HypervNatStaticMapping provisions Add-NetNatStaticMapping, then
 # (optionally) New-NetFirewallRule. On firewall failure, the static
@@ -76,14 +76,8 @@ function New-HypervNatStaticMapping {
     # A failed firewall rule after the mapping lands would otherwise orphan the mapping; tear it down and re-throw.
     try {
         if ($FirewallEnabled) {
-            New-NetFirewallRule `
-                -DisplayName $FirewallName `
-                -Direction 'Inbound' `
-                -Action 'Allow' `
-                -Protocol $protocolUpper `
-                -LocalPort $ExternalPort `
-                -Profile $FirewallProfile `
-                -ErrorAction Stop | Out-Null
+            New-HypervFirewallRule -Name $FirewallName -Protocol $protocolUpper `
+                -LocalPort $ExternalPort -FirewallProfile $FirewallProfile
         }
     }
     catch {
@@ -94,10 +88,7 @@ function New-HypervNatStaticMapping {
     }
 
     # Re-probe the firewall rule so the host's actual state, not the caller's input, is what's reported back.
-    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    $firewallPresent = $null -ne $existingFw
-    $firewallProfile = if ($firewallPresent) { $existingFw.Profile.ToString() } else { '' }
+    $firewall = Get-HypervFirewallRuleState -Name $FirewallName
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
@@ -108,9 +99,9 @@ function New-HypervNatStaticMapping {
         ExternalPort        = [int]$ExternalPort
         InternalIPAddress   = $InternalIPAddress
         InternalPort        = [int]$InternalPort
-        FirewallRulePresent = [bool]$firewallPresent
+        FirewallRulePresent = [bool]$firewall.Present
         FirewallRuleName    = $FirewallName
-        FirewallRuleProfile = $firewallProfile
+        FirewallRuleProfile = $firewall.Profile
     } | Write-HypervResult
 }
 

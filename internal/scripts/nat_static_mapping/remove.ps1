@@ -45,11 +45,7 @@ function Remove-HypervNatStaticMapping {
             -Confirm:$false -ErrorAction Stop
     }
 
-    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -ne $existingFw) {
-        Remove-NetFirewallRule -DisplayName $FirewallName -ErrorAction Stop
-    }
+    Remove-HypervFirewallRule -Name $FirewallName
 }
 
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').

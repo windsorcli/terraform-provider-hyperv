@@ -138,3 +138,27 @@ func TestClient_RemovePortProxy_TreatsNotFoundAsSuccess(t *testing.T) {
 		t.Errorf("RemovePortProxy: %v, want nil", err)
 	}
 }
+
+// Every verb runs with firewall-rule.ps1 prepended, since _rule.ps1 and the verbs call its helpers.
+func TestClient_PortProxy_PrependsFirewallRuleHelpers(t *testing.T) {
+	t.Parallel()
+
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervPortProxy ").Return(testutil.PortProxyFixtureJSON, "", 0).
+		On("function Remove-HypervPortProxy ").Return("", "", 0)
+	c := NewClient(fr)
+	ctx := context.Background()
+
+	if _, err := c.GetPortProxy(ctx, GetPortProxyInput{}); err != nil {
+		t.Fatalf("GetPortProxy: %v", err)
+	}
+	if err := c.RemovePortProxy(ctx, RemovePortProxyInput{}); err != nil {
+		t.Fatalf("RemovePortProxy: %v", err)
+	}
+
+	for i, call := range fr.Calls() {
+		if !strings.Contains(call.Script, "function Get-HypervFirewallRuleState") {
+			t.Errorf("call %d: script is missing the firewall-rule.ps1 helpers", i)
+		}
+	}
+}

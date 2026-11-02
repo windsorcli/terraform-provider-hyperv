@@ -14,9 +14,9 @@
 #
 # lint:allow-long-comment
 
-# Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1, which
-# the Go-side loadNatStaticMappingWithRetry prepends to this script body
-# before sending it to the runner.
+# Invoke-WithNetNatRetry is defined in nat_static_mapping/_retry.ps1 and the
+# firewall helpers in common/firewall-rule.ps1; the Go-side
+# loadNatStaticMappingScript prepends both to this script body.
 
 function Set-HypervNatStaticMapping {
     [CmdletBinding()]
@@ -81,59 +81,9 @@ function Set-HypervNatStaticMapping {
             -ErrorAction Stop
     }
 
-    # Firewall rule reconciliation:
-    #
-    #   firewall_enabled  rule exists  action
-    #   ----------------  -----------  ------------------------------
-    #   true              yes          Set-NetFirewallRule (mutate)
-    #   true              no           New-NetFirewallRule (recreate)
-    #   false             yes          Set -Enabled False (disable)
-    #   false             no           skip
-    #
-    # The "true + absent" branch closes the out-of-band-delete loop:
-    # without it, Read would report enabled=false forever after an
-    # out-of-band rule delete, since Update would have nothing to do.
-    #
-    # lint:allow-long-comment
-    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -ne $existingFw) {
-        # Set-NetFirewallRule's -Enabled parameter binds to
-        # Microsoft.PowerShell.Cmdletization.GeneratedTypes.NetSecurity.Enabled,
-        # an enum whose string members are "True" and "False" -- NOT
-        # to a [bool]. Passing $true / $false directly raises "Invalid
-        # cast from 'System.Boolean' to ... NetSecurity.Enabled" at the
-        # binder. Convert to the enum's string form before forwarding.
-        $enabledValue = if ($FirewallEnabled) { 'True' } else { 'False' }
-        Set-NetFirewallRule -DisplayName $FirewallName `
-            -Enabled $enabledValue `
-            -Profile $FirewallProfile `
-            -ErrorAction Stop
-    }
-    elseif ($FirewallEnabled) {
-        # No rollback on failure: set.ps1 has no rollback path for any
-        # of its operations (the mapping Remove+Add above also bubbles
-        # raw failures), and inventing one for just this branch would
-        # be inconsistent. A failed recreate surfaces an error to the
-        # operator and the next refresh re-detects the missing rule.
-        New-NetFirewallRule `
-            -DisplayName $FirewallName `
-            -Direction 'Inbound' `
-            -Action 'Allow' `
-            -Protocol $protocolUpper `
-            -LocalPort $ExternalPort `
-            -Profile $FirewallProfile `
-            -ErrorAction Stop | Out-Null
-    }
-
-    # Read-back. Re-probe the firewall to get the post-Set state.
-    # Profile is a flags enum on the wire; ToString() yields the named
-    # form (see get.ps1 for the full rationale).
-    $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    # A rule disabled by the branch above counts as absent, matching get.ps1.
-    $firewallPresent = $null -ne $existingFw -and $existingFw.Enabled.ToString() -eq 'True'
-    $firewallProfile = if ($null -ne $existingFw) { $existingFw.Profile.ToString() } else { '' }
+    Sync-HypervFirewallRule -Enabled $FirewallEnabled -Name $FirewallName -Protocol $protocolUpper `
+        -LocalPort $ExternalPort -FirewallProfile $FirewallProfile
+    $firewall = Get-HypervFirewallRuleState -Name $FirewallName
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
@@ -144,9 +94,9 @@ function Set-HypervNatStaticMapping {
         ExternalPort        = [int]$mapping.ExternalPort
         InternalIPAddress   = $mapping.InternalIPAddress
         InternalPort        = [int]$mapping.InternalPort
-        FirewallRulePresent = [bool]$firewallPresent
+        FirewallRulePresent = [bool]$firewall.Present
         FirewallRuleName    = $FirewallName
-        FirewallRuleProfile = $firewallProfile
+        FirewallRuleProfile = $firewall.Profile
     } | Write-HypervResult
 }
 

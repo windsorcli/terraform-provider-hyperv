@@ -57,8 +57,8 @@ function New-HypervPortProxy {
     try {
         Wait-HypervPortProxyListener -ListenAddress $ListenAddress -ListenPort $ListenPort -OwnerProcessId $ownerProcessId
         if ($FirewallEnabled) {
-            New-HypervPortProxyFirewallRule -FirewallName $FirewallName -ListenAddress $ListenAddress `
-                -ListenPort $ListenPort -FirewallProfile $FirewallProfile
+            New-HypervFirewallRule -Name $FirewallName -Protocol 'TCP' -LocalPort $ListenPort `
+                -FirewallProfile $FirewallProfile -LocalAddress (Get-HypervFirewallLocalAddress -ListenAddress $ListenAddress)
             $firewallCreated = $true
         }
         $rule = Get-HypervPortProxyRule -ListenAddress $ListenAddress -ListenPort $ListenPort

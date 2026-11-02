@@ -10,10 +10,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
 
 var (
@@ -113,7 +113,7 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
-	fw, fwDiags := unpackFirewallRule(ctx, state.FirewallRule)
+	fw, fwDiags := firewallrule.Unpack(ctx, state.FirewallRule)
 	resp.Diagnostics.Append(fwDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -203,7 +203,7 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 		return
 	}
 
-	fw, fwDiags := unpackFirewallRule(ctx, state.FirewallRule)
+	fw, fwDiags := firewallrule.Unpack(ctx, state.FirewallRule)
 	resp.Diagnostics.Append(fwDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -259,12 +259,7 @@ func (r *Resource) ImportState(ctx context.Context, req resource.ImportStateRequ
 	compositeID := fmt.Sprintf("%s:%s:%s:%s", natName, proto, externalIP, externalPortStr)
 
 	// Seeds defaults so the framework's drift guard doesn't trip before the first post-import Read overwrites enabled/profile.
-	fwModel := FirewallRuleModel{
-		Enabled: types.BoolValue(true),
-		Name:    types.StringValue(fwName),
-		Profile: types.StringValue("Any"),
-	}
-	fwObj, fwDiags := types.ObjectValueFrom(ctx, firewallRuleAttrTypes(), fwModel)
+	fwObj, fwDiags := firewallrule.ImportObject(ctx, fwName)
 	resp.Diagnostics.Append(fwDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -286,20 +281,6 @@ func derivedFirewallRuleName(protocol string, externalPort int64) string {
 	return fmt.Sprintf("hyperv-pf-%s-%d", strings.ToLower(protocol), externalPort)
 }
 
-// unpackFirewallRule extracts the nested FirewallRuleModel from the
-// parent Model's types.Object. Null/unknown objects produce a model
-// with all-null sub-attrs; callers should fall back to defaults when
-// needed.
-func unpackFirewallRule(ctx context.Context, obj types.Object) (FirewallRuleModel, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	var fw FirewallRuleModel
-	if obj.IsNull() || obj.IsUnknown() {
-		return fw, diags
-	}
-	diags.Append(obj.As(ctx, &fw, basetypes.ObjectAsOptions{})...)
-	return fw, diags
-}
-
 // buildNewInput translates a Create plan into the wire-level
 // NewNatStaticMappingInput. Returns the resolved firewall rule name as a
 // secondary value because Create needs it both for the wire payload
@@ -307,25 +288,14 @@ func unpackFirewallRule(ctx context.Context, obj types.Object) (FirewallRuleMode
 func buildNewInput(ctx context.Context, plan Model) (hyperv.NewNatStaticMappingInput, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	fw, fwDiags := unpackFirewallRule(ctx, plan.FirewallRule)
+	fw, fwDiags := firewallrule.Unpack(ctx, plan.FirewallRule)
 	diags.Append(fwDiags...)
 	if diags.HasError() {
 		return hyperv.NewNatStaticMappingInput{}, "", diags
 	}
 
 	// firewall.name needs a runtime default (derived from protocol+port); enabled/profile already have static schema defaults.
-	enabled := true
-	if !fw.Enabled.IsNull() && !fw.Enabled.IsUnknown() {
-		enabled = fw.Enabled.ValueBool()
-	}
-	profile := "Any"
-	if !fw.Profile.IsNull() && !fw.Profile.IsUnknown() {
-		profile = fw.Profile.ValueString()
-	}
-	name := fw.Name.ValueString()
-	if fw.Name.IsNull() || fw.Name.IsUnknown() || name == "" {
-		name = derivedFirewallRuleName(plan.Protocol.ValueString(), plan.ExternalPort.ValueInt64())
-	}
+	settings := fw.Resolve(fw.NameOr(derivedFirewallRuleName(plan.Protocol.ValueString(), plan.ExternalPort.ValueInt64())))
 
 	in := hyperv.NewNatStaticMappingInput{
 		NatName:           plan.NatName.ValueString(),
@@ -334,13 +304,9 @@ func buildNewInput(ctx context.Context, plan Model) (hyperv.NewNatStaticMappingI
 		ExternalPort:      int(plan.ExternalPort.ValueInt64()),
 		InternalIPAddress: plan.InternalIP.ValueString(),
 		InternalPort:      int(plan.InternalPort.ValueInt64()),
-		Firewall: hyperv.NatStaticMappingFirewallInput{
-			Enabled: enabled,
-			Name:    name,
-			Profile: profile,
-		},
+		Firewall:          firewallInput(settings),
 	}
-	return in, name, diags
+	return in, settings.Name, diags
 }
 
 // buildSetInput translates an Update plan + state into a
@@ -350,31 +316,19 @@ func buildNewInput(ctx context.Context, plan Model) (hyperv.NewNatStaticMappingI
 func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetNatStaticMappingInput, string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	fw, fwDiags := unpackFirewallRule(ctx, plan.FirewallRule)
+	fw, fwDiags := firewallrule.Unpack(ctx, plan.FirewallRule)
 	diags.Append(fwDiags...)
 	if diags.HasError() {
 		return hyperv.SetNatStaticMappingInput{}, "", diags
 	}
 
 	// Sourced from state, not plan, so a planmodifier-induced unknown can't null out this RequiresReplace field.
-	stateFw, stateFwDiags := unpackFirewallRule(ctx, state.FirewallRule)
+	stateFw, stateFwDiags := firewallrule.Unpack(ctx, state.FirewallRule)
 	diags.Append(stateFwDiags...)
 	if diags.HasError() {
 		return hyperv.SetNatStaticMappingInput{}, "", diags
 	}
-	name := stateFw.Name.ValueString()
-	if name == "" {
-		name = derivedFirewallRuleName(state.Protocol.ValueString(), state.ExternalPort.ValueInt64())
-	}
-
-	enabled := true
-	if !fw.Enabled.IsNull() && !fw.Enabled.IsUnknown() {
-		enabled = fw.Enabled.ValueBool()
-	}
-	profile := "Any"
-	if !fw.Profile.IsNull() && !fw.Profile.IsUnknown() {
-		profile = fw.Profile.ValueString()
-	}
+	settings := fw.Resolve(stateFw.NameOr(derivedFirewallRuleName(state.Protocol.ValueString(), state.ExternalPort.ValueInt64())))
 
 	in := hyperv.SetNatStaticMappingInput{
 		NatName:           state.NatName.ValueString(),
@@ -383,13 +337,9 @@ func buildSetInput(ctx context.Context, plan, state Model) (hyperv.SetNatStaticM
 		ExternalPort:      int(state.ExternalPort.ValueInt64()),
 		InternalIPAddress: plan.InternalIP.ValueString(),
 		InternalPort:      int(plan.InternalPort.ValueInt64()),
-		Firewall: hyperv.NatStaticMappingFirewallInput{
-			Enabled: enabled,
-			Name:    name,
-			Profile: profile,
-		},
+		Firewall:          firewallInput(settings),
 	}
-	return in, name, diags
+	return in, settings.Name, diags
 }
 
 // modelFromNatStaticMapping hydrates a Model from a typed NatStaticMapping DTO.
@@ -403,12 +353,7 @@ func modelFromNatStaticMapping(ctx context.Context, pf *hyperv.NatStaticMapping,
 	// Protocol is uppercase on the wire but lowercase in schema; lowercase here so state matches plan.
 	proto := strings.ToLower(pf.Protocol)
 
-	fwModel := FirewallRuleModel{
-		Enabled: types.BoolValue(pf.FirewallRulePresent),
-		Name:    types.StringValue(fwName),
-		Profile: types.StringValue(coalesceProfile(pf.FirewallRuleProfile)),
-	}
-	fwObj, objDiags := types.ObjectValueFrom(ctx, firewallRuleAttrTypes(), fwModel)
+	fwObj, objDiags := firewallrule.StateObject(ctx, pf.FirewallRulePresent, fwName, pf.FirewallRuleProfile)
 	diags.Append(objDiags...)
 
 	return Model{
@@ -424,13 +369,7 @@ func modelFromNatStaticMapping(ctx context.Context, pf *hyperv.NatStaticMapping,
 	}, diags
 }
 
-// coalesceProfile maps the host's reported firewall profile back into
-// the schema's accepted enum. Get-NetFirewallRule reports an empty
-// string when the rule is missing; map that to "Any" so state always
-// holds a valid enum value.
-func coalesceProfile(hostProfile string) string {
-	if hostProfile == "" {
-		return "Any"
-	}
-	return hostProfile
+// firewallInput converts resolved firewall_rule settings into the script's input.
+func firewallInput(s firewallrule.Settings) hyperv.NatStaticMappingFirewallInput {
+	return hyperv.NatStaticMappingFirewallInput{Enabled: s.Enabled, Name: s.Name, Profile: s.Profile}
 }

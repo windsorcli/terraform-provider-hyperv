@@ -89,15 +89,19 @@ func (c *Client) RemovePortProxy(ctx context.Context, in RemovePortProxyInput) e
 	return nil
 }
 
-// loadPortProxyScript returns port_proxy/<verb>.ps1 with the shared _rule.ps1 helpers prepended.
+// loadPortProxyScript returns port_proxy/<verb>.ps1 with the firewall-rule.ps1 and _rule.ps1 helpers prepended.
 func loadPortProxyScript(verb string) (string, error) {
 	body, err := scripts.PortProxyScript(verb)
 	if err != nil {
 		return "", fmt.Errorf("load port_proxy/%s.ps1: %w", verb, err)
 	}
+	firewall, err := scripts.FirewallRule()
+	if err != nil {
+		return "", fmt.Errorf("load common/firewall-rule.ps1: %w", err)
+	}
 	rule, err := scripts.PortProxyRule()
 	if err != nil {
 		return "", fmt.Errorf("load port_proxy/_rule.ps1: %w", err)
 	}
-	return string(rule) + "\n" + string(body), nil
+	return string(firewall) + "\n" + string(rule) + "\n" + string(body), nil
 }

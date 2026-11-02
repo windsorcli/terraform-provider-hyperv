@@ -4,13 +4,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
 
 // resourceSchema returns the locked-in schema for hyperv_nat_static_mapping.
@@ -138,50 +138,22 @@ func resourceSchema() schema.Schema {
 					int64validator.Between(1, 65535),
 				},
 			},
-			"firewall_rule": schema.SingleNestedAttribute{
-				Optional: true,
-				Computed: true,
-				MarkdownDescription: "Optional inbound firewall allow rule paired with the static " +
+			"firewall_rule": firewallrule.Attribute(firewallrule.Descriptions{
+				Attribute: "Optional inbound firewall allow rule paired with the static " +
 					"mapping. Defaults to `{ enabled = true, profile = \"Any\" }` with `name` " +
 					"derived as `hyperv-pf-<protocol>-<external_port>`. Set `enabled = false` to " +
 					"skip the firewall call entirely; the mapping still lands, but the OS " +
 					"firewall won't open the listen port.",
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.UseStateForUnknown(),
-				},
-				Attributes: map[string]schema.Attribute{
-					"enabled": schema.BoolAttribute{
-						Optional: true,
-						Computed: true,
-						MarkdownDescription: "Whether to manage a `NetFirewallRule` alongside the static " +
-							"mapping. Defaults to `true`. Setting `false` skips firewall management " +
-							"entirely; the mapping lands, but the listen port stays blocked unless " +
-							"another rule already opens it.",
-						Default: booldefault.StaticBool(true),
-					},
-					"name": schema.StringAttribute{
-						Optional: true,
-						Computed: true,
-						MarkdownDescription: "Firewall rule `DisplayName`. Defaults to " +
-							"`hyperv-pf-<protocol>-<external_port>`. Changing this forces a new " +
-							"resource; renaming a `NetFirewallRule` means recreating it.",
-						PlanModifiers: []planmodifier.String{
-							stringplanmodifier.RequiresReplace(),
-							stringplanmodifier.UseStateForUnknown(),
-						},
-					},
-					"profile": schema.StringAttribute{
-						Optional: true,
-						Computed: true,
-						MarkdownDescription: "Firewall profile: `Any`, `Domain`, `Private`, or `Public`. " +
-							"Only a single value is supported. Defaults to `Any`.",
-						Default: stringdefault.StaticString("Any"),
-						Validators: []validator.String{
-							stringvalidator.OneOf("Any", "Domain", "Private", "Public"),
-						},
-					},
-				},
-			},
+				Enabled: "Whether to manage a `NetFirewallRule` alongside the static " +
+					"mapping. Defaults to `true`. Setting `false` skips firewall management " +
+					"entirely; the mapping lands, but the listen port stays blocked unless " +
+					"another rule already opens it.",
+				Name: "Firewall rule `DisplayName`. Defaults to " +
+					"`hyperv-pf-<protocol>-<external_port>`. Changing this forces a new " +
+					"resource; renaming a `NetFirewallRule` means recreating it.",
+				Profile: "Firewall profile: `Any`, `Domain`, `Private`, or `Public`. " +
+					"Only a single value is supported. Defaults to `Any`.",
+			}),
 		},
 	}
 }
