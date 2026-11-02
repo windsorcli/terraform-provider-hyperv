@@ -26,6 +26,9 @@ type Client struct {
 	// portProxyMu serializes netsh portproxy writes, which all edit one registry key.
 	portProxyMu sync.RWMutex
 
+	// icsNetworkMu serializes HCN ICS network writes, since every ICS network shares one VMSwitch.
+	icsNetworkMu sync.RWMutex
+
 	// imageFileLocks serializes create/delete per destination_path so two
 	// concurrent applies against the same path don't race in new.ps1 or
 	// remove.ps1.

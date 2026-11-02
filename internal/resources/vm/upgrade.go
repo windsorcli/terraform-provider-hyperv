@@ -603,27 +603,35 @@ func priorSchemaV4() schema.Schema {
 	}
 }
 
-// priorModelV5 mirrors the v5 Model exactly except it lacks the
-// v6-only vm_id field. Every nested type already matches the current
-// Model at v5 (mac_address / vlan_id on NetworkAdapterModel and
-// secure_boot_template both landed in the v4->v5 bump), so this
-// struct reuses them directly.
+// priorNetworkAdapterModelV5 is the NIC structure on v5, which has
+// no isolation_id.
+type priorNetworkAdapterModelV5 struct {
+	Name        types.String `tfsdk:"name"`
+	SwitchName  types.String `tfsdk:"switch_name"`
+	IPAddresses types.List   `tfsdk:"ip_addresses"`
+	MacAddress  mactype.MAC  `tfsdk:"mac_address"`
+	VlanID      types.Int64  `tfsdk:"vlan_id"`
+}
+
+// priorModelV5 mirrors the v5 Model except it lacks the v6-only vm_id
+// field and network_adapter[].isolation_id. Every other nested type
+// matches the current Model, so this struct reuses them directly.
 type priorModelV5 struct {
-	ID                 types.String `tfsdk:"id"`
-	Name               types.String `tfsdk:"name"`
-	Generation         types.Int64  `tfsdk:"generation"`
-	CPU                *CPUModel    `tfsdk:"cpu"`
-	Memory             *MemoryModel `tfsdk:"memory"`
-	HardDiskDrives     types.List   `tfsdk:"hard_disk_drive"`
-	NetworkAdapters    types.List   `tfsdk:"network_adapter"`
-	DvdDrives          types.List   `tfsdk:"dvd_drive"`
-	BootOrder          types.List   `tfsdk:"boot_order"`
-	SecureBoot         types.Bool   `tfsdk:"secure_boot"`
-	SecureBootTemplate types.String `tfsdk:"secure_boot_template"`
-	Notes              types.String `tfsdk:"notes"`
-	State              *StateModel  `tfsdk:"state"`
-	IPAddresses        types.List   `tfsdk:"ip_addresses"`
-	Path               types.String `tfsdk:"path"`
+	ID                 types.String                 `tfsdk:"id"`
+	Name               types.String                 `tfsdk:"name"`
+	Generation         types.Int64                  `tfsdk:"generation"`
+	CPU                *CPUModel                    `tfsdk:"cpu"`
+	Memory             *MemoryModel                 `tfsdk:"memory"`
+	HardDiskDrives     types.List                   `tfsdk:"hard_disk_drive"`
+	NetworkAdapters    []priorNetworkAdapterModelV5 `tfsdk:"network_adapter"`
+	DvdDrives          types.List                   `tfsdk:"dvd_drive"`
+	BootOrder          types.List                   `tfsdk:"boot_order"`
+	SecureBoot         types.Bool                   `tfsdk:"secure_boot"`
+	SecureBootTemplate types.String                 `tfsdk:"secure_boot_template"`
+	Notes              types.String                 `tfsdk:"notes"`
+	State              *StateModel                  `tfsdk:"state"`
+	IPAddresses        types.List                   `tfsdk:"ip_addresses"`
+	Path               types.String                 `tfsdk:"path"`
 }
 
 // priorSchemaV5 mirrors the v5 schema: the v4 attributes plus
@@ -718,11 +726,11 @@ func priorSchemaV5() schema.Schema {
 	}
 }
 
-// upgradeV5ToV6 maps a v5 state struct into the current Model. The
-// only change is vm_id being added; v5 state files carry no Hyper-V
-// VM GUID, so it migrates null and the next refresh populates it
-// from the host.
-func upgradeV5ToV6(_ context.Context, prior priorModelV5) Model {
+// upgradeV5ToV6 maps a v5 state struct into the current Model. v5
+// state files carry no Hyper-V VM GUID, so vm_id migrates null and the
+// next refresh populates it from the host; each NIC gains a null
+// isolation_id.
+func upgradeV5ToV6(ctx context.Context, prior priorModelV5) Model {
 	return Model{
 		ID:                 prior.ID,
 		VMID:               types.StringNull(),
@@ -731,7 +739,7 @@ func upgradeV5ToV6(_ context.Context, prior priorModelV5) Model {
 		CPU:                prior.CPU,
 		Memory:             prior.Memory,
 		HardDiskDrives:     prior.HardDiskDrives,
-		NetworkAdapters:    prior.NetworkAdapters,
+		NetworkAdapters:    mustNetworkAdapterListFromPrior(ctx, expandPriorNICsV5(prior.NetworkAdapters)),
 		DvdDrives:          prior.DvdDrives,
 		BootOrder:          prior.BootOrder,
 		SecureBoot:         prior.SecureBoot,
@@ -878,6 +886,7 @@ func expandPriorNICs(prior []priorNetworkAdapterModelV1V2V3) []NetworkAdapterMod
 			IPAddresses: types.ListValueMust(types.StringType, []attr.Value{}),
 			MacAddress:  mactype.NewMACNull(),
 			VlanID:      types.Int64Null(),
+			IsolationID: types.Int64Null(),
 		}
 	}
 	return out
@@ -896,6 +905,24 @@ func expandPriorNICsV4(prior []priorNetworkAdapterModelV4) []NetworkAdapterModel
 			IPAddresses: n.IPAddresses,
 			MacAddress:  mactype.NewMACNull(),
 			VlanID:      types.Int64Null(),
+			IsolationID: types.Int64Null(),
+		}
+	}
+	return out
+}
+
+// expandPriorNICsV5 maps the v5 NIC structure into the current
+// NetworkAdapterModel by adding a null isolation_id.
+func expandPriorNICsV5(prior []priorNetworkAdapterModelV5) []NetworkAdapterModel {
+	out := make([]NetworkAdapterModel, len(prior))
+	for i, n := range prior {
+		out[i] = NetworkAdapterModel{
+			Name:        n.Name,
+			SwitchName:  n.SwitchName,
+			IPAddresses: n.IPAddresses,
+			MacAddress:  n.MacAddress,
+			VlanID:      n.VlanID,
+			IsolationID: types.Int64Null(),
 		}
 	}
 	return out

@@ -99,10 +99,33 @@ func init() {
 		},
 	})
 
-	// Runs after hyperv_vm and hyperv_nat: Remove-VMSwitch fails while a NIC or a NetNat still references the switch.
+	// Runs before hyperv_virtual_switch, whose prefix match would otherwise catch the shared ICS switch.
+	resource.AddTestSweepers("hyperv_ics_network", &resource.Sweeper{
+		Name:         "hyperv_ics_network",
+		Dependencies: []string{"hyperv_vm"},
+		F: func(_ string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
+			defer cancel()
+
+			client, closeClient, err := acctest.NewClientForSweep(ctx)
+			if err != nil {
+				return err
+			}
+			defer closeClient()
+
+			removed, err := client.SweepICSNetworks(ctx, acctest.SweepPrefix)
+			if err != nil {
+				return err
+			}
+			log.Printf("[INFO] hyperv_ics_network sweeper: removed %d orphan ICS network(s) under prefix %q: %v", len(removed), acctest.SweepPrefix, removed)
+			return nil
+		},
+	})
+
+	// Runs after hyperv_vm, hyperv_nat, and hyperv_ics_network: Remove-VMSwitch fails while a NIC or a NetNat still references the switch.
 	resource.AddTestSweepers("hyperv_virtual_switch", &resource.Sweeper{
 		Name:         "hyperv_virtual_switch",
-		Dependencies: []string{"hyperv_vm", "hyperv_nat"},
+		Dependencies: []string{"hyperv_vm", "hyperv_nat", "hyperv_ics_network"},
 		F: func(_ string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), sweepBudget)
 			defer cancel()

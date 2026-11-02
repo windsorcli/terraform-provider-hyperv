@@ -930,6 +930,7 @@ func TestNetworkAdapterUniqueNamesValidator(t *testing.T) {
 			IPAddresses: types.ListNull(types.StringType),
 			MacAddress:  mactype.NewMACNull(),
 			VlanID:      types.Int64Null(),
+			IsolationID: types.Int64Null(),
 		}
 	}
 
@@ -1038,6 +1039,89 @@ func TestDiffNetworkAdapters(t *testing.T) {
 			t.Errorf("detach switch = %q, want old-switch", rm[0].SwitchName.ValueString())
 		}
 	})
+}
+
+// An isolation_id change detaches and re-attaches the NIC, the same as a vlan_id change.
+func TestDiffNetworkAdapters_IsolationIDChange(t *testing.T) {
+	t.Parallel()
+
+	nic := func(isolation types.Int64) NetworkAdapterModel {
+		return NetworkAdapterModel{
+			Name:        types.StringValue("a"),
+			SwitchName:  types.StringValue("ics"),
+			VlanID:      types.Int64Null(),
+			IsolationID: isolation,
+		}
+	}
+	cases := []struct {
+		name        string
+		plan, state types.Int64
+		wantChange  bool
+	}{
+		{"unchanged", types.Int64Value(2), types.Int64Value(2), false},
+		{"changed", types.Int64Value(3), types.Int64Value(2), true},
+		{"set", types.Int64Value(2), types.Int64Null(), true},
+		{"cleared", types.Int64Null(), types.Int64Value(2), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			add, rm := diffNetworkAdapters([]NetworkAdapterModel{nic(tc.plan)}, []NetworkAdapterModel{nic(tc.state)})
+			if got := len(add) == 1 && len(rm) == 1; got != tc.wantChange {
+				t.Errorf("got attach=%d detach=%d, want change=%v", len(add), len(rm), tc.wantChange)
+			}
+		})
+	}
+}
+
+func TestAttachNICInputFor_IsolationID(t *testing.T) {
+	t.Parallel()
+
+	in := attachNICInputFor("vm01", NetworkAdapterModel{
+		Name:        types.StringValue("primary"),
+		SwitchName:  types.StringValue("ics"),
+		MacAddress:  mactype.NewMACNull(),
+		VlanID:      types.Int64Null(),
+		IsolationID: types.Int64Value(2),
+	})
+	if in.IsolationID != 2 || in.VlanID != 0 {
+		t.Errorf("got %+v, want IsolationID 2 and no VLAN", in)
+	}
+
+	in = attachNICInputFor("vm01", NetworkAdapterModel{
+		Name:        types.StringValue("primary"),
+		SwitchName:  types.StringValue("lab"),
+		MacAddress:  mactype.NewMACNull(),
+		VlanID:      types.Int64Null(),
+		IsolationID: types.Int64Null(),
+	})
+	if in.IsolationID != 0 {
+		t.Errorf("IsolationID = %d, want 0 for an unset attribute", in.IsolationID)
+	}
+}
+
+// A host-side 0 means isolation off and must flatten to null so an unset config doesn't diff.
+func TestModelFromVM_FlattensIsolationID(t *testing.T) {
+	t.Parallel()
+
+	got := modelFromVM(t.Context(), &hyperv.VM{
+		Name:       "vm01",
+		Generation: 2,
+		NetworkAdapters: []hyperv.NetworkAdapter{
+			{Name: "ics", SwitchName: "ics", IsolationID: 2},
+			{Name: "plain", SwitchName: "lab"},
+		},
+	})
+	nics, diags := got.NetworkAdapterModels(t.Context())
+	if diags.HasError() {
+		t.Fatalf("NetworkAdapterModels: %v", diags)
+	}
+	if nics[0].IsolationID.ValueInt64() != 2 {
+		t.Errorf("ics IsolationID = %+v, want 2", nics[0].IsolationID)
+	}
+	if !nics[1].IsolationID.IsNull() {
+		t.Errorf("plain IsolationID = %+v, want null", nics[1].IsolationID)
+	}
 }
 
 // TestModelFromVM_PopulatesNetworkAdapters confirms the cmdlet's NIC
