@@ -217,6 +217,41 @@ Describe 'Set-HypervVM' {
         }
     }
 
+    Context 'path move' {
+
+        It 'moves configuration, checkpoint, and smart-paging files when path is supplied' {
+            Mock Get-VM { New-HypervVMSample }
+            Mock Move-VMStorage { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Set-VM { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 -Path 'E:\vms\vm01' | Out-Null
+
+            Should -Invoke Move-VMStorage -Times 1 -Exactly -ParameterFilter {
+                $VMName -eq 'vm01' -and
+                $VirtualMachinePath -eq 'E:\vms\vm01' -and
+                $SnapshotFilePath -eq 'E:\vms\vm01' -and
+                $SmartPagingFilePath -eq 'E:\vms\vm01'
+            }
+            Should -Invoke Set-VMMemory    -Times 0 -Exactly
+            Should -Invoke Set-VMProcessor -Times 0 -Exactly
+            Should -Invoke Set-VM          -Times 0 -Exactly
+        }
+
+        It 'does not call Move-VMStorage when path is omitted' {
+            Mock Get-VM { New-HypervVMSample }
+            Mock Move-VMStorage { }
+            Mock Set-VMProcessor { }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            Set-HypervVM -Name 'vm01' -Generation 2 -Vcpu 4 | Out-Null
+
+            Should -Invoke Move-VMStorage -Times 0 -Exactly
+        }
+    }
+
     Context 'error propagation' {
 
         It 'throws ObjectNotFound when the VM is missing (skips all Set-* cmdlets)' {

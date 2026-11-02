@@ -739,7 +739,7 @@ func upgradeV5ToV6(_ context.Context, prior priorModelV5) Model {
 		Notes:              prior.Notes,
 		State:              prior.State,
 		IPAddresses:        prior.IPAddresses,
-		Path:               prior.Path,
+		Path:               pathtype.Path{StringValue: prior.Path},
 	}
 }
 
@@ -762,7 +762,7 @@ func upgradeV4ToV5(ctx context.Context, prior priorModelV4) Model {
 		Notes:           prior.Notes,
 		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathtype.Path{StringValue: prior.Path},
 	}
 }
 
@@ -828,7 +828,7 @@ func upgradeV3ToV5(ctx context.Context, prior priorModelV3) Model {
 		Notes:           prior.Notes,
 		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathtype.Path{StringValue: prior.Path},
 	}
 }
 
@@ -861,7 +861,7 @@ func upgradeV1ToV2(ctx context.Context, prior priorModelV1) Model {
 		Notes:           prior.Notes,
 		State:           state,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathtype.Path{StringValue: prior.Path},
 	}
 }
 
@@ -938,7 +938,7 @@ func upgradeV2ToV3(ctx context.Context, prior priorModelV2) Model {
 		Notes:           prior.Notes,
 		State:           prior.State,
 		IPAddresses:     prior.IPAddresses,
-		Path:            prior.Path,
+		Path:            pathtype.Path{StringValue: prior.Path},
 	}
 }
 
@@ -955,7 +955,7 @@ func upgradeV0ToV1(_ context.Context, prior priorModelV0) Model {
 		Memory:     &MemoryModel{StartupBytes: prior.MemoryBytes},
 		SecureBoot: prior.SecureBoot,
 		Notes:      prior.Notes,
-		Path:       prior.Path,
+		Path:       pathtype.Path{StringValue: prior.Path},
 
 		// New list attributes didn't exist at v0; empty (known) lists keep post-upgrade state valid against the v1 schema.
 		HardDiskDrives:  types.ListValueMust(HardDiskDriveListElementType, []attr.Value{}),

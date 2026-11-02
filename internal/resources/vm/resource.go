@@ -759,7 +759,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 func setInputHasChanges(in hyperv.SetVMInput) bool {
 	return in.Vcpu != nil || in.MemoryBytes != nil ||
 		in.DynamicMemory != nil || in.MinMemoryBytes != nil || in.MaxMemoryBytes != nil ||
-		in.SecureBoot != nil || in.Notes != nil
+		in.SecureBoot != nil || in.Notes != nil || in.Path != nil
 }
 
 // Delete runs remove.ps1. ErrNotFound is treated as success (the VM is
@@ -834,6 +834,10 @@ func buildNewInput(plan Model) hyperv.NewVMInput {
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
+	if !plan.Path.IsNull() && !plan.Path.IsUnknown() {
+		v := plan.Path.ValueString()
+		in.Path = &v
+	}
 	return in
 }
 
@@ -889,7 +893,20 @@ func buildSetInput(plan, state Model) hyperv.SetVMInput {
 		v := plan.Notes.ValueString()
 		in.Notes = &v
 	}
+	if !plan.Path.IsNull() && !plan.Path.IsUnknown() && !pathSemanticEquals(plan.Path, state.Path) {
+		v := plan.Path.ValueString()
+		in.Path = &v
+	}
 	return in
+}
+
+// pathSemanticEquals compares two paths under pathtype's slash and case folding; a null or unknown side never matches.
+func pathSemanticEquals(a, b pathtype.Path) bool {
+	if a.IsNull() || a.IsUnknown() || b.IsNull() || b.IsUnknown() {
+		return false
+	}
+	eq, _ := a.StringSemanticEquals(context.Background(), b)
+	return eq
 }
 
 // memoryModelFromVM builds the nested MemoryModel from a VM read. The
@@ -1067,7 +1084,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		Notes:              notes,
 		State:              &StateModel{Desired: types.StringNull(), Current: types.StringValue(v.State)},
 		IPAddresses:        typeflatten.IPAddresses(v.NetworkAdapters),
-		Path:               types.StringValue(v.Path),
+		Path:               pathtype.NewPathValue(v.Path),
 	}
 }
 

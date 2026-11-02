@@ -5,6 +5,7 @@ resource "hyperv_vm" "node01" {
   memory      = { startup_bytes = 4294967296 } # 4 GiB
   secure_boot = false
   notes       = "k8s control plane"
+  path        = "C:/hyperv/vms/node01" # configuration, checkpoint, and smart-paging files
 
   network_adapter = [
     { name = "primary", switch_name = "lab-private" },

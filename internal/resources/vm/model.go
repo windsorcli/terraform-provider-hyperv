@@ -38,7 +38,9 @@ type Model struct {
 	Notes              types.String `tfsdk:"notes"`
 	State              *StateModel  `tfsdk:"state"`
 	IPAddresses        types.List   `tfsdk:"ip_addresses"`
-	Path               types.String `tfsdk:"path"`
+
+	// Path is null in a plan that leaves it unset, so Create keeps the host's default folder.
+	Path pathtype.Path `tfsdk:"path"`
 	// WaitForGuestIPTimeout is config-only: the host has no value for it, so every state write copies it from config.
 	WaitForGuestIPTimeout types.String `tfsdk:"wait_for_guest_ip_timeout"`
 }
