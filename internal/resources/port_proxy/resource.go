@@ -109,22 +109,25 @@ func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *res
 		return
 	}
 
+	// A malformed firewall_rule in state must not keep a rule deleted out of band in state.
+	var fwDiags diag.Diagnostics
 	pp, err := r.client.GetPortProxy(ctx, hyperv.GetPortProxyInput{
 		ListenAddress: state.ListenAddress.ValueString(),
 		ListenPort:    int(state.ListenPort.ValueInt64()),
-		FirewallName:  stateFirewallName(ctx, state, &resp.Diagnostics),
+		FirewallName:  stateFirewallName(ctx, state, &fwDiags),
 	})
+	if errors.Is(err, hyperv.ErrNotFound) {
+		tflog.Info(ctx, "hyperv_port_proxy not found; removing from state", map[string]any{
+			"id": state.ID.ValueString(),
+		})
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	resp.Diagnostics.Append(fwDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, hyperv.ErrNotFound) {
-			tflog.Info(ctx, "hyperv_port_proxy not found; removing from state", map[string]any{
-				"id": state.ID.ValueString(),
-			})
-			resp.State.RemoveResource(ctx)
-			return
-		}
 		resp.Diagnostics.AddError("Read hyperv_port_proxy failed", err.Error())
 		return
 	}
@@ -173,7 +176,7 @@ func (r *Resource) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
-// Delete runs remove.ps1; a rule that is already gone is success.
+// Delete runs remove.ps1; RemovePortProxy already treats a rule that is gone as success.
 func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("provider not configured",
@@ -197,7 +200,7 @@ func (r *Resource) Delete(ctx context.Context, req resource.DeleteRequest, resp 
 	}
 
 	tflog.Debug(ctx, "deleting hyperv_port_proxy", map[string]any{"id": state.ID.ValueString()})
-	if err := r.client.RemovePortProxy(ctx, in); err != nil && !errors.Is(err, hyperv.ErrNotFound) {
+	if err := r.client.RemovePortProxy(ctx, in); err != nil {
 		resp.Diagnostics.AddError("Delete hyperv_port_proxy failed", err.Error())
 	}
 }

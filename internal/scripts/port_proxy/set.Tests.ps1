@@ -52,7 +52,9 @@ Describe 'Set-HypervPortProxy' {
 
         Set-HypervPortProxy @in | Out-Null
 
-        Should -Invoke Set-NetFirewallRule -Times 1 -ParameterFilter { $Enabled -eq 'False' -and $Profile -eq 'Any' }
+        Should -Invoke Set-NetFirewallRule -Times 1 -ParameterFilter {
+            $Enabled -eq 'False' -and $Profile -eq 'Any' -and $LocalAddress -eq 'Any'
+        }
     }
 
     It 'recreates a firewall rule deleted out of band' {
@@ -60,7 +62,9 @@ Describe 'Set-HypervPortProxy' {
 
         Set-HypervPortProxy @script:SetArgs | Out-Null
 
-        Should -Invoke New-NetFirewallRule -Times 1 -ParameterFilter { $LocalPort -eq 15000 -and $Protocol -eq 'TCP' }
+        Should -Invoke New-NetFirewallRule -Times 1 -ParameterFilter {
+            $LocalPort -eq 15000 -and $Protocol -eq 'TCP' -and $LocalAddress -eq 'Any'
+        }
     }
 
     It 'throws ObjectNotFound when the rule is gone' {

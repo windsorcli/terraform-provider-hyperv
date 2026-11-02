@@ -48,8 +48,19 @@ Describe 'New-HypervPortProxy' {
 
             Should -Invoke New-NetFirewallRule -Times 1 -ParameterFilter {
                 $DisplayName -eq 'hyperv-pp-0.0.0.0-15000' -and $Direction -eq 'Inbound' -and
-                $Protocol -eq 'TCP' -and $LocalPort -eq 15000 -and $Profile -eq 'Any'
+                $Protocol -eq 'TCP' -and $LocalPort -eq 15000 -and $Profile -eq 'Any' -and $LocalAddress -eq 'Any'
             }
+        }
+
+        It 'scopes the firewall rule to a specific listen address' {
+            $in = $script:NewArgs.Clone()
+            $in.ListenAddress = '192.168.3.77'
+            Mock Get-ItemProperty { if ($script:ruleAdded) { New-HypervPortProxyRegistryItem -ListenAddress '192.168.3.77' } }
+            Mock Get-NetTCPConnection { New-HypervListenerSample -LocalAddress '192.168.3.77' }
+
+            New-HypervPortProxy @in | Out-Null
+
+            Should -Invoke New-NetFirewallRule -Times 1 -ParameterFilter { $LocalAddress -eq '192.168.3.77' }
         }
 
         It 'skips the firewall rule when disabled' {
@@ -106,6 +117,18 @@ Describe 'New-HypervPortProxy' {
             Should -Invoke Invoke-HypervNetsh -Times 1 -ParameterFilter {
                 ($ArgumentList -join ' ') -eq 'interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=15000'
             }
+        }
+
+        It 'deletes the rule and the firewall rule when the read-back finds nothing' {
+            Mock Get-ItemProperty { }
+            Mock Remove-NetFirewallRule { }
+
+            $err = $null
+            try { New-HypervPortProxy @script:NewArgs } catch { $err = $_ }
+
+            $err.CategoryInfo.Category | Should -Be 'ObjectNotFound'
+            Should -Invoke Invoke-HypervNetsh -Times 1 -ParameterFilter { $ArgumentList -contains 'delete' }
+            Should -Invoke Remove-NetFirewallRule -Times 1 -ParameterFilter { $DisplayName -eq 'hyperv-pp-0.0.0.0-15000' }
         }
 
         It 'deletes the rule and rethrows when the firewall rule fails' {

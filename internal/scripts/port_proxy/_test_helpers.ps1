@@ -31,6 +31,7 @@ function New-NetFirewallRule {
         [string] $Direction,
         [string] $Action,
         [string] $Protocol,
+        [string] $LocalAddress,
         [int]    $LocalPort,
         [string] $Profile
     )
@@ -41,7 +42,8 @@ function Set-NetFirewallRule {
     param(
         [string] $DisplayName,
         [string] $Enabled,
-        [string] $Profile
+        [string] $Profile,
+        [string] $LocalAddress
     )
 }
 

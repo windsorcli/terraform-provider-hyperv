@@ -53,17 +53,17 @@ function New-HypervPortProxy {
         "listenaddress=$ListenAddress", "listenport=$ListenPort",
         "connectaddress=$ConnectAddress", "connectport=$ConnectPort") | Out-Null
 
+    $firewallCreated = $false
     try {
         Wait-HypervPortProxyListener -ListenAddress $ListenAddress -ListenPort $ListenPort -OwnerProcessId $ownerProcessId
         if ($FirewallEnabled) {
-            New-NetFirewallRule `
-                -DisplayName $FirewallName `
-                -Direction 'Inbound' `
-                -Action 'Allow' `
-                -Protocol 'TCP' `
-                -LocalPort $ListenPort `
-                -Profile $FirewallProfile `
-                -ErrorAction Stop | Out-Null
+            New-HypervPortProxyFirewallRule -FirewallName $FirewallName -ListenAddress $ListenAddress `
+                -ListenPort $ListenPort -FirewallProfile $FirewallProfile
+            $firewallCreated = $true
+        }
+        $rule = Get-HypervPortProxyRule -ListenAddress $ListenAddress -ListenPort $ListenPort
+        if ($null -eq $rule) {
+            throw (New-HypervPortProxyNotFoundError -ListenAddress $ListenAddress -ListenPort $ListenPort)
         }
     }
     catch {
@@ -72,14 +72,10 @@ function New-HypervPortProxy {
             Invoke-HypervNetsh -ArgumentList @(
                 'interface', 'portproxy', 'delete', 'v4tov4',
                 "listenaddress=$ListenAddress", "listenport=$ListenPort") | Out-Null
+            if ($firewallCreated) { Remove-NetFirewallRule -DisplayName $FirewallName -ErrorAction Stop }
         }
         catch { $null = $_ }
         throw $original
-    }
-
-    $rule = Get-HypervPortProxyRule -ListenAddress $ListenAddress -ListenPort $ListenPort
-    if ($null -eq $rule) {
-        throw (New-HypervPortProxyNotFoundError -ListenAddress $ListenAddress -ListenPort $ListenPort)
     }
     Write-HypervPortProxyResult -Rule $rule -FirewallName $FirewallName
 }

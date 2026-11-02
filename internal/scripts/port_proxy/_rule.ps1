@@ -106,6 +106,35 @@ function Wait-HypervPortProxyListener {
     throw "netsh accepted the portproxy rule for ${ListenAddress}:$ListenPort, but the IP Helper service isn't listening on it.$holder"
 }
 
+# Get-HypervFirewallLocalAddress maps the wildcard listen address to the firewall's 'Any' scope.
+function Get-HypervFirewallLocalAddress {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ListenAddress
+    )
+    if ($ListenAddress -eq '0.0.0.0') { 'Any' } else { $ListenAddress }
+}
+
+# New-HypervPortProxyFirewallRule opens listen_port inbound, scoped to the rule's listen address.
+function New-HypervPortProxyFirewallRule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $FirewallName,
+        [Parameter(Mandatory)] [string] $ListenAddress,
+        [Parameter(Mandatory)] [int]    $ListenPort,
+        [Parameter(Mandatory)] [string] $FirewallProfile
+    )
+    New-NetFirewallRule `
+        -DisplayName $FirewallName `
+        -Direction 'Inbound' `
+        -Action 'Allow' `
+        -Protocol 'TCP' `
+        -LocalAddress (Get-HypervFirewallLocalAddress -ListenAddress $ListenAddress) `
+        -LocalPort $ListenPort `
+        -Profile $FirewallProfile `
+        -ErrorAction Stop | Out-Null
+}
+
 # Get-HypervPortProxyFirewallState reports the firewall rule as present only when it exists and is
 # enabled, since set.ps1 disables the rule rather than deleting it when firewall_rule.enabled is false.
 function Get-HypervPortProxyFirewallState {
