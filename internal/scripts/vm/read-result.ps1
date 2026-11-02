@@ -105,11 +105,17 @@ function Read-HypervVMResult {
         foreach ($nic in (Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop)) {
             # Empty unless DynamicMacAddressEnabled=false (user-set static MAC); a dynamic MAC would otherwise create a perpetual diff.
             $macAddress = if ($nic.DynamicMacAddressEnabled) { '' } else { [string] $nic.MacAddress }
-            # AccessVlanId regardless of mode: trunk/isolation aren't yet supported, and a trunk NIC's AccessVlanId=0 correctly reads as unset.
+            # AccessVlanId regardless of mode: trunk isn't supported, and a trunk NIC's AccessVlanId=0 correctly reads as unset.
             $vlanID = 0
             $vlanInfo = Get-VMNetworkAdapterVlan -VMNetworkAdapter $nic -ErrorAction Stop
             if ($vlanInfo -and $vlanInfo.OperationMode -eq 'Access') {
                 $vlanID = [int] $vlanInfo.AccessVlanId
+            }
+            # Only Vlan isolation mode is managed; any other mode reads as unset.
+            $isolationID = 0
+            $isolationInfo = Get-VMNetworkAdapterIsolation -VMNetworkAdapter $nic -ErrorAction Stop
+            if ($isolationInfo -and $isolationInfo.IsolationMode.ToString() -eq 'Vlan') {
+                $isolationID = [int] $isolationInfo.DefaultIsolationID
             }
             [pscustomobject]@{
                 Name        = $nic.Name
@@ -117,6 +123,7 @@ function Read-HypervVMResult {
                 IPAddresses = [string[]] @($nic.IPAddresses)
                 MacAddress  = $macAddress
                 VlanID      = $vlanID
+                IsolationID = $isolationID
             }
         }
     )
