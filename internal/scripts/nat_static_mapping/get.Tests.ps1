@@ -85,6 +85,7 @@ Describe 'Get-HypervNatStaticMapping' {
                 -FirewallName 'windsor-pf-tcp-80' | ConvertFrom-Json
 
             $parsed.FirewallRulePresent | Should -BeFalse
+            $parsed.FirewallRuleName | Should -Be 'windsor-pf-tcp-80'
             $parsed.FirewallRuleProfile | Should -Be 'Domain'
         }
 

@@ -163,9 +163,34 @@ Describe 'Set-HypervNatStaticMapping' {
                 -FirewallProfile 'Any' | ConvertFrom-Json
 
             Should -Invoke Set-NetFirewallRule -Times 1 -Exactly -ParameterFilter {
-                $DisplayName -eq 'windsor-pf-tcp-80' -and $Enabled -eq 'False'
+                $DisplayName -eq 'windsor-pf-tcp-80' -and $Enabled -eq 'False' -and $Profile -eq 'Any'
             }
             $parsed.FirewallRulePresent | Should -BeFalse
+        }
+
+        It 'skips the firewall when firewall.enabled=false and the rule is absent' {
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
+            Mock Remove-NetNatStaticMapping { }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
+            Mock Get-NetFirewallRule { }
+            Mock Set-NetFirewallRule { }
+            Mock New-NetFirewallRule { }
+
+            $parsed = Set-HypervNatStaticMapping `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $false `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' | ConvertFrom-Json
+
+            Should -Invoke Set-NetFirewallRule -Times 0 -Exactly
+            Should -Invoke New-NetFirewallRule -Times 0 -Exactly
+            $parsed.FirewallRulePresent | Should -BeFalse
+            $parsed.FirewallRuleProfile | Should -Be ''
         }
     }
 
