@@ -138,6 +138,35 @@ Describe 'Set-HypervNatStaticMapping' {
                 $Profile -eq 'Any'
             }
         }
+
+        It 'disables an existing rule and reports FirewallRulePresent=false when firewall.enabled=false' {
+            Mock Get-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
+            Mock Remove-NetNatStaticMapping { }
+            Mock Add-NetNatStaticMapping { New-HypervNatStaticMappingSample -StaticMappingID 1 }
+            Mock Set-NetFirewallRule { }
+            $script:fwCallCount = 0
+            Mock Get-NetFirewallRule {
+                $script:fwCallCount++
+                if ($script:fwCallCount -eq 1) { return New-HypervFirewallRuleSample -Enabled 'True' }
+                return New-HypervFirewallRuleSample -Enabled 'False'
+            }
+
+            $parsed = Set-HypervNatStaticMapping `
+                -NatName 'windsor-nat' `
+                -Protocol 'tcp' `
+                -ExternalIPAddress '0.0.0.0' `
+                -ExternalPort 80 `
+                -InternalIPAddress '192.168.100.10' `
+                -InternalPort 30080 `
+                -FirewallEnabled $false `
+                -FirewallName 'windsor-pf-tcp-80' `
+                -FirewallProfile 'Any' | ConvertFrom-Json
+
+            Should -Invoke Set-NetFirewallRule -Times 1 -Exactly -ParameterFilter {
+                $DisplayName -eq 'windsor-pf-tcp-80' -and $Enabled -eq 'False'
+            }
+            $parsed.FirewallRulePresent | Should -BeFalse
+        }
     }
 
     Context 'Add-NetNatStaticMapping transient retry' {

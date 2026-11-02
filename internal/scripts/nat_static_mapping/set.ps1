@@ -131,8 +131,9 @@ function Set-HypervNatStaticMapping {
     # form (see get.ps1 for the full rationale).
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    $firewallPresent = $null -ne $existingFw
-    $firewallProfile = if ($firewallPresent) { $existingFw.Profile.ToString() } else { '' }
+    # A rule disabled by the branch above counts as absent, matching get.ps1.
+    $firewallPresent = $null -ne $existingFw -and $existingFw.Enabled.ToString() -eq 'True'
+    $firewallProfile = if ($null -ne $existingFw) { $existingFw.Profile.ToString() } else { '' }
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"

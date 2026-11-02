@@ -67,13 +67,14 @@ function Get-HypervNatStaticMapping {
     # the load-bearing piece; the firewall is a companion convenience.
     $existingFw = Get-NetFirewallRule -DisplayName $FirewallName -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    $firewallPresent = $null -ne $existingFw
+    # set.ps1 disables the rule rather than deleting it on enabled=false, so a disabled rule counts as absent.
+    $firewallPresent = $null -ne $existingFw -and $existingFw.Enabled.ToString() -eq 'True'
     # Get-NetFirewallRule reports Profile as a flags enum (Any=0,
     # Domain=1, Private=2, Public=4, or comma-joined for multi-profile
     # rules). ToString() yields the named form ("Any", "Domain",
     # "Domain, Private", etc.); without it the projection emits the
     # numeric int and the typed client fails to decode the string field.
-    $firewallProfile = if ($firewallPresent) { $existingFw.Profile.ToString() } else { '' }
+    $firewallProfile = if ($null -ne $existingFw) { $existingFw.Profile.ToString() } else { '' }
 
     [pscustomobject]@{
         Id                  = "${NatName}:${Protocol}:${ExternalIPAddress}:${ExternalPort}"
