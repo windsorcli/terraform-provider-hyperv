@@ -206,6 +206,27 @@ function Get-VMNetworkAdapterVlan {
     )
 }
 
+function Set-VMNetworkAdapterIsolation {
+    [CmdletBinding()]
+    param(
+        [string] $VMName,
+        [string] $VMNetworkAdapterName,
+        $VMNetworkAdapter,
+        [string] $IsolationMode,
+        [int]    $DefaultIsolationID,
+        [bool]   $AllowUntaggedTraffic
+    )
+}
+
+function Get-VMNetworkAdapterIsolation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] $VMNetworkAdapter,
+        [string] $VMName,
+        [string] $VMNetworkAdapterName
+    )
+}
+
 function Get-VMDvdDrive {
     [CmdletBinding()]
     param(
@@ -442,5 +463,18 @@ function New-HypervVMNetworkAdapterVlanSample {
     [pscustomobject]@{
         OperationMode = $OperationMode
         AccessVlanId  = $AccessVlanId
+    }
+}
+
+# New-HypervVMNetworkAdapterIsolationSample models the Get-VMNetworkAdapterIsolation fields the read script uses.
+function New-HypervVMNetworkAdapterIsolationSample {
+    [CmdletBinding()]
+    param(
+        [string] $IsolationMode = 'None',
+        [int]    $DefaultIsolationID = 0
+    )
+    [pscustomobject]@{
+        IsolationMode      = $IsolationMode
+        DefaultIsolationID = $DefaultIsolationID
     }
 }

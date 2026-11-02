@@ -992,6 +992,10 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 		if n.VlanID > 0 {
 			vlan = types.Int64Value(int64(n.VlanID))
 		}
+		isolation := types.Int64Null()
+		if n.IsolationID > 0 {
+			isolation = types.Int64Value(int64(n.IsolationID))
+		}
 		// types.ListValueMust panics only on element-type mismatch, and every element here is types.String.
 		nics = append(nics, NetworkAdapterModel{
 			Name:        types.StringValue(n.Name),
@@ -999,6 +1003,7 @@ func modelFromVM(ctx context.Context, v *hyperv.VM) Model {
 			IPAddresses: types.ListValueMust(types.StringType, ipElems),
 			MacAddress:  macVal,
 			VlanID:      vlan,
+			IsolationID: isolation,
 		})
 	}
 
@@ -1240,7 +1245,8 @@ func diffNetworkAdapters(plan, state []NetworkAdapterModel) (toAttach, toDetach 
 		}
 		if !planN.SwitchName.Equal(stateN.SwitchName) ||
 			macsDiffer ||
-			!planN.VlanID.Equal(stateN.VlanID) {
+			!planN.VlanID.Equal(stateN.VlanID) ||
+			!planN.IsolationID.Equal(stateN.IsolationID) {
 			toDetach = append(toDetach, stateN)
 			toAttach = append(toAttach, planN)
 		}
@@ -1254,9 +1260,10 @@ func diffNetworkAdapters(plan, state []NetworkAdapterModel) (toAttach, toDetach 
 }
 
 // attachNICInputFor builds the wire-level AttachNetworkAdapterInput.
-// Optional MacAddress and VlanID are passed through only when set in
-// the plan; the script side treats empty MacAddress as "use Hyper-V's
-// dynamic-MAC pool" and zero VlanID as "untagged".
+// Optional MacAddress, VlanID, and IsolationID are passed through only
+// when set in the plan; the script side treats empty MacAddress as "use
+// Hyper-V's dynamic-MAC pool", zero VlanID as "untagged", and zero
+// IsolationID as "isolation off".
 func attachNICInputFor(vmName string, n NetworkAdapterModel) hyperv.AttachNetworkAdapterInput {
 	in := hyperv.AttachNetworkAdapterInput{
 		Name:       n.Name.ValueString(),
@@ -1268,6 +1275,9 @@ func attachNICInputFor(vmName string, n NetworkAdapterModel) hyperv.AttachNetwor
 	}
 	if !n.VlanID.IsNull() && !n.VlanID.IsUnknown() {
 		in.VlanID = int(n.VlanID.ValueInt64())
+	}
+	if !n.IsolationID.IsNull() && !n.IsolationID.IsUnknown() {
+		in.IsolationID = int(n.IsolationID.ValueInt64())
 	}
 	return in
 }
