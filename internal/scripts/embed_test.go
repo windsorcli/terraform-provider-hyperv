@@ -245,3 +245,39 @@ func TestVMScript_TestFilesNotEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestPortProxyScript_LoadsAllVerbs(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"get", "new", "set", "remove"} {
+		body, err := PortProxyScript(verb)
+		if err != nil {
+			t.Errorf("PortProxyScript(%q): %v", verb, err)
+			continue
+		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			t.Errorf("PortProxyScript(%q) returned empty body", verb)
+		}
+	}
+	rule, err := PortProxyRule()
+	if err != nil || len(bytes.TrimSpace(rule)) == 0 {
+		t.Errorf("PortProxyRule() = %d bytes, %v", len(rule), err)
+	}
+}
+
+func TestPortProxyScript_TestFilesNotEmbedded(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"port_proxy/get.Tests.ps1",
+		"port_proxy/new.Tests.ps1",
+		"port_proxy/set.Tests.ps1",
+		"port_proxy/remove.Tests.ps1",
+		"port_proxy/rule.Tests.ps1",
+		"port_proxy/_test_helpers.ps1",
+	} {
+		if _, err := PortProxy.ReadFile(name); err == nil {
+			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
+		}
+	}
+}

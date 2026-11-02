@@ -171,3 +171,15 @@ const VMGen1FixtureJSON = `{
 	"DvdDrives": [],
 	"BootOrder": []
 }`
+
+// PortProxyFixtureJSON is the eight-field result port_proxy/{get,new,set}.ps1 emit, locked by get.Tests.ps1.
+const PortProxyFixtureJSON = `{
+	"Id": "0.0.0.0:15000",
+	"ListenAddress": "0.0.0.0",
+	"ListenPort": 15000,
+	"ConnectAddress": "172.30.98.222",
+	"ConnectPort": 50000,
+	"FirewallRulePresent": true,
+	"FirewallRuleName": "hyperv-pp-0.0.0.0-15000",
+	"FirewallRuleProfile": "Any"
+}`

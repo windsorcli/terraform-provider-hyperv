@@ -23,6 +23,7 @@ import (
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/nat_static_mapping"
+	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/port_proxy"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vhd"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vm"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/vswitch"
@@ -396,6 +397,7 @@ func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource
 		vhd.New,
 		vm.New,
 		nat_static_mapping.New,
+		port_proxy.New,
 	}
 }
 

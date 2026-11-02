@@ -82,6 +82,22 @@ func VHDScript(verb string) ([]byte, error) {
 	return VHD.ReadFile("vhd/" + verb + ".ps1")
 }
 
+// PortProxy holds the four verb scripts for hyperv_port_proxy plus _rule.ps1, which the client prepends to each.
+//
+//go:embed port_proxy/get.ps1 port_proxy/new.ps1 port_proxy/set.ps1 port_proxy/remove.ps1
+//go:embed port_proxy/_rule.ps1
+var PortProxy embed.FS
+
+// PortProxyScript returns the contents of port_proxy/<verb>.ps1 (verb in {get, new, set, remove}).
+func PortProxyScript(verb string) ([]byte, error) {
+	return PortProxy.ReadFile("port_proxy/" + verb + ".ps1")
+}
+
+// PortProxyRule returns port_proxy/_rule.ps1, the helpers every port_proxy verb calls.
+func PortProxyRule() ([]byte, error) {
+	return PortProxy.ReadFile("port_proxy/_rule.ps1")
+}
+
 // NetNat holds the sweep script for orphan-NetNat cleanup, used by the
 // acceptance-test sweeper. Production CRUD on NetNat lives inside
 // vswitch/{new,remove}.ps1 and nat_static_mapping/*.ps1.
