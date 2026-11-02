@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Requirements: Local Administrators on the target host. Both Add-NetNatStaticMapping https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping and New-NetFirewallRule https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule return "Access denied" for a user in Hyper-V Administrators alone, as verified on Windows Server 2022 (build 10.0.20348); Microsoft's cmdlet reference pages don't document a privilege requirement, so this floor is tested rather than cited.
   Manages a single static NAT port forward, TCP or UDP, plus an optional inbound firewall allow rule; functionally equivalent to azurerm_lb_nat_rule or google_compute_forwarding_rule. Targets an existing NetNat instance by name, typically created through hyperv_virtual_switch with switch_type = "NAT", but any pre-existing NetNat, created out-of-band, through Hyper-V Manager, or through DSC, is also accepted.
+  Use this resource for a guest behind a NetNat, and for UDP. To forward TCP to a guest with no NetNat in front of it, such as one on a plain Internal switch, use hyperv_port_proxy instead.
 ---
 
 # hyperv_nat_static_mapping (Resource)
@@ -12,6 +13,8 @@ description: |-
 **Requirements:** **Local Administrators** on the target host. Both [`Add-NetNatStaticMapping`](https://learn.microsoft.com/en-us/powershell/module/netnat/add-netnatstaticmapping) and [`New-NetFirewallRule`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule) return "Access denied" for a user in `Hyper-V Administrators` alone, as verified on Windows Server 2022 (build 10.0.20348); Microsoft's cmdlet reference pages don't document a privilege requirement, so this floor is tested rather than cited.
 
 Manages a single static NAT port forward, TCP or UDP, plus an optional inbound firewall allow rule; functionally equivalent to `azurerm_lb_nat_rule` or `google_compute_forwarding_rule`. Targets an existing `NetNat` instance by name, typically created through `hyperv_virtual_switch` with `switch_type = "NAT"`, but any pre-existing NetNat, created out-of-band, through Hyper-V Manager, or through DSC, is also accepted.
+
+Use this resource for a guest behind a `NetNat`, and for UDP. To forward TCP to a guest with no `NetNat` in front of it, such as one on a plain Internal switch, use `hyperv_port_proxy` instead.
 
 
 

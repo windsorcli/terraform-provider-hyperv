@@ -65,8 +65,8 @@ func TestProvider_Resources(t *testing.T) {
 	got := p.Resources(t.Context())
 
 	// Pin the count so accidental wiring of an additional resource doesn't slip in before its schema is reviewed.
-	if len(got) != 5 {
-		t.Errorf("got %d resources, want 5 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm, hyperv_nat_static_mapping)", len(got))
+	if len(got) != 6 {
+		t.Errorf("got %d resources, want 6 (hyperv_virtual_switch, hyperv_image_file, hyperv_vhd, hyperv_vm, hyperv_nat_static_mapping, hyperv_port_proxy)", len(got))
 	}
 }
 

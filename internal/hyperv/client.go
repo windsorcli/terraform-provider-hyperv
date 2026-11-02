@@ -23,6 +23,9 @@ type Client struct {
 	// so concurrent Get* calls don't block each other.
 	netNatMu sync.RWMutex
 
+	// portProxyMu serializes netsh portproxy writes, which all edit one registry key.
+	portProxyMu sync.RWMutex
+
 	// imageFileLocks serializes create/delete per destination_path so two
 	// concurrent applies against the same path don't race in new.ps1 or
 	// remove.ps1.

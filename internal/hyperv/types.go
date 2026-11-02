@@ -545,3 +545,55 @@ type SetVMInput struct {
 	Notes          *string `json:"notes,omitempty"`
 	Path           *string `json:"path,omitempty"`
 }
+
+// PortProxy is the canonical eight-field read result port_proxy/{get,new,set}.ps1 emit.
+// ID is "<listen_address>:<listen_port>", the key netsh stores each v4tov4 rule under.
+type PortProxy struct {
+	ID                  string `json:"Id"`
+	ListenAddress       string `json:"ListenAddress"`
+	ListenPort          int    `json:"ListenPort"`
+	ConnectAddress      string `json:"ConnectAddress"`
+	ConnectPort         int    `json:"ConnectPort"`
+	FirewallRulePresent bool   `json:"FirewallRulePresent"`
+	FirewallRuleName    string `json:"FirewallRuleName"`
+	FirewallRuleProfile string `json:"FirewallRuleProfile"`
+}
+
+// PortProxyFirewallInput carries the already-defaulted firewall block to new.ps1 and set.ps1.
+type PortProxyFirewallInput struct {
+	Enabled bool   `json:"enabled"`
+	Name    string `json:"name"`
+	Profile string `json:"profile"`
+}
+
+// NewPortProxyInput is the stdin JSON for port_proxy/new.ps1.
+type NewPortProxyInput struct {
+	ListenAddress  string                 `json:"listen_address"`
+	ListenPort     int                    `json:"listen_port"`
+	ConnectAddress string                 `json:"connect_address"`
+	ConnectPort    int                    `json:"connect_port"`
+	Firewall       PortProxyFirewallInput `json:"firewall"`
+}
+
+// SetPortProxyInput is the stdin JSON for port_proxy/set.ps1; the listen pair identifies the rule.
+type SetPortProxyInput struct {
+	ListenAddress  string                 `json:"listen_address"`
+	ListenPort     int                    `json:"listen_port"`
+	ConnectAddress string                 `json:"connect_address"`
+	ConnectPort    int                    `json:"connect_port"`
+	Firewall       PortProxyFirewallInput `json:"firewall"`
+}
+
+// GetPortProxyInput is the stdin JSON for port_proxy/get.ps1.
+type GetPortProxyInput struct {
+	ListenAddress string `json:"listen_address"`
+	ListenPort    int    `json:"listen_port"`
+	FirewallName  string `json:"firewall_name"`
+}
+
+// RemovePortProxyInput is the stdin JSON for port_proxy/remove.ps1.
+type RemovePortProxyInput struct {
+	ListenAddress string `json:"listen_address"`
+	ListenPort    int    `json:"listen_port"`
+	FirewallName  string `json:"firewall_name"`
+}
