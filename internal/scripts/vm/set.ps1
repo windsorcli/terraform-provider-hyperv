@@ -12,7 +12,8 @@
 #                   "min_memory_bytes": <int64>,     # optional, only when dynamic_memory=true
 #                   "max_memory_bytes": <int64>,     # optional, only when dynamic_memory=true
 #                   "secure_boot":      <bool>,      # optional, gen 2 only
-#                   "notes":            "<string>"   # optional
+#                   "notes":            "<string>",  # optional
+#                   "path":             "<string>"   # optional, only when changed
 #                 }
 #   stdout JSON : same fields as get.ps1.
 #
@@ -21,7 +22,8 @@
 # cmdlets. vcpu, memory_bytes, and secure_boot generally require the VM
 # to be powered off; the cmdlet's own error surfaces verbatim rather
 # than auto-stopping the VM, which would change apply semantics. Power
-# transitions belong to hyperv_vm_state.
+# transitions belong to hyperv_vm_state. path runs Move-VMStorage for
+# the configuration, checkpoint, and smart-paging files; disks stay put.
 #
 # lint:allow-long-comment
 
@@ -39,7 +41,8 @@ function Set-HypervVM {
         [Nullable[int64]]               $MinMemoryBytes,
         [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
-        [string]                        $Notes
+        [string]                        $Notes,
+        [string]                        $Path
     )
     try {
         $vm = Get-VM -Name $Name -ErrorAction Stop
@@ -88,6 +91,9 @@ function Set-HypervVM {
     if ($PSBoundParameters.ContainsKey('Notes')) {
         Set-VM -Name $Name -Notes $Notes -ErrorAction Stop
     }
+    if ($Path) {
+        Move-VMStorage -VMName $Name -VirtualMachinePath $Path -SnapshotFilePath $Path -SmartPagingFilePath $Path -ErrorAction Stop
+    }
 
     $vm = Get-VM -Name $Name -ErrorAction Stop
     Read-HypervVMResult -Vm $vm
@@ -129,6 +135,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($params.PSObject.Properties.Name -contains 'notes' -and
             $null -ne $params.notes) {
             $callArgs.Notes = [string] $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'path' -and
+            $null -ne $params.path) {
+            $callArgs.Path = [string] $params.path
         }
 
         Set-HypervVM @callArgs

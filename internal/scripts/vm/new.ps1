@@ -11,13 +11,16 @@
 #                   "min_memory_bytes": <int64>,      # optional, only when dynamic_memory=true
 #                   "max_memory_bytes": <int64>,      # optional, only when dynamic_memory=true
 #                   "secure_boot":      <bool>,       # optional, gen 2 only
-#                   "notes":            "<string>"    # optional
+#                   "notes":            "<string>",   # optional
+#                   "path":             "<string>"    # optional; host default when omitted
 #                 }
 #   stdout JSON : same fields as get.ps1.
 #
 # Sequence: New-VM -NoVHD (no auto-attached storage; -BootDevice is
 # omitted since the enum has no "None" value, so the VM boots nothing
-# until storage is attached separately), Set-VMMemory (DynamicMemoryEnabled
+# until storage is attached separately), Move-VMStorage (path only;
+# New-VM -Path would nest the files under a <name> subfolder and read
+# back a different Path), Set-VMMemory (DynamicMemoryEnabled
 # defaults false; the optional dynamic_memory field opts into dynamic
 # with min/max), Set-VMProcessor, Set-VMFirmware (gen 2 + secure_boot
 # only), Set-VM Notes. Each Set-* is a separate cmdlet call since
@@ -38,7 +41,8 @@ function New-HypervVM {
         [Nullable[int64]]               $MaxMemoryBytes,
         [Nullable[bool]]                $SecureBoot,
         [string]                        $SecureBootTemplate,
-        [string]                        $Notes
+        [string]                        $Notes,
+        [string]                        $Path
     )
     # Capture the VM object returned by New-VM so subsequent operations
     # use the specific VM by ID rather than name. Hyper-V does not enforce
@@ -59,6 +63,10 @@ function New-HypervVM {
 
     # New-VM has committed the VM; best-effort Remove-VM on any Set-* failure below keeps Create atomic from Terraform's perspective.
     try {
+        if ($Path) {
+            Move-VMStorage -VM $newVmObj -VirtualMachinePath $Path -SnapshotFilePath $Path -SmartPagingFilePath $Path -ErrorAction Stop
+        }
+
         # DynamicMemoryEnabled must land in the same call as StartupBytes, or the cmdlet rejects it as out-of-range against existing dynamic min/max.
         $memoryArgs = @{
             VM                   = $newVmObj
@@ -141,6 +149,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($params.PSObject.Properties.Name -contains 'notes' -and
             $null -ne $params.notes) {
             $callArgs.Notes = [string] $params.notes
+        }
+        if ($params.PSObject.Properties.Name -contains 'path' -and
+            $null -ne $params.path) {
+            $callArgs.Path = [string] $params.path
         }
 
         New-HypervVM @callArgs

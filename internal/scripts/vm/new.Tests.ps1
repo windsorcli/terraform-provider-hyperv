@@ -1,5 +1,5 @@
 # Locks the JSON contract for New-HypervVM. The script's create sequence
-# is New-VM -> Set-VMMemory (with DynamicMemoryEnabled=false) ->
+# is New-VM -> Move-VMStorage (path only) -> Set-VMMemory (with DynamicMemoryEnabled=false) ->
 # Set-VMProcessor -> Set-VMFirmware (gen 2 + secure_boot only) -> Set-VM
 # (notes only) -> Get-VM read-back. Each cmdlet's parameter forwarding is
 # pinned here.
@@ -320,6 +320,75 @@ Describe 'New-HypervVM' {
             Should -Invoke Set-VM -Times 1 -Exactly -ParameterFilter {
                 $null -ne $Notes -and $Notes -eq ''
             }
+        }
+    }
+
+    Context 'optional path' {
+
+        It 'moves configuration, checkpoint, and smart-paging files to path before any Set-*' {
+            Mock New-VM { New-HypervVMSample }
+            Mock Move-VMStorage { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Get-VM { New-HypervVMSample -Path 'D:\vms\vm01' }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            $result = New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -Path 'D:\vms\vm01' |
+                ConvertFrom-Json
+
+            Should -Invoke Move-VMStorage -Times 1 -Exactly -ParameterFilter {
+                $null -ne $VM -and
+                $VirtualMachinePath -eq 'D:\vms\vm01' -and
+                $SnapshotFilePath -eq 'D:\vms\vm01' -and
+                $SmartPagingFilePath -eq 'D:\vms\vm01'
+            }
+            $result.Path | Should -Be 'D:\vms\vm01'
+        }
+
+        It 'does not pass -Path to New-VM, which would nest the files under a subfolder named after the VM' {
+            Mock New-VM { New-HypervVMSample }
+            Mock Move-VMStorage { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -Path 'D:\vms\vm01' | Out-Null
+
+            Should -Invoke New-VM -Times 1 -Exactly -ParameterFilter {
+                -not $PSBoundParameters.ContainsKey('Path')
+            }
+        }
+
+        It 'does not call Move-VMStorage when path is omitted' {
+            Mock New-VM { New-HypervVMSample }
+            Mock Move-VMStorage { }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 | Out-Null
+
+            Should -Invoke Move-VMStorage -Times 0 -Exactly
+        }
+
+        It 'cleans up the partial VM when Move-VMStorage fails' {
+            Mock New-VM { New-HypervVMSample }
+            Mock Move-VMStorage { throw 'simulated storage move failure' }
+            Mock Set-VMMemory { }
+            Mock Set-VMProcessor { }
+            Mock Remove-VM { }
+            Mock Get-VM { New-HypervVMSample }
+            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
+
+            { New-HypervVM -Name 'vm01' -Generation 2 -Vcpu 2 -MemoryBytes 4294967296 -Path 'D:\vms\vm01' } |
+                Should -Throw -ExpectedMessage '*storage move failure*'
+
+            Should -Invoke Remove-VM -Times 1 -Exactly -ParameterFilter {
+                $VM -ne $null -and $Force -eq $true
+            }
+            Should -Invoke Set-VMMemory -Times 0 -Exactly
         }
     }
 

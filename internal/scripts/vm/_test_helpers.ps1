@@ -108,6 +108,17 @@ function Remove-VM {
     )
 }
 
+function Move-VMStorage {
+    [CmdletBinding()]
+    param(
+        [object] $VM,
+        [string] $VMName,
+        [string] $VirtualMachinePath,
+        [string] $SnapshotFilePath,
+        [string] $SmartPagingFilePath
+    )
+}
+
 function Get-VMHardDiskDrive {
     [CmdletBinding()]
     param(

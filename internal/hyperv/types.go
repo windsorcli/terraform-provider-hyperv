@@ -508,6 +508,7 @@ type NewVMInput struct {
 	SecureBoot         *bool   `json:"secure_boot,omitempty"`
 	SecureBootTemplate *string `json:"secure_boot_template,omitempty"`
 	Notes              *string `json:"notes,omitempty"`
+	Path               *string `json:"path,omitempty"`
 }
 
 // SetVMStateInput is the stdin JSON format for vm/set-state.ps1.
@@ -542,4 +543,5 @@ type SetVMInput struct {
 	MaxMemoryBytes *int64  `json:"max_memory_bytes,omitempty"`
 	SecureBoot     *bool   `json:"secure_boot,omitempty"`
 	Notes          *string `json:"notes,omitempty"`
+	Path           *string `json:"path,omitempty"`
 }

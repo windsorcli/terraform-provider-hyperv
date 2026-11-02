@@ -29,6 +29,7 @@ resource "hyperv_vm" "node01" {
   memory      = { startup_bytes = 4294967296 } # 4 GiB
   secure_boot = false
   notes       = "k8s control plane"
+  path        = "C:/hyperv/vms/node01" # configuration, checkpoint, and smart-paging files
 
   network_adapter = [
     { name = "primary", switch_name = "lab-private" },
@@ -119,6 +120,9 @@ Only access-mode VLAN tagging (`vlan_id`) is supported; trunk and isolation VLAN
 - `notes` (String) Free-form description stored on the VM by Hyper-V.
 
 ~> **Note:** `notes` cannot be cleared in place once set. Omitting it from config after a prior apply preserves the existing value, since omit means "don't care," not "clear." Writing `notes = null` or `notes = ""` does not clear the host value either; every subsequent plan shows the same diff. To change `notes`, write a different non-empty value; to remove it, destroy and recreate the VM.
+- `path` (String) Absolute path of the folder on the host that holds the VM's configuration, checkpoint, and smart-paging files. Omit it to use the host's default folder (`Get-VMHost` `VirtualMachinePath`), which is then read back into state. Forward and back slashes are equivalent, and comparison is case-insensitive. The path MUST start with a drive letter or a UNC prefix, and a trailing separator is rejected, except on a drive root such as `D:\`.
+
+Changing `path` moves the files in place with `Move-VMStorage`, which works on a running VM, so the VM keeps its ID and checkpoints. The move puts all three kinds of file in the new folder, even if a checkpoint or smart-paging location was set outside Terraform. Attached disks never move: they belong to `hard_disk_drive` and `hyperv_vhd`. The old folder keeps its empty `Virtual Machines` and `Snapshots` subfolders. Removing `path` from the configuration keeps the files where they are.
 - `secure_boot` (Boolean) Whether UEFI Secure Boot is enabled. Valid only when `generation = 2`. Defaults to Hyper-V's own default, typically `true` for new generation 2 VMs. Updatable in place via `Set-VMFirmware`.
 
 ~> **Note:** Once set, `secure_boot` cannot be cleared back to the host default in place. Writing `secure_boot = null`, or removing the attribute, leaves the host value unchanged and every subsequent plan shows the same diff. To change it, set an explicit `true` or `false`; to clear it, destroy and recreate the VM.
@@ -137,7 +141,6 @@ Changing this forces a new resource; the template is set at create time via `Set
 - `ip_addresses` (List of String) Flat list of IPv4 and IPv6 addresses the guest's Hyper-V integration services have reported across all attached `network_adapter` entries. Empty when the VM is `Off`, when the guest is still booting, or when the guest doesn't ship integration services.
 
 ~> **Note:** Order is host-driven and not stable across VM restarts; a reboot or DHCP lease renewal can change which IP appears first, so indexing `ip_addresses[0]` can plan a spurious update. Index into this list only for a single-NIC, single-IP VM. A multi-homed VM should use the per-NIC `network_adapter[*].ip_addresses` instead, which pins the selector to a NIC's deterministic display `name`.
-- `path` (String) Filesystem path on the host where the VM's configuration files live. Useful for backup tooling that targets the underlying directory.
 - `vm_id` (String) Hyper-V's own VM identifier (`(Get-VM).Id`), a GUID assigned fresh by `New-VM` on every create. Unlike `id` -- which mirrors `name` and only changes on a rename -- `vm_id` changes on any replace, including one not caused by a rename (e.g. a `generation` change). Use it, not `id`, to detect "this VM was replaced" downstream (e.g. a `replace_triggered_by` on a dependent resource).
 
 <a id="nestedatt--cpu"></a>
