@@ -9,6 +9,7 @@ package vm_test
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -828,6 +829,38 @@ func TestAcc_VM_withState(t *testing.T) {
 						knownvalue.StringExact("Off"),
 					),
 				},
+			},
+		},
+	})
+}
+
+// TestAcc_VM_waitForGuestIPTimesOut covers the wait's failure path,
+// which is the only one the bench can reach: its VMs boot to the UEFI
+// no-boot-device screen and never report an address. Create must fail
+// with the KVP error, and the tainted VM must still be destroyed.
+func TestAcc_VM_waitForGuestIPTimesOut(t *testing.T) {
+	name := acctest.RandomName("vm-waitip")
+	client := acctest.NewClient(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 2 }
+  memory = { startup_bytes = %d }
+  state = {
+    desired = "Running"
+  }
+  wait_for_guest_ip_timeout = "15s"
+}
+`, name, vmMinimumMemoryBytes),
+				ExpectError: regexp.MustCompile(`(?s)no IPv4 address.*within 15s.*hv_kvp_daemon`),
 			},
 		},
 	})

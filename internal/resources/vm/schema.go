@@ -605,13 +605,36 @@ func resourceSchema() schema.Schema {
 					},
 				},
 			},
+			"wait_for_guest_ip_timeout": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "How long Create waits for the guest to report an IPv4 address, " +
+					"as a Go duration such as `\"90s\"` or `\"5m\"`. Omit it, or set `\"0s\"`, to " +
+					"return as soon as the VM is created. When set, Create reads the VM every five " +
+					"seconds after the power-on and returns as soon as any `network_adapter` " +
+					"reports an IPv4 address, so `ip_addresses` is populated when dependent " +
+					"resources read it.\n\n" +
+					"A non-zero value requires `state.desired = \"Running\"`; plan fails otherwise, " +
+					"since a VM left `Off` never reports an address. The wait runs on Create only. " +
+					"Changing the value later, or powering the VM on in a later apply, updates state " +
+					"without waiting.\n\n" +
+					"~> **Note:** Hyper-V learns guest addresses through the " +
+					"[Data Exchange integration service](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/features-terminology#integration-services) " +
+					"(KVP), which a Linux guest provides with `hv_kvp_daemon` from `hyperv-daemons` or " +
+					"the distribution's equivalent. A guest without it never reports an address, and " +
+					"Create fails when the timeout elapses. The VM still exists at that point; Terraform " +
+					"records it as tainted and replaces it on the next apply.",
+				Validators: []validator.String{
+					nonNegativeDurationValidator{},
+				},
+			},
 			"ip_addresses": schema.ListAttribute{
 				Computed:    true,
 				ElementType: types.StringType,
 				MarkdownDescription: "Flat list of IPv4 and IPv6 addresses the guest's Hyper-V " +
 					"integration services have reported across all attached `network_adapter` " +
 					"entries. Empty when the VM is `Off`, when the guest is still booting, or " +
-					"when the guest doesn't ship integration services.\n\n" +
+					"when the guest doesn't ship integration services. Set " +
+					"`wait_for_guest_ip_timeout` to have Create wait for an IPv4 address.\n\n" +
 					"~> **Note:** Order is host-driven and not stable across VM restarts; a " +
 					"reboot or DHCP lease renewal can change which IP appears first, so " +
 					"indexing `ip_addresses[0]` can plan a spurious update. Index into this " +
