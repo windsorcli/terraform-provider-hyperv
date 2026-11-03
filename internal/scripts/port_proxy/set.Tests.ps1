@@ -96,6 +96,22 @@ Describe 'Set-HypervPortProxy' {
         { Set-HypervPortProxy @script:SetArgs } | Should -Throw '*isn''t listening*'
     }
 
+    It 'restores the original rule and rethrows when the re-add fails' {
+        $script:listening = $false
+        Mock Invoke-HypervNetsh { throw 'netsh add failed' } -ParameterFilter {
+            $ArgumentList -contains 'add' -and $ArgumentList -contains 'connectaddress=172.30.98.177'
+        }
+        Mock Invoke-HypervNetsh { } -ParameterFilter {
+            $ArgumentList -contains 'add' -and $ArgumentList -contains 'connectaddress=172.30.98.222'
+        }
+
+        { Set-HypervPortProxy @script:SetArgs } | Should -Throw '*netsh add failed*'
+        Should -Invoke Invoke-HypervNetsh -Times 1 -ParameterFilter {
+            ($ArgumentList -join ' ') -eq ('interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=15000 ' +
+                'connectaddress=172.30.98.222 connectport=50000')
+        }
+    }
+
     It 'fails before running netsh when iphlpsvc is stopped' {
         Mock Get-CimInstance { New-HypervIpHelperService -State 'Stopped' -ProcessId 0 }
 

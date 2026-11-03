@@ -13,7 +13,8 @@
 
 # Set-HypervPortProxy points an existing rule at a new connect address and port, then creates, updates,
 # or disables the firewall rule so it matches the requested state. A rule with no listener is deleted and
-# added again, since netsh set has been observed to leave it unbound; that touches no other rule.
+# added again, since netsh set has been observed to leave it unbound; that touches no other rule. A failed
+# add restores the original connect pair before rethrowing.
 function Set-HypervPortProxy {
     [CmdletBinding()]
     param(
@@ -37,10 +38,23 @@ function Set-HypervPortProxy {
         Invoke-HypervNetsh -ArgumentList @(
             'interface', 'portproxy', 'delete', 'v4tov4',
             "listenaddress=$ListenAddress", "listenport=$ListenPort") | Out-Null
-        Invoke-HypervNetsh -ArgumentList @(
-            'interface', 'portproxy', 'add', 'v4tov4',
-            "listenaddress=$ListenAddress", "listenport=$ListenPort",
-            "connectaddress=$ConnectAddress", "connectport=$ConnectPort") | Out-Null
+        try {
+            Invoke-HypervNetsh -ArgumentList @(
+                'interface', 'portproxy', 'add', 'v4tov4',
+                "listenaddress=$ListenAddress", "listenport=$ListenPort",
+                "connectaddress=$ConnectAddress", "connectport=$ConnectPort") | Out-Null
+        }
+        catch {
+            $original = $_
+            try {
+                Invoke-HypervNetsh -ArgumentList @(
+                    'interface', 'portproxy', 'add', 'v4tov4',
+                    "listenaddress=$ListenAddress", "listenport=$ListenPort",
+                    "connectaddress=$($existing.ConnectAddress)", "connectport=$($existing.ConnectPort)") | Out-Null
+            }
+            catch { $null = $_ }
+            throw $original
+        }
         Wait-HypervPortProxyListener -ListenAddress $ListenAddress -ListenPort $ListenPort -OwnerProcessId $ownerProcessId
     }
     elseif ($existing.ConnectAddress -ne $ConnectAddress -or $existing.ConnectPort -ne $ConnectPort) {
