@@ -35,13 +35,11 @@ func resourceSchema() schema.Schema {
 			"`connect_address` from the address the guest reports, for example " +
 			"`hyperv_vm.<x>.network_adapter[0].ip_addresses[0]`, and the next apply retargets the rule " +
 			"in place.\n\n" +
-			"A rule on a specific `listen_address` can lose its listener across a host reboot while " +
-			"netsh still holds it. This has been observed for a DHCP address on an External switch's " +
-			"host vNIC, and `netsh interface portproxy set` doesn't bring the listener back. Read then " +
-			"reports `listening = false`, the next plan updates the rule in place, and the apply " +
-			"deletes and adds that one rule so the IP Helper service binds it again. Rules on " +
-			"`0.0.0.0` have listened again after the same reboot, so use `0.0.0.0` unless the rule " +
-			"must listen on one host address only.",
+			"A rule on a specific `listen_address`, such as a DHCP address on an External switch's " +
+			"host vNIC, has come back from a host reboot with no listener while netsh still held it. " +
+			"Read then reports `listening = false`, and the next apply deletes and re-adds the rule. " +
+			"Rules on `0.0.0.0` kept listening across the same reboot, so prefer `0.0.0.0` unless the " +
+			"rule must listen on one host address.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,

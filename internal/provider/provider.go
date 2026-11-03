@@ -148,6 +148,8 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			"Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = \"NAT\"` " +
 			"(the underlying `New-NetNat` returns the same). `switch_type = \"External\"` was not " +
 			"directly tested — Local Administrators is the recommended floor.\n" +
+			"  * **Built-in `Administrator`** is the only identity tested for `hyperv_port_proxy` " +
+			"and `hyperv_ics_network`.\n" +
 			"  * **No host-side requirement** for `hyperv_iso_volume` — it runs on the Terraform " +
 			"runner.\n\n" +
 			"Opening a WinRM/PSSession also needs membership in `Administrators` or " +
