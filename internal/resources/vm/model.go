@@ -119,8 +119,6 @@ type NetworkAdapterModel struct {
 	MacAddress mactype.MAC `tfsdk:"mac_address"`
 	// VlanID is Optional, not Computed, for the same reason as MacAddress; unset means untagged, not "not yet read."
 	VlanID types.Int64 `tfsdk:"vlan_id"`
-	// IsolationID is Optional, not Computed, for the same reason as VlanID; unset means isolation off.
-	IsolationID types.Int64 `tfsdk:"isolation_id"`
 }
 
 // NetworkAdapterAttrTypes mirrors NetworkAdapterModel's tfsdk tags.
@@ -130,7 +128,6 @@ var NetworkAdapterAttrTypes = map[string]attr.Type{
 	"ip_addresses": types.ListType{ElemType: types.StringType},
 	"mac_address":  mactype.Type,
 	"vlan_id":      types.Int64Type,
-	"isolation_id": types.Int64Type,
 }
 
 // NetworkAdapterListElementType is the Object type network_adapter elements use.

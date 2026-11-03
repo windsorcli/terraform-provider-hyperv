@@ -5,8 +5,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 )
 
 // TestUpgradeV0ToV1 exercises the rename / promote / null-out mapping
@@ -435,10 +433,10 @@ func TestUpgradeStateRegistration_V4Entry(t *testing.T) {
 	}
 }
 
-// TestUpgradeV5ToV6_PopulatesNullVMID pins that vm_id lands null after
-// migration since v5 state files carry no Hyper-V VM GUID; the next
-// refresh fills it from the host. Every other field carries through
-// unchanged.
+// TestUpgradeV5ToV6_PopulatesNullVMID pins the only v5 -> v6 schema
+// change: vm_id lands null after migration since v5 state files carry
+// no Hyper-V VM GUID; the next refresh fills it from the host. Every
+// other field carries through unchanged.
 func TestUpgradeV5ToV6_PopulatesNullVMID(t *testing.T) {
 	prior := priorModelV5{
 		ID:                 types.StringValue("vm01"),
@@ -463,39 +461,6 @@ func TestUpgradeV5ToV6_PopulatesNullVMID(t *testing.T) {
 	if got.SecureBootTemplate.ValueString() != "MicrosoftWindows" {
 		t.Errorf("SecureBootTemplate: got %q, want MicrosoftWindows (carries through unchanged)",
 			got.SecureBootTemplate.ValueString())
-	}
-}
-
-// v5 NICs carry no isolation_id; it must land null while every v5 NIC field carries through.
-func TestUpgradeV5ToV6_AddsNullIsolationID(t *testing.T) {
-	prior := priorModelV5{
-		ID:         types.StringValue("vm01"),
-		Name:       types.StringValue("vm01"),
-		Generation: types.Int64Value(2),
-		NetworkAdapters: []priorNetworkAdapterModelV5{{
-			Name:        types.StringValue("primary"),
-			SwitchName:  types.StringValue("lab"),
-			IPAddresses: types.ListValueMust(types.StringType, []attr.Value{types.StringValue("10.0.0.5")}),
-			MacAddress:  mactype.NewMACValue("00:15:5D:AA:BB:CC"),
-			VlanID:      types.Int64Value(100),
-		}},
-	}
-
-	got := upgradeV5ToV6(t.Context(), prior)
-
-	var nics []NetworkAdapterModel
-	if diags := got.NetworkAdapters.ElementsAs(t.Context(), &nics, false); diags.HasError() {
-		t.Fatalf("ElementsAs: %v", diags)
-	}
-	if len(nics) != 1 {
-		t.Fatalf("NIC count = %d, want 1", len(nics))
-	}
-	n := nics[0]
-	if !n.IsolationID.IsNull() {
-		t.Errorf("IsolationID = %+v, want null", n.IsolationID)
-	}
-	if n.VlanID.ValueInt64() != 100 || n.MacAddress.ValueString() != "00:15:5D:AA:BB:CC" || len(n.IPAddresses.Elements()) != 1 {
-		t.Errorf("NIC fields did not carry through: %+v", n)
 	}
 }
 

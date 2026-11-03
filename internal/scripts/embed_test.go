@@ -297,39 +297,3 @@ func TestFirewallRule_LoadsHelpers(t *testing.T) {
 		t.Errorf("common/firewall-rule.Tests.ps1 should NOT be embedded; check the //go:embed glob")
 	}
 }
-
-func TestICSNetworkScript_LoadsAllVerbs(t *testing.T) {
-	t.Parallel()
-
-	for _, verb := range []string{"get", "new", "remove", "sweep"} {
-		body, err := ICSNetworkScript(verb)
-		if err != nil {
-			t.Errorf("ICSNetworkScript(%q): %v", verb, err)
-			continue
-		}
-		if len(bytes.TrimSpace(body)) == 0 {
-			t.Errorf("ICSNetworkScript(%q) returned empty body", verb)
-		}
-	}
-	hcn, err := ICSNetworkHCN()
-	if err != nil || !bytes.Contains(hcn, []byte("function Read-HypervIcsNetwork")) {
-		t.Errorf("ICSNetworkHCN() = %d bytes, %v; want the Read-HypervIcsNetwork helper", len(hcn), err)
-	}
-}
-
-func TestICSNetworkScript_TestFilesNotEmbedded(t *testing.T) {
-	t.Parallel()
-
-	for _, name := range []string{
-		"ics_network/get.Tests.ps1",
-		"ics_network/new.Tests.ps1",
-		"ics_network/remove.Tests.ps1",
-		"ics_network/sweep.Tests.ps1",
-		"ics_network/hcn.Tests.ps1",
-		"ics_network/_test_helpers.ps1",
-	} {
-		if _, err := ICSNetwork.ReadFile(name); err == nil {
-			t.Errorf("%s should NOT be embedded; check the //go:embed glob", name)
-		}
-	}
-}

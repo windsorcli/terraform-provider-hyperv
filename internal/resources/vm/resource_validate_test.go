@@ -155,35 +155,3 @@ resource "hyperv_vm" "test" {
 		},
 	})
 }
-
-// A NIC can carry an access VLAN or a VLAN isolation ID, not both.
-func TestValidate_NetworkAdapterIsolationIDConflictsWithVlanID(t *testing.T) {
-	t.Parallel()
-
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: `
-resource "hyperv_vm" "test" {
-  name       = "vm01"
-  generation = 2
-  cpu        = { count = 1 }
-  memory     = { startup_bytes = 1073741824 }
-
-  network_adapter = [
-    {
-      name         = "primary"
-      switch_name  = "ics"
-      vlan_id      = 10
-      isolation_id = 2
-    }
-  ]
-}
-`,
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
-			},
-		},
-	})
-}

@@ -140,7 +140,7 @@ State stores entries sorted by `name`. A config that lists NICs out of order see
 
 Updates diff the planned list against state by name: a name present only in the plan is attached, a name present only in state is detached, and a name present in both with a different `switch_name` is detached and re-attached.
 
-A NIC supports access-mode VLAN tagging (`vlan_id`) or VLAN isolation (`isolation_id`), which a NIC on a `hyperv_ics_network` switch needs. Trunk mode is not supported. (see [below for nested schema](#nestedatt--network_adapter))
+Only access-mode VLAN tagging (`vlan_id`) is supported; trunk and isolation VLAN modes are not. (see [below for nested schema](#nestedatt--network_adapter))
 - `notes` (String) Free-form description stored on the VM by Hyper-V.
 
 ~> **Note:** `notes` cannot be cleared in place once set. Omitting it from config after a prior apply preserves the existing value, since omit means "don't care," not "clear." Writing `notes = null` or `notes = ""` does not clear the host value either; every subsequent plan shows the same diff. To change `notes`, write a different non-empty value; to remove it, destroy and recreate the VM.
@@ -251,11 +251,10 @@ Required:
 
 Optional:
 
-- `isolation_id` (Number) VLAN isolation ID for this NIC. The provider applies it with `Set-VMNetworkAdapterIsolation -IsolationMode Vlan -AllowUntaggedTraffic $true`. A NIC on a `hyperv_ics_network` switch gets a DHCP lease only when this matches the network's `isolation_id`. Changes to this field detach and re-attach the NIC and require the VM to be `Off`. Conflicts with `vlan_id`.
 - `mac_address` (String) Static MAC address for this NIC. Accepts colon-separated (`AA:BB:CC:DD:EE:FF`), hyphen-separated (`AA-BB-CC-DD-EE-FF`), or unsigned 12-hex (`AABBCCDDEEFF`) form; Hyper-V accepts all three, and a refresh against Hyper-V's canonical hex form does not produce a diff. Setting this disables Hyper-V's dynamic MAC pool for this NIC and pins the address; leave it unset to let Hyper-V auto-assign.
 
 Changes to this field detach and re-attach the NIC, the same as `switch_name` changes, and require the VM to be `Off`. To revert to a dynamic MAC, remove the attribute from config or set it to `null`.
-- `vlan_id` (Number) Access-mode VLAN ID for this NIC. Valid range is 1-4094. Leave it unset for an untagged NIC; trunk mode is not supported. Changes to this field detach and re-attach the NIC and require the VM to be `Off`. To revert to untagged, remove the attribute from config or set it to `null`. Conflicts with `isolation_id`.
+- `vlan_id` (Number) Access-mode VLAN ID for this NIC. Valid range is 1-4094. Leave it unset for an untagged NIC; only access mode is supported, not trunk or isolation. Changes to this field detach and re-attach the NIC and require the VM to be `Off`. To revert to untagged, remove the attribute from config or set it to `null`.
 
 Read-Only:
 

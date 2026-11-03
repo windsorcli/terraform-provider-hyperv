@@ -142,19 +142,3 @@ func VMScript(verb string) ([]byte, error) {
 func VMReadResult() ([]byte, error) {
 	return VM.ReadFile("vm/read-result.ps1")
 }
-
-// ICSNetwork holds the verb scripts for hyperv_ics_network plus _hcn.ps1, the HCN bindings the client prepends to each.
-//
-//go:embed ics_network/get.ps1 ics_network/new.ps1 ics_network/remove.ps1 ics_network/sweep.ps1
-//go:embed ics_network/_hcn.ps1
-var ICSNetwork embed.FS
-
-// ICSNetworkScript returns the contents of ics_network/<verb>.ps1 (verb in {get, new, remove, sweep}).
-func ICSNetworkScript(verb string) ([]byte, error) {
-	return ICSNetwork.ReadFile("ics_network/" + verb + ".ps1")
-}
-
-// ICSNetworkHCN returns ics_network/_hcn.ps1, the computenetwork.dll bindings every ics_network verb calls.
-func ICSNetworkHCN() ([]byte, error) {
-	return ICSNetwork.ReadFile("ics_network/_hcn.ps1")
-}

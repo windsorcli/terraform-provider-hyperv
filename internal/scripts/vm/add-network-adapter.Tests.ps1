@@ -141,33 +141,4 @@ Describe 'Add-HypervVMNetworkAdapter' {
             Should -Invoke Set-VMNetworkAdapterVlan -Times 0 -Exactly
         }
     }
-
-    Context 'VLAN isolation' {
-
-        It 'calls Set-VMNetworkAdapterIsolation in Vlan mode with untagged traffic allowed when IsolationID is set' {
-            Mock Add-VMNetworkAdapter { }
-            Mock Set-VMNetworkAdapterIsolation { }
-
-            Add-HypervVMNetworkAdapter `
-                -Name 'primary' -VMName 'vm01' -SwitchName 'ics' `
-                -IsolationID 2 | Out-Null
-
-            Should -Invoke Set-VMNetworkAdapterIsolation -Times 1 -Exactly -ParameterFilter {
-                $VMName -eq 'vm01' -and
-                $VMNetworkAdapterName -eq 'primary' -and
-                $IsolationMode -eq 'Vlan' -and
-                $DefaultIsolationID -eq 2 -and
-                $AllowUntaggedTraffic -eq $true
-            }
-        }
-
-        It 'does not call Set-VMNetworkAdapterIsolation when IsolationID is 0' {
-            Mock Add-VMNetworkAdapter { }
-            Mock Set-VMNetworkAdapterIsolation { }
-
-            Add-HypervVMNetworkAdapter -Name 'primary' -VMName 'vm01' -SwitchName 'lab' | Out-Null
-
-            Should -Invoke Set-VMNetworkAdapterIsolation -Times 0 -Exactly
-        }
-    }
 }

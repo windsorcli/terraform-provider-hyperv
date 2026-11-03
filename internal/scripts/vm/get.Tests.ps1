@@ -372,28 +372,6 @@ Describe 'Get-HypervVM' {
             $parsed.NetworkAdapters[1].VlanID     | Should -Be 100
         }
 
-        It 'emits IsolationID only for a NIC in Vlan isolation mode' {
-            Mock Get-VM { New-HypervVMSample -Generation 2 }
-            Mock Get-VMFirmware { New-HypervVMFirmwareSample }
-            Mock Get-VMHardDiskDrive { @() }
-            Mock Get-VMNetworkAdapter {
-                @(
-                    New-HypervVMNetworkAdapterSample -Name 'ics' -SwitchName 'ics'
-                    New-HypervVMNetworkAdapterSample -Name 'plain' -SwitchName 'lab'
-                )
-            }
-            Mock Get-VMNetworkAdapterVlan { New-HypervVMNetworkAdapterVlanSample }
-            Mock Get-VMNetworkAdapterIsolation -ParameterFilter { $VMNetworkAdapter.Name -eq 'ics' } `
-                -MockWith { New-HypervVMNetworkAdapterIsolationSample -IsolationMode 'Vlan' -DefaultIsolationID 2 }
-            Mock Get-VMNetworkAdapterIsolation -ParameterFilter { $VMNetworkAdapter.Name -eq 'plain' } `
-                -MockWith { New-HypervVMNetworkAdapterIsolationSample -IsolationMode 'NativeVirtualSubnet' -DefaultIsolationID 7 }
-
-            $parsed = Get-HypervVM -Name 'sample-vm' | ConvertFrom-Json
-
-            $parsed.NetworkAdapters[0].IsolationID | Should -Be 2
-            $parsed.NetworkAdapters[1].IsolationID | Should -Be 0
-        }
-
         It 'compresses output to a single line (Write-HypervResult contract)' {
             Mock Get-VM { New-HypervVMSample }
             Mock Get-VMFirmware { New-HypervVMFirmwareSample }
