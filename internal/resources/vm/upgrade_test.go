@@ -5,6 +5,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	mactype "github.com/windsorcli/terraform-provider-hyperv/internal/types/mac"
 )
 
 // TestUpgradeV0ToV1 exercises the rename / promote / null-out mapping
@@ -461,6 +463,39 @@ func TestUpgradeV5ToV6_PopulatesNullVMID(t *testing.T) {
 	if got.SecureBootTemplate.ValueString() != "MicrosoftWindows" {
 		t.Errorf("SecureBootTemplate: got %q, want MicrosoftWindows (carries through unchanged)",
 			got.SecureBootTemplate.ValueString())
+	}
+}
+
+// TestUpgradeV5ToV6_CarriesNetworkAdapters pins that every v5 NIC field survives the v5 -> v6 migration.
+func TestUpgradeV5ToV6_CarriesNetworkAdapters(t *testing.T) {
+	nic := types.ObjectValueMust(NetworkAdapterAttrTypes, map[string]attr.Value{
+		"name":         types.StringValue("primary"),
+		"switch_name":  types.StringValue("lab"),
+		"ip_addresses": types.ListValueMust(types.StringType, []attr.Value{types.StringValue("10.0.0.5")}),
+		"mac_address":  mactype.NewMACValue("00:15:5D:AA:BB:CC"),
+		"vlan_id":      types.Int64Value(100),
+	})
+	prior := priorModelV5{
+		ID:              types.StringValue("vm01"),
+		Name:            types.StringValue("vm01"),
+		Generation:      types.Int64Value(2),
+		NetworkAdapters: types.ListValueMust(types.ObjectType{AttrTypes: NetworkAdapterAttrTypes}, []attr.Value{nic}),
+	}
+
+	got := upgradeV5ToV6(t.Context(), prior)
+
+	var nics []NetworkAdapterModel
+	if diags := got.NetworkAdapters.ElementsAs(t.Context(), &nics, false); diags.HasError() {
+		t.Fatalf("ElementsAs: %v", diags)
+	}
+	if len(nics) != 1 {
+		t.Fatalf("NIC count = %d, want 1", len(nics))
+	}
+	n := nics[0]
+	if n.Name.ValueString() != "primary" || n.SwitchName.ValueString() != "lab" ||
+		n.MacAddress.ValueString() != "00:15:5D:AA:BB:CC" || n.VlanID.ValueInt64() != 100 ||
+		len(n.IPAddresses.Elements()) != 1 {
+		t.Errorf("NIC fields did not carry through: %+v", n)
 	}
 }
 

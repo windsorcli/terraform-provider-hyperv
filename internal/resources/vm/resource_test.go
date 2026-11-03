@@ -1038,6 +1038,20 @@ func TestDiffNetworkAdapters(t *testing.T) {
 			t.Errorf("detach switch = %q, want old-switch", rm[0].SwitchName.ValueString())
 		}
 	})
+	t.Run("same name different vlan_id -> detach + attach", func(t *testing.T) {
+		t.Parallel()
+		plan, state := nic("a", "lab"), nic("a", "lab")
+		plan.VlanID = types.Int64Value(200)
+		state.VlanID = types.Int64Value(100)
+		add, rm := diffNetworkAdapters([]NetworkAdapterModel{plan}, []NetworkAdapterModel{state})
+		if len(add) != 1 || len(rm) != 1 {
+			t.Fatalf("got attach=%d detach=%d, want 1/1", len(add), len(rm))
+		}
+		if add[0].VlanID.ValueInt64() != 200 || rm[0].VlanID.ValueInt64() != 100 {
+			t.Errorf("attach vlan = %d, detach vlan = %d, want 200/100",
+				add[0].VlanID.ValueInt64(), rm[0].VlanID.ValueInt64())
+		}
+	})
 }
 
 // TestModelFromVM_PopulatesNetworkAdapters confirms the cmdlet's NIC
