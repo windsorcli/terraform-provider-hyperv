@@ -9,6 +9,8 @@ package vm_test
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -931,6 +933,103 @@ resource "hyperv_vm" "test" {
 			},
 		},
 	})
+}
+
+// TestAcc_VM_ipAddressesChangeDuringUpdate boots a guest that reports
+// addresses, pins a static MAC out of band, and lets the next apply
+// restore the dynamic MAC. The guest takes a new lease during that
+// update, so the VM-level ip_addresses MUST be unknown in its plan.
+func TestAcc_VM_ipAddressesChangeDuringUpdate(t *testing.T) {
+	isoFile, switchName := os.Getenv("HYPERV_TEST_BOOT_ISO"), os.Getenv("HYPERV_TEST_DHCP_SWITCH")
+	if isoFile == "" || switchName == "" {
+		t.Skip("needs HYPERV_TEST_BOOT_ISO and HYPERV_TEST_DHCP_SWITCH (see docs/contributing/acceptance-tests.md)")
+	}
+	name := acctest.RandomName("vm-ipchange")
+	client := acctest.NewClient(t)
+	cfg := vmBootingGuestConfig(name, switchName, isoFile)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy:             acctest.CheckResourceGone("hyperv_vm", client.GetVM),
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"hyperv_vm.test",
+						tfjsonpath.New("ip_addresses"),
+						knownvalue.ListPartial(map[int]knownvalue.Check{0: knownvalue.NotNull()}),
+					),
+				},
+			},
+			{
+				PreConfig: func() { pinStaticMAC(t, client, name) },
+				Config:    cfg,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("hyperv_vm.test", plancheck.ResourceActionUpdate),
+						plancheck.ExpectUnknownValue("hyperv_vm.test", tfjsonpath.New("ip_addresses")),
+					},
+				},
+			},
+		},
+	})
+}
+
+// vmBootingGuestConfig is a VM that boots isoFile on a switch with DHCP and waits for its first IPv4 lease.
+func vmBootingGuestConfig(name, switchName, isoFile string) string {
+	return fmt.Sprintf(`
+resource "hyperv_vm" "test" {
+  name        = %q
+  generation  = 2
+  secure_boot = false
+  cpu    = { count = 2 }
+  memory = { startup_bytes = 2147483648 }
+
+  network_adapter = [
+    { name = "primary", switch_name = %q },
+  ]
+  dvd_drive = [
+    { iso_path = %q, controller_number = 0, controller_location = 1 },
+  ]
+  boot_order = [
+    { type = "dvd_drive", controller_number = 0, controller_location = 1 },
+  ]
+
+  state = {
+    desired = "Running"
+  }
+  wait_for_guest_ip_timeout = "5m"
+}
+`, name, switchName, isoFile)
+}
+
+// pinStaticMAC restarts name with a static MAC and waits for the guest to report an IPv4 lease on it.
+func pinStaticMAC(t *testing.T, client *hyperv.Client, name string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+
+	script := fmt.Sprintf(`try {
+  Stop-VM -Name %[1]q -TurnOff -Force -ErrorAction Stop
+  Set-VMNetworkAdapter -VMName %[1]q -StaticMacAddress '00155D%06X' -ErrorAction Stop
+  Start-VM -Name %[1]q -ErrorAction Stop
+  $deadline = (Get-Date).AddMinutes(5)
+  while ((Get-Date) -lt $deadline) {
+    $v4 = (Get-VMNetworkAdapter -VMName %[1]q).IPAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
+    if ($v4) { 'ok'; return }
+    Start-Sleep -Seconds 5
+  }
+  'no IPv4 lease after pinning the MAC'
+} catch { $_.Exception.Message }`, name, rand.IntN(0x1000000))
+	res, err := client.RunScript(ctx, script, nil)
+	if err != nil {
+		t.Fatalf("pin static MAC on %s: %v", name, err)
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); !strings.HasSuffix(got, "ok") {
+		t.Fatalf("pin static MAC on %s: %s", name, got)
+	}
 }
 
 // vmWithStateConfig is the HCL template for TestAcc_VM_withState: a

@@ -648,16 +648,17 @@ func resourceSchema() schema.Schema {
 					"integration services have reported across all attached `network_adapter` " +
 					"entries. Empty when the VM is `Off`, when the guest is still booting, or " +
 					"when the guest doesn't ship integration services. Set " +
-					"`wait_for_guest_ip_timeout` to have Create wait for an IPv4 address.\n\n" +
+					"`wait_for_guest_ip_timeout` to have Create wait for an IPv4 address. Any " +
+					"in-place update plans this list as `(known after apply)`, the same as " +
+					"`network_adapter[*].ip_addresses`, because the guest can report new addresses " +
+					"while the update runs.\n\n" +
 					"~> **Note:** Order is host-driven and not stable across VM restarts; a " +
 					"reboot or DHCP lease renewal can change which IP appears first, so " +
 					"indexing `ip_addresses[0]` can plan a spurious update. Index into this " +
 					"list only for a single-NIC, single-IP VM. A multi-homed VM should use the " +
 					"per-NIC `network_adapter[*].ip_addresses` instead, which pins the selector " +
 					"to a NIC's deterministic display `name`.",
-				PlanModifiers: []planmodifier.List{
-					listplanmodifier.UseStateForUnknown(),
-				},
+				// No UseStateForUnknown: Update writes the addresses it reads back, which can differ from state.
 			},
 			"path": schema.StringAttribute{
 				CustomType: pathtype.Type,
