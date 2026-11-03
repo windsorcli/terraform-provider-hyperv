@@ -1,6 +1,6 @@
 # vm/add-network-adapter.ps1 -- attach a new NIC to a VM and bind it to
-# a virtual switch. Optionally pin a static MAC address, set an
-# access-mode VLAN tag, or set a VLAN isolation ID.
+# a virtual switch. Optionally pin a static MAC address and/or set
+# an access-mode VLAN tag.
 #
 # Wire contract (locked in by Tests.ps1):
 #
@@ -9,8 +9,7 @@
 #                   "vm_name":     "<vm-name>",
 #                   "switch_name": "<vswitch-name>",
 #                   "mac_address": "<MAC>" | "" | absent,
-#                   "vlan_id":     <1-4094> | 0 | absent,
-#                   "isolation_id": <int >= 1> | 0 | absent
+#                   "vlan_id":     <1-4094> | 0 | absent
 #                 }
 #   stdout JSON : {} on success.
 #   stderr/exit : missing VM   -> ObjectNotFound -> ErrNotFound
@@ -20,9 +19,7 @@
 #
 # The display name is the user's slot key for diff/reconciliation,
 # unique within a VM's NIC list at the schema layer. VlanID 0/absent
-# means "leave NIC untagged", and IsolationID 0/absent leaves isolation
-# off. A NIC on a hyperv_ics_network switch gets a DHCP lease only when
-# its isolation ID matches the network's.
+# means "leave NIC untagged".
 #
 # lint:allow-long-comment
 
@@ -33,8 +30,7 @@ function Add-HypervVMNetworkAdapter {
         [Parameter(Mandatory)] [string] $VMName,
         [Parameter(Mandatory)] [string] $SwitchName,
         [string] $MacAddress = '',
-        [int]    $VlanID      = 0,
-        [int]    $IsolationID = 0
+        [int]    $VlanID     = 0
     )
     # Splat lets us conditionally include -StaticMacAddress -- Hyper-V
     # treats the cmdlet's absence as "use dynamic MAC pool", which is
@@ -61,15 +57,6 @@ function Add-HypervVMNetworkAdapter {
             -VlanId $VlanID `
             -ErrorAction Stop | Out-Null
     }
-    if ($IsolationID -gt 0) {
-        Set-VMNetworkAdapterIsolation `
-            -VMName $VMName `
-            -VMNetworkAdapterName $Name `
-            -IsolationMode Vlan `
-            -DefaultIsolationID $IsolationID `
-            -AllowUntaggedTraffic $true `
-            -ErrorAction Stop | Out-Null
-    }
     @{} | Write-HypervResult
 }
 
@@ -90,9 +77,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         if ($params.PSObject.Properties.Name -contains 'vlan_id' -and $params.vlan_id) {
             $invokeArgs.VlanID = [int] $params.vlan_id
-        }
-        if ($params.PSObject.Properties.Name -contains 'isolation_id' -and $params.isolation_id) {
-            $invokeArgs.IsolationID = [int] $params.isolation_id
         }
         Add-HypervVMNetworkAdapter @invokeArgs
     }

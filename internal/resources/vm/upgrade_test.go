@@ -435,10 +435,10 @@ func TestUpgradeStateRegistration_V4Entry(t *testing.T) {
 	}
 }
 
-// TestUpgradeV5ToV6_PopulatesNullVMID pins that vm_id lands null after
-// migration since v5 state files carry no Hyper-V VM GUID; the next
-// refresh fills it from the host. Every other field carries through
-// unchanged.
+// TestUpgradeV5ToV6_PopulatesNullVMID pins the only v5 -> v6 schema
+// change: vm_id lands null after migration since v5 state files carry
+// no Hyper-V VM GUID; the next refresh fills it from the host. Every
+// other field carries through unchanged.
 func TestUpgradeV5ToV6_PopulatesNullVMID(t *testing.T) {
 	prior := priorModelV5{
 		ID:                 types.StringValue("vm01"),
@@ -466,19 +466,20 @@ func TestUpgradeV5ToV6_PopulatesNullVMID(t *testing.T) {
 	}
 }
 
-// v5 NICs carry no isolation_id; it must land null while every v5 NIC field carries through.
-func TestUpgradeV5ToV6_AddsNullIsolationID(t *testing.T) {
+// TestUpgradeV5ToV6_CarriesNetworkAdapters pins that every v5 NIC field survives the v5 -> v6 migration.
+func TestUpgradeV5ToV6_CarriesNetworkAdapters(t *testing.T) {
+	nic := types.ObjectValueMust(NetworkAdapterAttrTypes, map[string]attr.Value{
+		"name":         types.StringValue("primary"),
+		"switch_name":  types.StringValue("lab"),
+		"ip_addresses": types.ListValueMust(types.StringType, []attr.Value{types.StringValue("10.0.0.5")}),
+		"mac_address":  mactype.NewMACValue("00:15:5D:AA:BB:CC"),
+		"vlan_id":      types.Int64Value(100),
+	})
 	prior := priorModelV5{
-		ID:         types.StringValue("vm01"),
-		Name:       types.StringValue("vm01"),
-		Generation: types.Int64Value(2),
-		NetworkAdapters: []priorNetworkAdapterModelV5{{
-			Name:        types.StringValue("primary"),
-			SwitchName:  types.StringValue("lab"),
-			IPAddresses: types.ListValueMust(types.StringType, []attr.Value{types.StringValue("10.0.0.5")}),
-			MacAddress:  mactype.NewMACValue("00:15:5D:AA:BB:CC"),
-			VlanID:      types.Int64Value(100),
-		}},
+		ID:              types.StringValue("vm01"),
+		Name:            types.StringValue("vm01"),
+		Generation:      types.Int64Value(2),
+		NetworkAdapters: types.ListValueMust(types.ObjectType{AttrTypes: NetworkAdapterAttrTypes}, []attr.Value{nic}),
 	}
 
 	got := upgradeV5ToV6(t.Context(), prior)
@@ -491,10 +492,9 @@ func TestUpgradeV5ToV6_AddsNullIsolationID(t *testing.T) {
 		t.Fatalf("NIC count = %d, want 1", len(nics))
 	}
 	n := nics[0]
-	if !n.IsolationID.IsNull() {
-		t.Errorf("IsolationID = %+v, want null", n.IsolationID)
-	}
-	if n.VlanID.ValueInt64() != 100 || n.MacAddress.ValueString() != "00:15:5D:AA:BB:CC" || len(n.IPAddresses.Elements()) != 1 {
+	if n.Name.ValueString() != "primary" || n.SwitchName.ValueString() != "lab" ||
+		n.MacAddress.ValueString() != "00:15:5D:AA:BB:CC" || n.VlanID.ValueInt64() != 100 ||
+		len(n.IPAddresses.Elements()) != 1 {
 		t.Errorf("NIC fields did not carry through: %+v", n)
 	}
 }

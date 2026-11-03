@@ -184,13 +184,3 @@ const PortProxyFixtureJSON = `{
 	"FirewallRuleProfile": "Any",
 	"Listening": true
 }`
-
-// ICSNetworkFixtureJSON is the six-field result ics_network/{get,new}.ps1 emit, locked by get.Tests.ps1.
-const ICSNetworkFixtureJSON = `{
-	"Id": "753900d5-83fd-4c4d-83b6-7c438c6ff4fe",
-	"Name": "tfdev-ics",
-	"AddressPrefix": "172.30.97.0/24",
-	"HostAddress": "172.30.97.1",
-	"IsolationId": 1,
-	"SwitchName": "tfdev-ics"
-}`

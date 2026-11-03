@@ -6,7 +6,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -282,9 +281,8 @@ func resourceSchema() schema.Schema {
 					"in the plan is attached, a name present only in state is detached, and a " +
 					"name present in both with a different `switch_name` is detached and " +
 					"re-attached.\n\n" +
-					"A NIC supports access-mode VLAN tagging (`vlan_id`) or VLAN isolation " +
-					"(`isolation_id`), which a NIC on a `hyperv_ics_network` switch needs. Trunk " +
-					"mode is not supported.",
+					"Only access-mode VLAN tagging (`vlan_id`) is supported; trunk and isolation " +
+					"VLAN modes are not.",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
 				},
@@ -347,24 +345,12 @@ func resourceSchema() schema.Schema {
 						"vlan_id": schema.Int64Attribute{
 							Optional: true,
 							MarkdownDescription: "Access-mode VLAN ID for this NIC. Valid range is " +
-								"1-4094. Leave it unset for an untagged NIC; trunk mode is not " +
-								"supported. Changes to this field detach and re-attach the NIC and " +
-								"require the VM to be `Off`. To revert to untagged, remove the " +
-								"attribute from config or set it to `null`. Conflicts with `isolation_id`.",
+								"1-4094. Leave it unset for an untagged NIC; only access mode is " +
+								"supported, not trunk or isolation. Changes to this field detach " +
+								"and re-attach the NIC and require the VM to be `Off`. To revert to " +
+								"untagged, remove the attribute from config or set it to `null`.",
 							Validators: []validator.Int64{
 								int64validator.Between(1, 4094),
-							},
-						},
-						"isolation_id": schema.Int64Attribute{
-							Optional: true,
-							MarkdownDescription: "VLAN isolation ID for this NIC. The provider applies it with " +
-								"`Set-VMNetworkAdapterIsolation -IsolationMode Vlan -AllowUntaggedTraffic $true`. " +
-								"A NIC on a `hyperv_ics_network` switch gets a DHCP lease only when this matches " +
-								"the network's `isolation_id`. Changes to this field detach and re-attach the NIC " +
-								"and require the VM to be `Off`. Conflicts with `vlan_id`.",
-							Validators: []validator.Int64{
-								int64validator.AtLeast(1),
-								int64validator.ConflictsWith(path.MatchRelative().AtParent().AtName("vlan_id")),
 							},
 						},
 					},

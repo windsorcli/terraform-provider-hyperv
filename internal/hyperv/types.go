@@ -386,9 +386,6 @@ type NetworkAdapter struct {
 	// layer flattens 0 to a null state value so unset config matches
 	// unset state on round-trip.
 	VlanID int `json:"VlanID"`
-
-	// IsolationID is the DefaultIsolationID of a NIC in Vlan isolation mode, or 0 for any other mode.
-	IsolationID int `json:"IsolationID"`
 }
 
 // AttachNetworkAdapterInput is the stdin JSON format for
@@ -412,9 +409,6 @@ type AttachNetworkAdapterInput struct {
 	// `Set-VMNetworkAdapterVlan -Untagged` after the Add). 1-4094 sets
 	// access-mode VLAN. The schema validator pre-screens the range.
 	VlanID int `json:"vlan_id,omitempty"`
-
-	// IsolationID is optional. 0 leaves isolation off; a positive value sets Vlan isolation mode with that ID.
-	IsolationID int `json:"isolation_id,omitempty"`
 }
 
 // DetachNetworkAdapterInput is the stdin JSON format for
@@ -603,22 +597,4 @@ type RemovePortProxyInput struct {
 	ListenAddress string `json:"listen_address"`
 	ListenPort    int    `json:"listen_port"`
 	FirewallName  string `json:"firewall_name"`
-}
-
-// ICSNetwork is the canonical six-field read result ics_network/{get,new}.ps1 emit.
-// SwitchName is empty when HCN reports no host vNIC switch or the VMSwitch is gone.
-type ICSNetwork struct {
-	ID            string `json:"Id"`
-	Name          string `json:"Name"`
-	AddressPrefix string `json:"AddressPrefix"`
-	HostAddress   string `json:"HostAddress"`
-	IsolationID   int    `json:"IsolationId"`
-	SwitchName    string `json:"SwitchName"`
-}
-
-// NewICSNetworkInput is the stdin JSON for ics_network/new.ps1; HostAddress is the first host in AddressPrefix.
-type NewICSNetworkInput struct {
-	Name          string `json:"name"`
-	AddressPrefix string `json:"address_prefix"`
-	HostAddress   string `json:"host_address"`
 }

@@ -22,7 +22,6 @@ import (
 	dsvmstate "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vm_state"
 	dsvswitch "github.com/windsorcli/terraform-provider-hyperv/internal/datasources/vswitch"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/hyperv"
-	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/ics_network"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/image_file"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/nat_static_mapping"
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/port_proxy"
@@ -148,8 +147,7 @@ func (p *HypervProvider) Schema(_ context.Context, _ provider.SchemaRequest, res
 			"Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = \"NAT\"` " +
 			"(the underlying `New-NetNat` returns the same). `switch_type = \"External\"` was not " +
 			"directly tested — Local Administrators is the recommended floor.\n" +
-			"  * **Built-in `Administrator`** is the only identity tested for `hyperv_port_proxy` " +
-			"and `hyperv_ics_network`.\n" +
+			"  * **Built-in `Administrator`** is the only identity tested for `hyperv_port_proxy`.\n" +
 			"  * **No host-side requirement** for `hyperv_iso_volume` — it runs on the Terraform " +
 			"runner.\n\n" +
 			"Opening a WinRM/PSSession also needs membership in `Administrators` or " +
@@ -405,7 +403,6 @@ func (p *HypervProvider) Resources(_ context.Context) []func() resource.Resource
 		vm.New,
 		nat_static_mapping.New,
 		port_proxy.New,
-		ics_network.New,
 	}
 }
 
