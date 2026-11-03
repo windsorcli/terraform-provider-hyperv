@@ -1,4 +1,4 @@
-# Locks Set-HypervPortProxy's retarget and firewall reconciliation.
+# Locks Set-HypervPortProxy's retarget, listener re-add, and firewall reconciliation.
 
 BeforeAll {
     . $PSScriptRoot/_test_helpers.ps1
@@ -22,8 +22,15 @@ Describe 'Set-HypervPortProxy' {
 
     BeforeEach {
         $script:connect = '172.30.98.222'
+        $script:listening = $true
+        Mock Get-CimInstance { New-HypervIpHelperService }
+        Mock Get-NetTCPConnection { if ($script:listening) { New-HypervListenerSample } }
         Mock Get-ItemProperty { New-HypervPortProxyRegistryItem -ConnectAddress $script:connect }
         Mock Invoke-HypervNetsh { $script:connect = '172.30.98.177' }
+        Mock Invoke-HypervNetsh { $script:connect = '172.30.98.177'; $script:listening = $true } -ParameterFilter {
+            $ArgumentList -contains 'add'
+        }
+        Mock Start-Sleep { }
         Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
         Mock Set-NetFirewallRule { }
         Mock New-NetFirewallRule { }
@@ -44,6 +51,55 @@ Describe 'Set-HypervPortProxy' {
 
         Set-HypervPortProxy @script:SetArgs | Out-Null
 
+        Should -Invoke Invoke-HypervNetsh -Times 0
+    }
+
+    It 're-adds a rule that has no listener, since netsh set does not bind it' {
+        $script:connect = '172.30.98.177'
+        $script:listening = $false
+
+        $parsed = Set-HypervPortProxy @script:SetArgs | ConvertFrom-Json
+
+        Should -Invoke Invoke-HypervNetsh -Times 1 -ParameterFilter {
+            ($ArgumentList -join ' ') -eq 'interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=15000'
+        }
+        Should -Invoke Invoke-HypervNetsh -Times 1 -ParameterFilter {
+            ($ArgumentList -join ' ') -eq ('interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=15000 ' +
+                'connectaddress=172.30.98.177 connectport=50000')
+        }
+        $parsed.Listening | Should -BeTrue
+    }
+
+    It 're-adds with the new connect pair instead of running netsh set when the rule has no listener' {
+        $script:listening = $false
+
+        $parsed = Set-HypervPortProxy @script:SetArgs | ConvertFrom-Json
+
+        Should -Invoke Invoke-HypervNetsh -Times 0 -ParameterFilter { $ArgumentList -contains 'set' }
+        Should -Invoke Invoke-HypervNetsh -Times 1 -ParameterFilter {
+            ($ArgumentList -join ' ') -like '*add v4tov4*connectaddress=172.30.98.177 connectport=50000'
+        }
+        $parsed.ConnectAddress | Should -Be '172.30.98.177'
+    }
+
+    It 'leaves a listening rule in place' {
+        Set-HypervPortProxy @script:SetArgs | Out-Null
+
+        Should -Invoke Invoke-HypervNetsh -Times 0 -ParameterFilter { $ArgumentList -contains 'delete' }
+        Should -Invoke Invoke-HypervNetsh -Times 0 -ParameterFilter { $ArgumentList -contains 'add' }
+    }
+
+    It 'throws when the re-added rule still has no listener' {
+        $script:listening = $false
+        Mock Invoke-HypervNetsh { } -ParameterFilter { $ArgumentList -contains 'add' }
+
+        { Set-HypervPortProxy @script:SetArgs } | Should -Throw '*isn''t listening*'
+    }
+
+    It 'fails before running netsh when iphlpsvc is stopped' {
+        Mock Get-CimInstance { New-HypervIpHelperService -State 'Stopped' -ProcessId 0 }
+
+        { Set-HypervPortProxy @script:SetArgs } | Should -Throw '*iphlpsvc*not running*'
         Should -Invoke Invoke-HypervNetsh -Times 0
     }
 

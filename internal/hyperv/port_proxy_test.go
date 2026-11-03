@@ -34,6 +34,7 @@ func TestClient_GetPortProxy_HappyPath(t *testing.T) {
 		FirewallRulePresent: true,
 		FirewallRuleName:    "hyperv-pp-0.0.0.0-15000",
 		FirewallRuleProfile: "Any",
+		Listening:           true,
 	}
 	if *pp != want {
 		t.Errorf("got %+v, want %+v", *pp, want)

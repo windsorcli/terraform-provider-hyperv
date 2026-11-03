@@ -14,7 +14,7 @@
 #                     "profile": "<string>"               # required
 #                   }
 #                 }
-#   stdout JSON : the created rule in the canonical eight-field read format
+#   stdout JSON : the created rule in the canonical nine-field read format
 #                 (same fields as get.ps1).
 #
 # lint:allow-long-comment

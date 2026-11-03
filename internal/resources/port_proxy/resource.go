@@ -305,5 +305,6 @@ func modelFromPortProxy(ctx context.Context, pp *hyperv.PortProxy) (Model, diag.
 		ConnectAddress: types.StringValue(pp.ConnectAddress),
 		ConnectPort:    types.Int64Value(int64(pp.ConnectPort)),
 		FirewallRule:   fwObj,
+		Listening:      types.BoolValue(pp.Listening),
 	}, diags
 }

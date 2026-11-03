@@ -172,7 +172,7 @@ const VMGen1FixtureJSON = `{
 	"BootOrder": []
 }`
 
-// PortProxyFixtureJSON is the eight-field result port_proxy/{get,new,set}.ps1 emit, locked by get.Tests.ps1.
+// PortProxyFixtureJSON is the nine-field result port_proxy/{get,new,set}.ps1 emit, locked by get.Tests.ps1.
 const PortProxyFixtureJSON = `{
 	"Id": "0.0.0.0:15000",
 	"ListenAddress": "0.0.0.0",
@@ -181,7 +181,8 @@ const PortProxyFixtureJSON = `{
 	"ConnectPort": 50000,
 	"FirewallRulePresent": true,
 	"FirewallRuleName": "hyperv-pp-0.0.0.0-15000",
-	"FirewallRuleProfile": "Any"
+	"FirewallRuleProfile": "Any",
+	"Listening": true
 }`
 
 // ICSNetworkFixtureJSON is the six-field result ics_network/{get,new}.ps1 emit, locked by get.Tests.ps1.

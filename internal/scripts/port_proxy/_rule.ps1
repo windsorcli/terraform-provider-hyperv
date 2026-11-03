@@ -84,6 +84,21 @@ function Get-HypervIpHelperProcessId {
     [int]$service.ProcessId
 }
 
+# Test-HypervPortProxyListener reports whether the IP Helper service listens on the rule's address and port.
+# A rule netsh holds has been observed with no listener when its address came up after the service started.
+function Test-HypervPortProxyListener {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ListenAddress,
+        [Parameter(Mandatory)] [int]    $ListenPort
+    )
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='iphlpsvc'" -ErrorAction SilentlyContinue
+    if ($null -eq $service -or $service.State -ne 'Running') { return $false }
+    $owned = @(Get-NetTCPConnection -State Listen -LocalPort $ListenPort -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalAddress -eq $ListenAddress -and $_.OwningProcess -eq $service.ProcessId })
+    $owned.Count -gt 0
+}
+
 # Wait-HypervPortProxyListener polls until the IP Helper service listens on the rule's address and port.
 # Throws when it doesn't within the timeout, naming any other process that holds the port.
 function Wait-HypervPortProxyListener {
@@ -115,7 +130,7 @@ function Get-HypervFirewallLocalAddress {
     if ($ListenAddress -eq '0.0.0.0') { 'Any' } else { $ListenAddress }
 }
 
-# Write-HypervPortProxyResult emits the canonical eight-field read result for a rule and its firewall rule.
+# Write-HypervPortProxyResult emits the canonical nine-field read result for a rule, its listener, and its firewall rule.
 function Write-HypervPortProxyResult {
     [CmdletBinding()]
     param(
@@ -132,5 +147,6 @@ function Write-HypervPortProxyResult {
         FirewallRulePresent = [bool]$firewall.Present
         FirewallRuleName    = $FirewallName
         FirewallRuleProfile = $firewall.Profile
+        Listening           = [bool](Test-HypervPortProxyListener -ListenAddress $Rule.ListenAddress -ListenPort $Rule.ListenPort)
     } | Write-HypervResult
 }

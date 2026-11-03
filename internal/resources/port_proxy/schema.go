@@ -1,6 +1,8 @@
 package port_proxy
 
 import (
+	"context"
+
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -8,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/windsorcli/terraform-provider-hyperv/internal/resources/internal/firewallrule"
 )
@@ -31,7 +34,14 @@ func resourceSchema() schema.Schema {
 			"A DHCP guest can come back with a different address after a host reboot. Set " +
 			"`connect_address` from the address the guest reports, for example " +
 			"`hyperv_vm.<x>.network_adapter[0].ip_addresses[0]`, and the next apply retargets the rule " +
-			"in place.",
+			"in place.\n\n" +
+			"A rule on a specific `listen_address` can lose its listener across a host reboot while " +
+			"netsh still holds it. This has been observed for a DHCP address on an External switch's " +
+			"host vNIC, and `netsh interface portproxy set` doesn't bring the listener back. Read then " +
+			"reports `listening = false`, the next plan updates the rule in place, and the apply " +
+			"deletes and adds that one rule so the IP Helper service binds it again. Rules on " +
+			"`0.0.0.0` have listened again after the same reboot, so use `0.0.0.0` unless the rule " +
+			"must listen on one host address only.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -78,6 +88,15 @@ func resourceSchema() schema.Schema {
 					int64validator.Between(1, 65535),
 				},
 			},
+			"listening": schema.BoolAttribute{
+				Computed: true,
+				MarkdownDescription: "Whether the IP Helper service listens on `listen_address`:`listen_port`. " +
+					"Read reports `false` for a rule netsh holds with no listener, and the next apply " +
+					"re-adds the rule.",
+				PlanModifiers: []planmodifier.Bool{
+					planListening{},
+				},
+			},
 			"firewall_rule": firewallrule.Attribute(firewallrule.Descriptions{
 				Attribute: "Inbound firewall allow rule for `listen_port`. Defaults to " +
 					"`{ enabled = true, profile = \"Any\" }`, with `name` derived as " +
@@ -91,4 +110,20 @@ func resourceSchema() schema.Schema {
 			}),
 		},
 	}
+}
+
+// planListening plans listening = true, so a rule that Read found with no listener gets an in-place update.
+type planListening struct{}
+
+// Description returns the plain-text summary.
+func (planListening) Description(context.Context) string {
+	return "Plans true, so the apply re-adds a rule that has no listener."
+}
+
+// MarkdownDescription returns the Markdown summary.
+func (m planListening) MarkdownDescription(ctx context.Context) string { return m.Description(ctx) }
+
+// PlanModifyBool sets the planned value to true.
+func (planListening) PlanModifyBool(_ context.Context, _ planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	resp.PlanValue = types.BoolValue(true)
 }

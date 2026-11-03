@@ -99,3 +99,41 @@ Describe 'Wait-HypervPortProxyListener' {
             Should -Throw
     }
 }
+
+Describe 'Test-HypervPortProxyListener' {
+
+    BeforeEach {
+        Mock Get-CimInstance { New-HypervIpHelperService }
+    }
+
+    It 'returns $true when the IP Helper service owns a listener on the address and port' {
+        Mock Get-NetTCPConnection { New-HypervListenerSample -LocalAddress '192.168.3.77' }
+
+        Test-HypervPortProxyListener -ListenAddress '192.168.3.77' -ListenPort 15000 | Should -BeTrue
+    }
+
+    It 'returns $false when the rule has no listener' {
+        Mock Get-NetTCPConnection { }
+
+        Test-HypervPortProxyListener -ListenAddress '192.168.3.77' -ListenPort 15000 | Should -BeFalse
+    }
+
+    It 'returns $false when only the 0.0.0.0 twin listens' {
+        Mock Get-NetTCPConnection { New-HypervListenerSample -LocalAddress '0.0.0.0' }
+
+        Test-HypervPortProxyListener -ListenAddress '192.168.3.77' -ListenPort 15000 | Should -BeFalse
+    }
+
+    It 'returns $false when another process owns the listener' {
+        Mock Get-NetTCPConnection { New-HypervListenerSample -OwningProcess 999 }
+
+        Test-HypervPortProxyListener -ListenAddress '0.0.0.0' -ListenPort 15000 | Should -BeFalse
+    }
+
+    It 'returns $false without throwing when iphlpsvc is stopped' {
+        Mock Get-CimInstance { New-HypervIpHelperService -State 'Stopped' -ProcessId 0 }
+        Mock Get-NetTCPConnection { New-HypervListenerSample -OwningProcess 0 }
+
+        Test-HypervPortProxyListener -ListenAddress '0.0.0.0' -ListenPort 15000 | Should -BeFalse
+    }
+}
