@@ -33,6 +33,8 @@ The acc-test-only block at the bottom of `.env.example` covers the fixture vars 
 | `HYPERV_TEST_VHD_DIR` | `vhd`, `image_file` (both modes) | Bench directory where ephemeral VHDs/downloads land. |
 | `HYPERV_TEST_HOST_FILE` | `image_file` (host_path mode) | Pre-placed file path. Verifies presence and tracks SHA-256 for drift. |
 | `HYPERV_TEST_ISO_FILE` | `vm` (`withDvdDrive`, `withBootOrder`) | Pre-placed ISO path. Any few-KB ISO works. |
+| `HYPERV_TEST_BOOT_ISO` | `vm` (`ipAddressesChangeDuringUpdate`) | Bootable ISO whose guest reports addresses through KVP (`hv_kvp_daemon`), such as a Talos metal ISO. |
+| `HYPERV_TEST_DHCP_SWITCH` | `vm` (`ipAddressesChangeDuringUpdate`) | Switch where a guest gets a DHCP lease, such as an External switch on the LAN. |
 
 A test that requires an unset env var calls `t.Skip` instead of `t.Fatal`, so a partial bench still runs the subset it can support.
 
