@@ -75,11 +75,109 @@ Describe 'Remove-HypervSwitch' {
         Should -Invoke Remove-VMSwitch -Times 0 -Exactly
     }
 
+    Context 'attached VMs' {
+        # Any refusal must come before the first Remove-* call, so the switch stays whole and stays in state.
+
+        It 'refuses with ResourceBusy and removes nothing when a running VM is attached' {
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-VM { New-HypervVMSample -Name 'worker-1' -State 'Running' }
+            Mock Get-VMNetworkAdapter {
+                New-HypervVMNetworkAdapterSample -VMName 'worker-1' -SwitchName 'windsor-nat'
+            }
+            Mock Get-NetNat { New-HypervNetNatSample }
+            Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
+            Mock Remove-NetNat { }
+            Mock Remove-NetIPAddress { }
+            Mock Remove-VMSwitch { }
+
+            $captured = $null
+            try { Remove-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat' } catch { $captured = $_ }
+
+            $captured | Should -Not -BeNullOrEmpty
+            $captured.CategoryInfo.Category.ToString() | Should -Be 'ResourceBusy'
+            $captured.Exception.Message | Should -Match 'worker-1'
+            Should -Invoke Remove-NetNat -Times 0 -Exactly
+            Should -Invoke Remove-NetIPAddress -Times 0 -Exactly
+            Should -Invoke Remove-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'refuses for a non-NAT switch with a running VM attached' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM { New-HypervVMSample -Name 'vm0' -State 'Running' }
+            Mock Get-VMNetworkAdapter { New-HypervVMNetworkAdapterSample -SwitchName 'sw0' }
+            Mock Remove-VMSwitch { }
+
+            { Remove-HypervSwitch -Name 'sw0' } | Should -Throw -ExpectedMessage '*vm0*'
+            Should -Invoke Remove-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'treats Saved and Paused VMs as attached' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM {
+                New-HypervVMSample -Name 'saved-vm' -State 'Saved'
+                New-HypervVMSample -Name 'paused-vm' -State 'Paused'
+            }
+            Mock Get-VMNetworkAdapter {
+                New-HypervVMNetworkAdapterSample -VMName 'saved-vm' -SwitchName 'sw0'
+                New-HypervVMNetworkAdapterSample -VMName 'paused-vm' -SwitchName 'sw0'
+            }
+            Mock Remove-VMSwitch { }
+
+            { Remove-HypervSwitch -Name 'sw0' } | Should -Throw -ExpectedMessage '*paused-vm*saved-vm*'
+            Should -Invoke Remove-VMSwitch -Times 0 -Exactly
+        }
+
+        It 'proceeds when the only attached VM is Off' {
+            # Remove-VMSwitch on the bench has succeeded with an Off VM attached; the VM's NIC is left disconnected.
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM { New-HypervVMSample -State 'Off' }
+            Mock Get-VMNetworkAdapter { New-HypervVMNetworkAdapterSample -SwitchName 'sw0' }
+            Mock Remove-VMSwitch { }
+
+            { Remove-HypervSwitch -Name 'sw0' } | Should -Not -Throw
+            Should -Invoke Remove-VMSwitch -Times 1 -Exactly
+        }
+
+        It 'queries adapters only for VMs that are not Off' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM {
+                New-HypervVMSample -Name 'off-vm' -State 'Off'
+                New-HypervVMSample -Name 'running-vm' -State 'Running'
+            }
+            Mock Get-VMNetworkAdapter { }
+            Mock Remove-VMSwitch { }
+
+            Remove-HypervSwitch -Name 'sw0'
+
+            Should -Invoke Get-VMNetworkAdapter -Times 1 -Exactly -ParameterFilter { $VM.Name -eq 'running-vm' }
+            Should -Invoke Get-VMNetworkAdapter -Times 0 -Exactly -ParameterFilter { $VM.Name -eq 'off-vm' }
+        }
+
+        It 'ignores running VMs attached to other switches' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM { New-HypervVMSample -State 'Running' }
+            Mock Get-VMNetworkAdapter { New-HypervVMNetworkAdapterSample -SwitchName 'other-switch' }
+            Mock Remove-VMSwitch { }
+
+            { Remove-HypervSwitch -Name 'sw0' } | Should -Not -Throw
+            Should -Invoke Remove-VMSwitch -Times 1 -Exactly
+        }
+
+        It 'propagates a Get-VM failure without removing anything' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM { throw 'simulated WMI service fault' }
+            Mock Remove-VMSwitch { }
+
+            { Remove-HypervSwitch -Name 'sw0' } | Should -Throw -ExpectedMessage '*WMI service fault*'
+            Should -Invoke Remove-VMSwitch -Times 0 -Exactly
+        }
+    }
+
     Context 'NAT switch teardown' {
-        # Multi-phase teardown order is load-bearing: Remove-VMSwitch fails
-        # if the NetNat instance still references the switch's vNIC, so
-        # NetNat must come down first. NetIPAddress next so the vNIC is
-        # un-IP'd. Finally Remove-VMSwitch.
+        # Remove-VMSwitch runs last so a failed earlier step leaves the VMSwitch that Get-HypervSwitch keys on.
 
         It 'tears down NAT, then NetIPAddress, then VMSwitch in that order' {
             Mock Get-VMSwitch {

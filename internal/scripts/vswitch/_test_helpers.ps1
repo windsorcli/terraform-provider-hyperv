@@ -44,6 +44,19 @@ function Remove-VMSwitch {
     )
 }
 
+# Get-VM / Get-VMNetworkAdapter stubs back the attached-VM check in remove.ps1.
+function Get-VM {
+    [CmdletBinding()]
+    param()
+}
+
+function Get-VMNetworkAdapter {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline)] [object[]] $VM
+    )
+}
+
 # NetNat / NetIPAddress cmdlet stubs for the NAT switch_type branch. Same
 # rationale as the Hyper-V stubs above: define unconditionally so Pester
 # parameter-filter binding works consistently across PS 5.1 / 7.x even
@@ -162,5 +175,31 @@ function New-HypervNetIPAddressSample {
         IPAddress      = $IPAddress
         PrefixLength   = $PrefixLength
         AddressFamily  = $AddressFamily
+    }
+}
+
+# New-HypervVMSample builds a PSCustomObject modeled on a Get-VM result.
+function New-HypervVMSample {
+    [CmdletBinding()]
+    param(
+        [string] $Name = 'vm0',
+        [string] $State = 'Running'
+    )
+    [pscustomobject]@{
+        Name  = $Name
+        State = $State
+    }
+}
+
+# New-HypervVMNetworkAdapterSample builds a PSCustomObject modeled on a Get-VMNetworkAdapter result.
+function New-HypervVMNetworkAdapterSample {
+    [CmdletBinding()]
+    param(
+        [string] $VMName = 'vm0',
+        [string] $SwitchName = 'sw0'
+    )
+    [pscustomobject]@{
+        VMName     = $VMName
+        SwitchName = $SwitchName
     }
 }

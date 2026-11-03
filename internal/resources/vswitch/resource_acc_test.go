@@ -12,6 +12,7 @@ package vswitch_test
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -248,4 +249,77 @@ resource "hyperv_virtual_switch" "test" {
   notes                       = %q
 }
 `, name, natName, prefix, hostAddr, notes)
+}
+
+// TestAcc_VirtualSwitch_natDeleteRefusedWhileVMRunning destroys a NAT
+// switch while a running VM still has a NIC on it. The VM names the
+// switch by string, so step 2 can drop the switch from config while the
+// VM stays attached. The delete must fail before it touches the host,
+// and step 3 must find the switch in state with no drift.
+func TestAcc_VirtualSwitch_natDeleteRefusedWhileVMRunning(t *testing.T) {
+	name := acctest.RandomName("vswitch-nat-busy")
+	natName := acctest.RandomName("nat-busy")
+	vmName := acctest.RandomName("vm-nat-busy")
+	client := acctest.NewClient(t)
+	const prefix, hostAddr = "192.168.143.0/24", "192.168.143.1"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		CheckDestroy: acctest.CheckResourceGone("hyperv_virtual_switch",
+			func(ctx context.Context, switchName string) (*hyperv.VMSwitch, error) {
+				return client.GetVMSwitch(ctx, switchName, natName)
+			}),
+		Steps: []resource.TestStep{
+			{
+				Config: vswitchNATConfig(name, natName, prefix, hostAddr, "") +
+					vswitchAttachedVMConfig(vmName, name, true),
+			},
+			{
+				Config:      vswitchAttachedVMConfig(vmName, name, false),
+				ExpectError: regexp.MustCompile(`in\s+use\s+by\s+VMs\s+that\s+are\s+not\s+Off:\s+` + regexp.QuoteMeta(vmName)),
+			},
+			{
+				PreConfig: func() {
+					sw, err := client.GetVMSwitch(acctest.AccCtx(t), name, natName)
+					if err != nil {
+						t.Fatalf("switch %q after refused delete: %v", name, err)
+					}
+					if sw.NatInternalAddressPrefix != prefix || sw.NatHostAddress != hostAddr {
+						t.Fatalf("refused delete changed the NAT: prefix=%q host=%q", sw.NatInternalAddressPrefix, sw.NatHostAddress)
+					}
+				},
+				Config: vswitchNATConfig(name, natName, prefix, hostAddr, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("hyperv_virtual_switch.test", plancheck.ResourceActionNoop),
+						plancheck.ExpectResourceAction("hyperv_vm.attached", plancheck.ResourceActionDestroy),
+					},
+				},
+			},
+		},
+	})
+}
+
+// vswitchAttachedVMConfig renders a running gen 2 VM with one NIC on
+// switchName. dependsOnSwitch orders the first create after the switch.
+func vswitchAttachedVMConfig(vmName, switchName string, dependsOnSwitch bool) string {
+	dependsOn := ""
+	if dependsOnSwitch {
+		dependsOn = "  depends_on = [hyperv_virtual_switch.test]\n"
+	}
+	return fmt.Sprintf(`
+resource "hyperv_vm" "attached" {
+  name       = %q
+  generation = 2
+  cpu    = { count = 1 }
+  memory = { startup_bytes = %d }
+  state = {
+    desired = "Running"
+  }
+  network_adapter = [
+    { name = "primary", switch_name = %q },
+  ]
+%s}
+`, vmName, 256*1024*1024, switchName, dependsOn)
 }

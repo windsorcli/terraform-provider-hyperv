@@ -153,7 +153,8 @@ Describe 'Get-HypervSwitch' {
             $parsed.NatHostAddress | Should -Be '192.168.100.1'
         }
 
-        It 'NAT switch with missing NetNat surfaces ObjectNotFound (out-of-band teardown)' {
+        It 'NAT switch with missing NetNat still reports the switch, with an empty prefix' {
+            # A half-removed NAT switch must stay in state so Terraform shows the drift or retries the delete.
             Mock Get-VMSwitch {
                 New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
                     -AllowManagementOS $false -NetAdapterInterfaceDescription ''
@@ -161,13 +162,47 @@ Describe 'Get-HypervSwitch' {
             Mock Get-NetIPAddress { New-HypervNetIPAddressSample }
             Mock Get-NetNat { $null }
 
-            $captured = $null
-            try {
-                Get-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat'
-            } catch { $captured = $_ }
+            $parsed = Get-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat' |
+                ConvertFrom-Json
 
-            $captured | Should -Not -BeNullOrEmpty
-            $captured.CategoryInfo.Category.ToString() | Should -Be 'ObjectNotFound'
+            $parsed.SwitchType | Should -Be 'NAT'
+            $parsed.NatName | Should -Be 'windsor-nat'
+            $parsed.NatInternalAddressPrefix | Should -Be ''
+            $parsed.NatHostAddress | Should -Be '192.168.100.1'
+        }
+
+        It 'NAT switch with missing NetIPAddress still reports the switch, with an empty host address' {
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { $null }
+            Mock Get-NetNat { New-HypervNetNatSample }
+
+            $parsed = Get-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat' |
+                ConvertFrom-Json
+
+            $parsed.SwitchType | Should -Be 'NAT'
+            $parsed.NatName | Should -Be 'windsor-nat'
+            $parsed.NatInternalAddressPrefix | Should -Be '192.168.100.0/24'
+            $parsed.NatHostAddress | Should -Be ''
+        }
+
+        It 'NAT switch with both NetNat and NetIPAddress missing still reports the switch' {
+            Mock Get-VMSwitch {
+                New-HypervSwitchSample -Name $Name -SwitchType 'Internal' `
+                    -AllowManagementOS $false -NetAdapterInterfaceDescription ''
+            }
+            Mock Get-NetIPAddress { $null }
+            Mock Get-NetNat { $null }
+
+            $parsed = Get-HypervSwitch -Name 'windsor-nat' -NatName 'windsor-nat' |
+                ConvertFrom-Json
+
+            $parsed.SwitchType | Should -Be 'NAT'
+            $parsed.NatName | Should -Be 'windsor-nat'
+            $parsed.NatInternalAddressPrefix | Should -Be ''
+            $parsed.NatHostAddress | Should -Be ''
         }
 
         It 'still handles the documented ObjectNotFound shape (defensive: older Hyper-V versions)' {

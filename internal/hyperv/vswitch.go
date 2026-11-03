@@ -170,8 +170,9 @@ func (c *Client) SetVMSwitch(ctx context.Context, in SetVMSwitchInput) (*VMSwitc
 // other switch type or state removes directly. natName forwards to
 // remove.ps1's NAT teardown (Remove-NetNat, Remove-NetIPAddress, then
 // Remove-VMSwitch), each step tolerating ObjectNotFound; empty natName
-// skips it. Recovers from connection.ErrSessionDropped on the actual
-// Remove via recoverVMSwitchRemoveOnDrop.
+// skips it. remove.ps1 refuses before any step while a VM that isn't
+// Off has a NIC on the switch. Recovers from connection.ErrSessionDropped
+// on the actual Remove via recoverVMSwitchRemoveOnDrop.
 func (c *Client) RemoveVMSwitch(ctx context.Context, name, natName string) error {
 	// NotFound here is success (already gone); other errors propagate.
 	current, err := c.GetVMSwitch(ctx, name, natName)

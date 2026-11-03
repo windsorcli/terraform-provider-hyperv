@@ -8,6 +8,7 @@ description: |-
   Over WinRM, the connecting identity also needs Administrators or Remote Management Users membership for endpoint access; Administrators implies this, but a delegated Hyper-V-Administrators-only identity does not.
   Manages a Hyper-V virtual switch: External, Internal, Private, or NAT.
   ~> Note: If New-VMSwitch succeeds on the host but the provider fails to record the result, for example on a transient stdout decode error, the switch exists on the host with no Terraform state, and the next terraform apply fails because a switch with that name already exists. Recover with terraform import hyperv_virtual_switch.<name> <switch-name> and re-plan.
+  ~> Note: Destroy fails before it changes the host while a VM that is not Off has a network adapter on the switch. Stop the VM or move its adapter to another switch, then apply again.
 ---
 
 # hyperv_virtual_switch (Resource)
@@ -23,6 +24,8 @@ Over WinRM, the connecting identity also needs `Administrators` or `Remote Manag
 Manages a Hyper-V virtual switch: `External`, `Internal`, `Private`, or `NAT`.
 
 ~> **Note:** If `New-VMSwitch` succeeds on the host but the provider fails to record the result, for example on a transient stdout decode error, the switch exists on the host with no Terraform state, and the next `terraform apply` fails because a switch with that name already exists. Recover with `terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.
+
+~> **Note:** Destroy fails before it changes the host while a VM that is not `Off` has a network adapter on the switch. Stop the VM or move its adapter to another switch, then apply again.
 
 ## Example Usage
 
