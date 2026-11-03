@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -35,7 +36,7 @@ func TestResource_Schema(t *testing.T) {
 	if diags := resp.Schema.ValidateImplementation(t.Context()); diags.HasError() {
 		t.Fatalf("ValidateImplementation: %v", diags)
 	}
-	for _, name := range []string{"id", "listen_address", "listen_port", "connect_address", "connect_port", "firewall_rule"} {
+	for _, name := range []string{"id", "listen_address", "listen_port", "connect_address", "connect_port", "firewall_rule", "listening"} {
 		if _, ok := resp.Schema.Attributes[name]; !ok {
 			t.Errorf("missing attribute %q", name)
 		}
@@ -69,6 +70,48 @@ func TestResource_Schema_Mutability(t *testing.T) {
 		if got := mods > 0; got != tc.wantReplace {
 			t.Errorf("%s: has plan modifiers = %v, want %v", tc.name, got, tc.wantReplace)
 		}
+	}
+}
+
+// A rule netsh holds with no listener must plan an in-place update, so the apply re-adds it.
+func TestPlanListening(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		state types.Bool
+	}{
+		{"no listener", types.BoolValue(false)},
+		{"listening", types.BoolValue(true)},
+		{"create", types.BoolNull()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := &planmodifier.BoolResponse{PlanValue: types.BoolUnknown()}
+			planListening{}.PlanModifyBool(t.Context(), planmodifier.BoolRequest{
+				StateValue: tc.state,
+				PlanValue:  types.BoolUnknown(),
+			}, resp)
+			if !resp.PlanValue.Equal(types.BoolValue(true)) {
+				t.Errorf("PlanValue = %s, want true", resp.PlanValue)
+			}
+		})
+	}
+}
+
+func TestResource_Schema_ListeningIsComputedOnly(t *testing.T) {
+	t.Parallel()
+
+	a, ok := resourceSchema().Attributes["listening"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("listening: want a BoolAttribute")
+	}
+	if !a.Computed || a.Optional || a.Required {
+		t.Errorf("listening: Computed=%v Optional=%v Required=%v, want computed only", a.Computed, a.Optional, a.Required)
+	}
+	if len(a.PlanModifiers) != 1 {
+		t.Errorf("listening: %d plan modifiers, want planListening only", len(a.PlanModifiers))
 	}
 }
 
@@ -195,6 +238,28 @@ func TestModelFromPortProxy_CoalescesEmptyProfile(t *testing.T) {
 	}
 	if m.ConnectPort.ValueInt64() != 50000 {
 		t.Errorf("ConnectPort = %d", m.ConnectPort.ValueInt64())
+	}
+}
+
+func TestModelFromPortProxy_Listening(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []bool{true, false} {
+		m, diags := modelFromPortProxy(t.Context(), &hyperv.PortProxy{
+			ID:               "192.168.3.77:6443",
+			ListenAddress:    "192.168.3.77",
+			ListenPort:       6443,
+			ConnectAddress:   "10.77.0.206",
+			ConnectPort:      6443,
+			FirewallRuleName: "hyperv-pp-192.168.3.77-6443",
+			Listening:        want,
+		})
+		if diags.HasError() {
+			t.Fatalf("diags: %v", diags)
+		}
+		if m.Listening.ValueBool() != want {
+			t.Errorf("Listening = %v, want %v", m.Listening.ValueBool(), want)
+		}
 	}
 }
 

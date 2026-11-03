@@ -7,6 +7,7 @@ description: |-
   Manages one netsh interface portproxy https://learn.microsoft.com/en-us/windows-server/networking/technologies/netsh/netsh-interface-portproxy v4tov4 rule, which forwards a TCP port on the host to an IPv4 address and port, plus an optional inbound firewall allow rule. It needs no NetNat instance, so it can forward to any address the host can reach. It forwards TCP only. For a guest behind a NetNat, typically on a hyperv_virtual_switch with switch_type = "NAT", or for UDP, use hyperv_nat_static_mapping instead.
   Create checks the port against netsh interface ipv4 show excludedportrange protocol=tcp and then confirms the IP Helper service is listening, because netsh accepts a rule for an excluded port without reporting an error. If either check fails, Create removes the rule.
   A DHCP guest can come back with a different address after a host reboot. Set connect_address from the address the guest reports, for example hyperv_vm.<x>.network_adapter[0].ip_addresses[0], and the next apply retargets the rule in place.
+  A rule on a specific listen_address can lose its listener across a host reboot while netsh still holds it. This has been observed for a DHCP address on an External switch's host vNIC, and netsh interface portproxy set doesn't bring the listener back. Read then reports listening = false, the next plan updates the rule in place, and the apply deletes and adds that one rule so the IP Helper service binds it again. Rules on 0.0.0.0 have listened again after the same reboot, so use 0.0.0.0 unless the rule must listen on one host address only.
 ---
 
 # hyperv_port_proxy (Resource)
@@ -18,6 +19,8 @@ Manages one [`netsh interface portproxy`](https://learn.microsoft.com/en-us/wind
 Create checks the port against `netsh interface ipv4 show excludedportrange protocol=tcp` and then confirms the IP Helper service is listening, because `netsh` accepts a rule for an excluded port without reporting an error. If either check fails, Create removes the rule.
 
 A DHCP guest can come back with a different address after a host reboot. Set `connect_address` from the address the guest reports, for example `hyperv_vm.<x>.network_adapter[0].ip_addresses[0]`, and the next apply retargets the rule in place.
+
+A rule on a specific `listen_address` can lose its listener across a host reboot while netsh still holds it. This has been observed for a DHCP address on an External switch's host vNIC, and `netsh interface portproxy set` doesn't bring the listener back. Read then reports `listening = false`, the next plan updates the rule in place, and the apply deletes and adds that one rule so the IP Helper service binds it again. Rules on `0.0.0.0` have listened again after the same reboot, so use `0.0.0.0` unless the rule must listen on one host address only.
 
 ## Example Usage
 
@@ -68,6 +71,7 @@ resource "hyperv_port_proxy" "ssh" {
 ### Read-Only
 
 - `id` (String) Identifier `<listen_address>:<listen_port>`, the key netsh stores the rule under.
+- `listening` (Boolean) Whether the IP Helper service listens on `listen_address`:`listen_port`. Read reports `false` for a rule netsh holds with no listener, and the next apply re-adds the rule.
 
 <a id="nestedatt--firewall_rule"></a>
 ### Nested Schema for `firewall_rule`

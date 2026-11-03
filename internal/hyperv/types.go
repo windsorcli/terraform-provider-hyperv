@@ -552,7 +552,7 @@ type SetVMInput struct {
 	Path           *string `json:"path,omitempty"`
 }
 
-// PortProxy is the canonical eight-field read result port_proxy/{get,new,set}.ps1 emit.
+// PortProxy is the canonical nine-field read result port_proxy/{get,new,set}.ps1 emit.
 // ID is "<listen_address>:<listen_port>", the key netsh stores each v4tov4 rule under.
 type PortProxy struct {
 	ID                  string `json:"Id"`
@@ -563,6 +563,7 @@ type PortProxy struct {
 	FirewallRulePresent bool   `json:"FirewallRulePresent"`
 	FirewallRuleName    string `json:"FirewallRuleName"`
 	FirewallRuleProfile string `json:"FirewallRuleProfile"`
+	Listening           bool   `json:"Listening"`
 }
 
 // PortProxyFirewallInput carries the already-defaulted firewall block to new.ps1 and set.ps1.

@@ -7,9 +7,11 @@
 #                   "listen_port":    <int>,
 #                   "firewall_name":  "<string>"
 #                 }
-#   stdout JSON : single eight-field object (Id, ListenAddress, ListenPort,
+#   stdout JSON : single nine-field object (Id, ListenAddress, ListenPort,
 #                 ConnectAddress, ConnectPort, FirewallRulePresent,
-#                 FirewallRuleName, FirewallRuleProfile).
+#                 FirewallRuleName, FirewallRuleProfile, Listening).
+#                 Listening is false when the rule exists but the IP
+#                 Helper service isn't listening on it.
 #   stderr/exit : missing rule -> ObjectNotFound envelope, exit 1 ->
 #                 Go maps to ErrNotFound so Read calls RemoveResource.
 #

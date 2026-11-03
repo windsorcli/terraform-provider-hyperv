@@ -10,7 +10,12 @@ BeforeAll {
 
 Describe 'Get-HypervPortProxy' {
 
-    It 'emits the eight-field read result' {
+    BeforeEach {
+        Mock Get-CimInstance { New-HypervIpHelperService }
+        Mock Get-NetTCPConnection { New-HypervListenerSample }
+    }
+
+    It 'emits the nine-field read result' {
         Mock Get-ItemProperty { New-HypervPortProxyRegistryItem }
         Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
 
@@ -25,6 +30,19 @@ Describe 'Get-HypervPortProxy' {
         $parsed.FirewallRulePresent | Should -BeTrue
         $parsed.FirewallRuleName | Should -Be 'hyperv-pp-0.0.0.0-15000'
         $parsed.FirewallRuleProfile | Should -Be 'Any'
+        $parsed.Listening | Should -BeTrue
+    }
+
+    It 'reports Listening=false for a rule in the registry that nothing listens on' {
+        Mock Get-ItemProperty { New-HypervPortProxyRegistryItem -ListenAddress '192.168.3.77' }
+        Mock Get-NetFirewallRule { New-HypervFirewallRuleSample }
+        Mock Get-NetTCPConnection { New-HypervListenerSample -LocalAddress '0.0.0.0' }
+
+        $parsed = Get-HypervPortProxy -ListenAddress '192.168.3.77' -ListenPort 15000 `
+            -FirewallName 'hyperv-pp-192.168.3.77-15000' | ConvertFrom-Json
+
+        $parsed.Id | Should -Be '192.168.3.77:15000'
+        $parsed.Listening | Should -BeFalse
     }
 
     It 'reports FirewallRulePresent=false when the firewall rule is missing' {

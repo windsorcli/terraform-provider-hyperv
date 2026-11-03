@@ -14,4 +14,5 @@ type Model struct {
 	ConnectAddress types.String `tfsdk:"connect_address"`
 	ConnectPort    types.Int64  `tfsdk:"connect_port"`
 	FirewallRule   types.Object `tfsdk:"firewall_rule"`
+	Listening      types.Bool   `tfsdk:"listening"`
 }
