@@ -94,9 +94,8 @@ function Assert-HypervSwitchNotInUse {
     if ($activeVMs.Count -eq 0) {
         return
     }
-    $activeIds = @($activeVMs | ForEach-Object { $_.Id.ToString() })
-    $attached = @(Get-VMNetworkAdapter -VMName * -ErrorAction Stop |
-        Where-Object { $_.SwitchName -eq $Name -and $activeIds -contains $_.VMId.ToString() })
+    $attached = @($activeVMs | Get-VMNetworkAdapter -ErrorAction Stop |
+        Where-Object { $_.SwitchName -eq $Name })
     if ($attached.Count -eq 0) {
         return
     }

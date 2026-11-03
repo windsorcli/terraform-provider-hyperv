@@ -53,7 +53,7 @@ function Get-VM {
 function Get-VMNetworkAdapter {
     [CmdletBinding()]
     param(
-        [string[]] $VMName
+        [Parameter(ValueFromPipeline)] [object[]] $VM
     )
 }
 
@@ -183,13 +183,11 @@ function New-HypervVMSample {
     [CmdletBinding()]
     param(
         [string] $Name = 'vm0',
-        [string] $State = 'Running',
-        [string] $Id = 'aaaaaaaa-0000-0000-0000-000000000001'
+        [string] $State = 'Running'
     )
     [pscustomobject]@{
         Name  = $Name
         State = $State
-        Id    = [guid]$Id
     }
 }
 
@@ -198,12 +196,10 @@ function New-HypervVMNetworkAdapterSample {
     [CmdletBinding()]
     param(
         [string] $VMName = 'vm0',
-        [string] $VMId = 'aaaaaaaa-0000-0000-0000-000000000001',
         [string] $SwitchName = 'sw0'
     )
     [pscustomobject]@{
         VMName     = $VMName
-        VMId       = [guid]$VMId
         SwitchName = $SwitchName
     }
 }

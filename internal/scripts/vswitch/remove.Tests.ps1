@@ -117,12 +117,12 @@ Describe 'Remove-HypervSwitch' {
         It 'treats Saved and Paused VMs as attached' {
             Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
             Mock Get-VM {
-                New-HypervVMSample -Name 'saved-vm' -State 'Saved' -Id 'aaaaaaaa-0000-0000-0000-000000000001'
-                New-HypervVMSample -Name 'paused-vm' -State 'Paused' -Id 'aaaaaaaa-0000-0000-0000-000000000002'
+                New-HypervVMSample -Name 'saved-vm' -State 'Saved'
+                New-HypervVMSample -Name 'paused-vm' -State 'Paused'
             }
             Mock Get-VMNetworkAdapter {
-                New-HypervVMNetworkAdapterSample -VMName 'saved-vm' -VMId 'aaaaaaaa-0000-0000-0000-000000000001' -SwitchName 'sw0'
-                New-HypervVMNetworkAdapterSample -VMName 'paused-vm' -VMId 'aaaaaaaa-0000-0000-0000-000000000002' -SwitchName 'sw0'
+                New-HypervVMNetworkAdapterSample -VMName 'saved-vm' -SwitchName 'sw0'
+                New-HypervVMNetworkAdapterSample -VMName 'paused-vm' -SwitchName 'sw0'
             }
             Mock Remove-VMSwitch { }
 
@@ -139,6 +139,21 @@ Describe 'Remove-HypervSwitch' {
 
             { Remove-HypervSwitch -Name 'sw0' } | Should -Not -Throw
             Should -Invoke Remove-VMSwitch -Times 1 -Exactly
+        }
+
+        It 'queries adapters only for VMs that are not Off' {
+            Mock Get-VMSwitch { New-HypervSwitchSample -Name $Name }
+            Mock Get-VM {
+                New-HypervVMSample -Name 'off-vm' -State 'Off'
+                New-HypervVMSample -Name 'running-vm' -State 'Running'
+            }
+            Mock Get-VMNetworkAdapter { }
+            Mock Remove-VMSwitch { }
+
+            Remove-HypervSwitch -Name 'sw0'
+
+            Should -Invoke Get-VMNetworkAdapter -Times 1 -Exactly -ParameterFilter { $VM.Name -eq 'running-vm' }
+            Should -Invoke Get-VMNetworkAdapter -Times 0 -Exactly -ParameterFilter { $VM.Name -eq 'off-vm' }
         }
 
         It 'ignores running VMs attached to other switches' {
