@@ -162,6 +162,30 @@ func TestReadVSwitch_NATAugmentedRead(t *testing.T) {
 	}
 }
 
+// A NAT switch whose NetNat or host IP is missing fails the data-source read
+// on nat_name, matching the attribute's documented "not found" behavior.
+func TestReadVSwitch_PartialNATIsNotFoundOnNatName(t *testing.T) {
+	t.Parallel()
+
+	partial := `{"Name":"windsor-nat","SwitchType":"NAT","AllowManagementOS":false,` +
+		`"NetAdapterInterfaceDescription":"","Notes":"","Id":"ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",` +
+		`"NatName":"windsor-nat","NatInternalAddressPrefix":"","NatHostAddress":"192.168.100.1"}`
+	fr := testutil.NewFakeRunner().
+		On("function Get-HypervSwitch").Return(partial, "", 0)
+	c := hyperv.NewClient(fr)
+
+	_, diags := readVSwitch(t.Context(), c, "windsor-nat", "windsor-nat")
+	if !diags.HasError() {
+		t.Fatal("expected an error diagnostic for a NAT switch missing its NetNat")
+	}
+	if !strings.Contains(diags[0].Summary(), "not found") {
+		t.Errorf("summary = %q, want substring 'not found'", diags[0].Summary())
+	}
+	if !strings.Contains(diags[0].Detail(), `"windsor-nat"`) {
+		t.Errorf("detail should echo the nat_name for the operator; got %q", diags[0].Detail())
+	}
+}
+
 // readVSwitch with empty natName returns the bare VMSwitch read and
 // leaves nat_* fields null. Locks the "non-NAT switches don't get
 // NAT augmentation" half of the contract.

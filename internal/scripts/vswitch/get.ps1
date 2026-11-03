@@ -11,16 +11,16 @@
 #                   NetAdapterInterfaceDescription, Notes, Id,
 #                   NatName, NatInternalAddressPrefix, NatHostAddress.
 #                 SwitchType is the enum stringified ("External"/"Internal"/
-#                 "Private") OR synthesized "NAT" when nat_name is supplied
-#                 and Get-NetNat + Get-NetIPAddress both succeed; Id is the
-#                 Guid stringified. NAT fields are empty strings for non-NAT
-#                 switches.
+#                 "Private") OR synthesized "NAT" when nat_name is supplied;
+#                 Id is the Guid stringified. With nat_name, NatName echoes
+#                 it, NatInternalAddressPrefix is empty when the NetNat is
+#                 missing, and NatHostAddress is empty when the host IP is
+#                 missing. NAT fields are empty strings for non-NAT switches.
 #   stderr/exit : missing switch -> ObjectNotFound envelope, exit 1 -> Go
 #                 maps to ErrNotFound (resource Read calls RemoveResource).
-#                 vmms-stopped -> ResourceUnavailable -> ErrUnavailable. For
-#                 NAT switches, a missing NetNat or NetIPAddress is also
-#                 ObjectNotFound: partial NAT teardown means the resource
-#                 as a whole is gone.
+#                 vmms-stopped -> ResourceUnavailable -> ErrUnavailable. A
+#                 missing NetNat or host IP is not ObjectNotFound: the
+#                 VMSwitch still exists, so Terraform keeps it in state.
 #
 # Tests dot-source this file; the entry block is guarded to skip when
 # invoked that way. The Select-Object projection is duplicated across
@@ -69,13 +69,7 @@ function Get-HypervSwitch {
         throw $errorRecord
     }
 
-    # NAT augmentation. Hyper-V reports SwitchType=Internal for the
-    # underlying VMSwitch; we synthesize SwitchType=NAT when the caller
-    # passes -NatName and the matching NetNat + NetIPAddress are both
-    # present on the host. Either piece missing means the NAT triple has
-    # been partially torn down out-of-band -- treat as resource-gone so
-    # the Go side's RemoveResource fires and the next apply can recreate
-    # cleanly rather than reporting drift on a half-broken state.
+    # Hyper-V reports a NAT switch as Internal; a missing NetNat or host IP blanks only its own fields.
     $synthesizedType = $sw.SwitchType.ToString()
     $natNameOut = ''
     $natPrefixOut = ''
@@ -88,18 +82,14 @@ function Get-HypervSwitch {
             Select-Object -First 1
         $netNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue |
             Select-Object -First 1
-        if ($null -eq $netNat -or $null -eq $natIp) {
-            $exception = [System.Management.Automation.ItemNotFoundException]::new(
-                "NAT switch '$Name' is missing its NetNat ('$NatName') or NetIPAddress (vEthernet ($Name)). Treating the resource as gone.")
-            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
-                $exception, 'VMSwitchNATPartial',
-                [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
-            throw $errorRecord
-        }
         $synthesizedType = 'NAT'
-        $natNameOut = $netNat.Name
-        $natPrefixOut = $netNat.InternalIPInterfaceAddressPrefix
-        $natHostOut = $natIp.IPAddress
+        $natNameOut = $NatName
+        if ($null -ne $netNat) {
+            $natPrefixOut = $netNat.InternalIPInterfaceAddressPrefix
+        }
+        if ($null -ne $natIp) {
+            $natHostOut = $natIp.IPAddress
+        }
     }
 
     $sw |

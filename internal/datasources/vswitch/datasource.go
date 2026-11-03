@@ -205,6 +205,15 @@ func readVSwitch(ctx context.Context, c *hyperv.Client, name, natName string) (M
 		}
 		return Model{}, diags
 	}
+	if natName != "" && (sw.NatInternalAddressPrefix == "" || sw.NatHostAddress == "") {
+		diags.AddAttributeError(
+			path.Root("nat_name"),
+			"Hyper-V virtual switch not found",
+			fmt.Sprintf("Switch %q exists, but its NetNat %q or its host IP on vEthernet (%s) is missing.",
+				name, natName, name),
+		)
+		return Model{}, diags
+	}
 
 	natPrefix := types.StringNull()
 	if sw.NatInternalAddressPrefix != "" {

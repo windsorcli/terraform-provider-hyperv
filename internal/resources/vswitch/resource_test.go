@@ -532,3 +532,34 @@ func TestModelFromVMSwitch_NullsNatFieldsForNonNAT(t *testing.T) {
 		t.Errorf("NatHostAddress must be null for non-NAT switch; got %q", got.NatHostAddress.ValueString())
 	}
 }
+
+// A half-removed NAT switch keeps nat_name in state, so the next Delete still routes through the NAT teardown.
+func TestModelFromVMSwitch_PartialNATKeepsNatName(t *testing.T) {
+	t.Parallel()
+
+	sw := &hyperv.VMSwitch{
+		Name:           "windsor-nat",
+		SwitchType:     "NAT",
+		ID:             "guid-here",
+		NatName:        "windsor-nat",
+		NatHostAddress: "",
+	}
+
+	var diags diag.Diagnostics
+	got := modelFromVMSwitch(t.Context(), sw, types.ListNull(types.StringType), types.BoolNull(), &diags)
+	if diags.HasError() {
+		t.Fatalf("diags: %v", diags)
+	}
+	if got.NatName.ValueString() != "windsor-nat" {
+		t.Errorf("NatName = %q, want windsor-nat", got.NatName.ValueString())
+	}
+	if got.SwitchType.ValueString() != "NAT" {
+		t.Errorf("SwitchType = %q, want NAT", got.SwitchType.ValueString())
+	}
+	if !got.NatInternalAddressPrefix.IsNull() {
+		t.Errorf("NatInternalAddressPrefix must be null when the NetNat is missing; got %q", got.NatInternalAddressPrefix.ValueString())
+	}
+	if !got.NatHostAddress.IsNull() {
+		t.Errorf("NatHostAddress must be null when the host IP is missing; got %q", got.NatHostAddress.ValueString())
+	}
+}

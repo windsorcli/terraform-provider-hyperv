@@ -32,7 +32,10 @@ func resourceSchema() schema.Schema {
 			"the result, for example on a transient stdout decode error, the switch exists on the " +
 			"host with no Terraform state, and the next `terraform apply` fails because a switch " +
 			"with that name already exists. Recover with " +
-			"`terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.",
+			"`terraform import hyperv_virtual_switch.<name> <switch-name>` and re-plan.\n\n" +
+			"~> **Note:** Destroy fails before it changes the host while a VM that is not `Off` " +
+			"has a network adapter on the switch. Stop the VM or move its adapter to another " +
+			"switch, then apply again.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,

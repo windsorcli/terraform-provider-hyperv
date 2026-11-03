@@ -9,11 +9,12 @@
 #   stdout      : empty (caller passes dst=nil to runScript).
 #   stderr/exit : missing switch -> ObjectNotFound envelope, exit 1 -> Go
 #                 maps to ErrNotFound so Delete treats already-gone as
-#                 success.
+#                 success. A VM that isn't Off with a NIC on the switch ->
+#                 ResourceBusy envelope, exit 1, before anything is removed.
 #
-# NAT teardown order is load-bearing: NetNat first, then NetIPAddress,
-# then Remove-VMSwitch, since the switch fails to remove while a NetNat
-# still references its vNIC. Each step tolerates its own ObjectNotFound.
+# Remove-VMSwitch runs last, so a failed NetNat or NetIPAddress step leaves
+# the VMSwitch that get.ps1 keys on. Each NAT step tolerates its own
+# ObjectNotFound.
 #
 # lint:allow-long-comment
 
@@ -51,11 +52,9 @@ function Remove-HypervSwitch {
         throw $errorRecord
     }
 
-    # NAT pre-steps: Remove-NetNat then Remove-NetIPAddress before
-    # Remove-VMSwitch. Each step tolerates ObjectNotFound (best-effort
-    # destroy: a previous partial teardown may have already removed
-    # individual pieces). The order is load-bearing -- Remove-VMSwitch
-    # fails if the NetNat still references the switch's vNIC.
+    Assert-HypervSwitchNotInUse -Name $Name
+
+    # NAT pieces may already be gone after an earlier partial teardown, so each removal is skipped when absent.
     if ($PSBoundParameters.ContainsKey('NatName') -and $NatName -ne '') {
         $existingNat = Get-NetNat -Name $NatName -ErrorAction SilentlyContinue |
             Select-Object -First 1
@@ -81,6 +80,33 @@ function Remove-HypervSwitch {
     # swallowed (which would record Delete success and drop the switch from
     # state while leaving it on the host).
     Remove-VMSwitch -Name $Name -Force -ErrorAction Stop
+}
+
+# Assert-HypervSwitchNotInUse throws ResourceBusy when a VM that isn't Off
+# has a NIC on the switch. Remove-VMSwitch refuses that case itself, but only
+# after the NAT steps have already removed the NetNat and host IP.
+function Assert-HypervSwitchNotInUse {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Name
+    )
+    $activeVMs = @(Get-VM -ErrorAction Stop | Where-Object { $_.State.ToString() -ne 'Off' })
+    if ($activeVMs.Count -eq 0) {
+        return
+    }
+    $activeIds = @($activeVMs | ForEach-Object { $_.Id.ToString() })
+    $attached = @(Get-VMNetworkAdapter -VMName * -ErrorAction Stop |
+        Where-Object { $_.SwitchName -eq $Name -and $activeIds -contains $_.VMId.ToString() })
+    if ($attached.Count -eq 0) {
+        return
+    }
+    $vmNames = ($attached | ForEach-Object { $_.VMName } | Sort-Object -Unique) -join ', '
+    $exception = [System.InvalidOperationException]::new(
+        "Virtual switch '$Name' is in use by VMs that are not Off: $vmNames. Stop these VMs or move their network adapters to another switch, then retry the delete.")
+    $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+        $exception, 'VMSwitchInUse',
+        [System.Management.Automation.ErrorCategory]::ResourceBusy, $Name)
+    throw $errorRecord
 }
 
 # Entry block. Skipped during Pester runs (dot-source sets InvocationName='.').
