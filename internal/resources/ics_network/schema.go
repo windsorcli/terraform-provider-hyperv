@@ -20,7 +20,7 @@ func resourceSchema() schema.Schema {
 			"Manages one [Host Compute Network](https://learn.microsoft.com/en-us/virtualization/api/hcn/hns_schema) " +
 			"of type `ICS`. Guests on it get a DHCP lease, DNS, and outbound NAT through the host, " +
 			"and the host itself takes `host_address`, the first address in `address_prefix`. " +
-			"The provider calls `computenetwork.dll` through P/Invoke. The network persists across host " +
+			"The network persists across host " +
 			"reboots with the same ID, prefix, and isolation ID.\n\n" +
 			"Every ICS network on a host shares one Internal `VMSwitch`. The first ICS network creates it " +
 			"and names it after itself, and the switch keeps that name after that network is deleted. " +

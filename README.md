@@ -22,6 +22,7 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 
 - **Hyper-V Administrators** is sufficient for: `hyperv_vm`, `hyperv_vhd`, `hyperv_image_file`; data sources `hyperv_host`, `hyperv_vm_state`, `hyperv_virtual_switch`; and `hyperv_virtual_switch` with `switch_type = "Private"` or `"Internal"`. Per Microsoft, [members of this group have complete and unrestricted access to all the features in Hyper-V](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups).
 - **Local Administrators** is required for: `hyperv_nat_static_mapping` (`Add-NetNatStaticMapping` and `New-NetFirewallRule` return "Access denied" for Hyper-V Administrators alone); and `hyperv_virtual_switch` with `switch_type = "NAT"` (the underlying `New-NetNat` returns the same). `switch_type = "External"` was not directly tested — Local Administrators is the recommended floor.
+- **Built-in `Administrator`** is the only identity tested for `hyperv_port_proxy` and `hyperv_ics_network`.
 - **No host-side requirement** for the `hyperv_iso_volume` data source — runs on the Terraform runner.
 
 **WinRM-backend transport.** Opening a WinRM/PSSession needs membership in `Administrators` or `Remote Management Users` in addition to the per-resource privilege above. `Administrators` implies this; a delegated identity in only `Hyper-V Administrators` does not. For least-privilege delegation, configure a [JEA endpoint](https://learn.microsoft.com/en-us/powershell/scripting/security/remoting/jea/overview) and point the WinRM backend at it. The provider does not (and should not) set JEA up for you — that's host fabric configuration owned by DSC, GPO, or Intune.
@@ -32,10 +33,11 @@ The connecting identity needs the privilege appropriate to each resource. The ma
 |---|---|---|
 | `hyperv_virtual_switch` | Networking | External / Internal / Private / NAT switches; NIC team binding; management OS share toggle. NAT switches provision the underlying `NetNat` + host vNIC IP. |
 | `hyperv_nat_static_mapping` | Networking | TCP/UDP port forward (`Add-NetNatStaticMapping`) into a private/internal subnet, plus an optional inbound firewall allow rule. Functionally equivalent to `azurerm_lb_nat_rule` / `google_compute_forwarding_rule`. |
+| `hyperv_port_proxy` | Networking | TCP port forward (`netsh interface portproxy`) from the host to any IPv4 address it can reach, with no `NetNat` needed, plus an optional inbound firewall allow rule. |
 | `hyperv_ics_network` | Networking | Host Compute Network of type ICS: guests get DHCP, DNS, and outbound NAT from the host. Pair with `hyperv_vm.network_adapter[*].isolation_id`. Needs the `Containers-HNS` feature. |
 | `hyperv_image_file` | Storage | Place a VHDX or ISO on the host. Five source modes: `url` (provider downloads + verifies SHA-256, with optional `gz`/`xz`/`zst`/`bz2` decompression), `local_path` (streams a runner-local file via the active backend), `literal_bytes` (base64 payload — pairs with `hyperv_iso_volume`), `source_path` (host-side copy from an existing file), and `host_path` (attests the file already exists). |
 | `hyperv_vhd` | Storage | Fixed / dynamic / differencing VHD or VHDX. Resize supported for dynamic. |
-| `hyperv_vm` | Compute | Generation 1/2; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources). |
+| `hyperv_vm` | Compute | Generation 1/2; CPU; memory (static or dynamic with `min_bytes`/`max_bytes`); Secure Boot; boot order on gen 2; inline `network_adapter[]`, `hard_disk_drive[]`, `dvd_drive[]`, and `state{desired,current,shutdown_mode}` blocks (no separate sub-resources); a settable `path` for the VM's own files; `wait_for_guest_ip_timeout` to wait for a DHCP address on create. |
 
 | Data source | Subcategory | Notes |
 |---|---|---|

@@ -4,7 +4,7 @@ page_title: "hyperv_ics_network Resource - hyperv"
 subcategory: ""
 description: |-
   Requirements: the Host Network Service (hns) must be present. On Windows Server, enable it with Enable-WindowsOptionalFeature -Online -FeatureName Containers-HNS -All and restart the host. Tested with the built-in Administrator account on Windows Server 2022 (build 10.0.20348); a less privileged identity hasn't been tested.
-  Manages one Host Compute Network https://learn.microsoft.com/en-us/virtualization/api/hcn/hns_schema of type ICS. Guests on it get a DHCP lease, DNS, and outbound NAT through the host, and the host itself takes host_address, the first address in address_prefix. The provider calls computenetwork.dll through P/Invoke. The network persists across host reboots with the same ID, prefix, and isolation ID.
+  Manages one Host Compute Network https://learn.microsoft.com/en-us/virtualization/api/hcn/hns_schema of type ICS. Guests on it get a DHCP lease, DNS, and outbound NAT through the host, and the host itself takes host_address, the first address in address_prefix. The network persists across host reboots with the same ID, prefix, and isolation ID.
   Every ICS network on a host shares one Internal VMSwitch. The first ICS network creates it and names it after itself, and the switch keeps that name after that network is deleted. Deleting the last ICS network removes the switch. HNS also assigns each network a VLAN isolation ID, and a guest NIC gets a lease only when its isolation ID matches. Connect a VM by setting hyperv_vm.network_adapter[*].switch_name to switch_name and hyperv_vm.network_adapter[*].isolation_id to isolation_id.
   A guest can get a different lease after a host reboot. Read its address from hyperv_vm.<x>.network_adapter[0].ip_addresses rather than hard-coding it.
 ---
@@ -13,7 +13,7 @@ description: |-
 
 **Requirements:** the Host Network Service (`hns`) must be present. On Windows Server, enable it with `Enable-WindowsOptionalFeature -Online -FeatureName Containers-HNS -All` and restart the host. Tested with the built-in `Administrator` account on Windows Server 2022 (build 10.0.20348); a less privileged identity hasn't been tested.
 
-Manages one [Host Compute Network](https://learn.microsoft.com/en-us/virtualization/api/hcn/hns_schema) of type `ICS`. Guests on it get a DHCP lease, DNS, and outbound NAT through the host, and the host itself takes `host_address`, the first address in `address_prefix`. The provider calls `computenetwork.dll` through P/Invoke. The network persists across host reboots with the same ID, prefix, and isolation ID.
+Manages one [Host Compute Network](https://learn.microsoft.com/en-us/virtualization/api/hcn/hns_schema) of type `ICS`. Guests on it get a DHCP lease, DNS, and outbound NAT through the host, and the host itself takes `host_address`, the first address in `address_prefix`. The network persists across host reboots with the same ID, prefix, and isolation ID.
 
 Every ICS network on a host shares one Internal `VMSwitch`. The first ICS network creates it and names it after itself, and the switch keeps that name after that network is deleted. Deleting the last ICS network removes the switch. HNS also assigns each network a VLAN isolation ID, and a guest NIC gets a lease only when its isolation ID matches. Connect a VM by setting `hyperv_vm.network_adapter[*].switch_name` to `switch_name` and `hyperv_vm.network_adapter[*].isolation_id` to `isolation_id`.
 
