@@ -10,7 +10,7 @@ in production until `v1.0.0` ships.
 
 Each section is copied from the release-drafter draft in a
 `docs(changelog)` pull request that merges before the release tag is
-pushed. See [Cutting a release](docs/contributing/releasing.md). The
+pushed. See [Updating CHANGELOG.md](docs/contributing/releasing.md#updating-changelogmd). The
 running draft for the next version is on the
 [Releases](https://github.com/windsorcli/terraform-provider-hyperv/releases)
 page, along with the notes for releases before `v0.5.0`.
