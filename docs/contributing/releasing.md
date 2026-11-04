@@ -18,9 +18,15 @@ Release-drafter watches `main` and keeps a tagless draft release with notes auto
 
 Labels also drive section grouping in the drafted release notes (Features / Bug Fixes / Maintenance / Dependencies). Label every PR before merging so the resolved version and the drafted notes both reflect intent. You can preview the running draft any time on the [Releases](https://github.com/windsorcli/terraform-provider-hyperv/releases) page — look for the topmost entry tagged "Draft".
 
+## Updating CHANGELOG.md
+
+Before tagging, open a `docs(changelog): add vX.Y.Z` PR that copies the draft's body into a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of [`CHANGELOG.md`](../../CHANGELOG.md), below the header. The draft's body opens with a `## Changes` heading that has nothing under it before `## Features`; drop it, then change each remaining `##` heading to `###` so it sits under the version. Merge the PR before pushing the tag.
+
+The changelog is updated in a PR because `main`'s rulesets require a reviewed PR and passing checks for every change, and the `GITHUB_TOKEN` that workflows use isn't on either ruleset's bypass list. This PR then appears in the draft under Maintenance. Its own entry stays out of the section it adds, so the published release body has one more line than the changelog does.
+
 ## Cutting the release
 
-Three commands from a clean `main`:
+Three commands from a clean `main`, after the changelog PR has merged:
 
 ```sh
 git checkout main && git pull
@@ -61,7 +67,7 @@ The two-step flow makes most failures non-destructive:
   git push origin vX.Y.Z
   ```
 
-  Caveat on re-runs after GoReleaser succeeded: GoReleaser's `replace_existing_draft: true` deletes the release-drafter draft as part of its run. If the workflow fails after that point but before publish lands, a re-run will capture an empty body — the curated notes are gone. Two recovery options: edit the draft release's body manually in the GitHub UI before re-running (drafts stay mutable until the publish step), or accept an empty published body and patch downstream notes (`CHANGELOG.md`, registry description) by hand.
+  Caveat on re-runs after GoReleaser succeeded: GoReleaser's `replace_existing_draft: true` deletes the release-drafter draft as part of its run. If the workflow fails after that point but before publish lands, a re-run will capture an empty body — the curated notes are gone. Two recovery options: edit the draft release's body manually in the GitHub UI before re-running (drafts stay mutable until the publish step), or accept an empty published body and patch the registry description by hand.
 
 - **Workflow failed at or after the publish step.** The release is now immutable. You can still delete it with `gh release delete --cleanup-tag` (deletion is allowed; modification isn't) and burn the version. The Terraform Registry never registers a release with missing assets, so the version number is reusable as long as you delete before fixing.
 

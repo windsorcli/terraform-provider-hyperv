@@ -79,9 +79,8 @@ release:
   # `keep-existing` preserves the release notes that release-drafter
   # already authored on the draft. Without this, goreleaser would
   # overwrite the body with its own (empty, since changelog is
-  # disabled) one when it attaches artifacts -- the release would
-  # lose the curated notes AND the changelog-on-release workflow
-  # would prepend an empty section to CHANGELOG.md.
+  # disabled) one when it attaches artifacts, and the release would
+  # lose the curated notes.
   #
   # `draft: true` keeps the release in draft state through the asset
   # upload phase. Required because the org has GitHub's "Immutable
@@ -99,8 +98,7 @@ release:
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
 
 changelog:
-  # CHANGELOG.md is human-curated (release-drafter populates it from
-  # labeled PRs); GoReleaser shouldn't auto-overwrite the release
-  # body. Use the GitHub Release notes (drafted by release-drafter)
-  # as the source of truth.
+  # release-drafter writes the release notes from labeled PRs, and
+  # CHANGELOG.md is copied from them by hand; GoReleaser shouldn't
+  # overwrite the release body.
   disable: true
