@@ -20,7 +20,7 @@ Labels also drive section grouping in the drafted release notes (Features / Bug 
 
 ## Updating CHANGELOG.md
 
-Before tagging, open a `docs(changelog): add vX.Y.Z` PR that copies the draft's body into a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of [`CHANGELOG.md`](../../CHANGELOG.md), below the header. Drop the draft's empty `## Changes` heading and move each remaining heading down one level so it sits under the version. Merge the PR before pushing the tag.
+Before tagging, open a `docs(changelog): add vX.Y.Z` PR that copies the draft's body into a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of [`CHANGELOG.md`](../../CHANGELOG.md), below the header. The draft's body opens with a `## Changes` heading that has nothing under it before `## Features`; drop it, then change each remaining `##` heading to `###` so it sits under the version. Merge the PR before pushing the tag.
 
 The changelog is updated in a PR because `main`'s rulesets require a reviewed PR and passing checks for every change, and the `GITHUB_TOKEN` that workflows use isn't on either ruleset's bypass list. This PR then appears in the draft under Maintenance. Its own entry stays out of the section it adds, so the published release body has one more line than the changelog does.
 
