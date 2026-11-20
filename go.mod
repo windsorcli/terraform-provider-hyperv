@@ -13,7 +13,7 @@ require (
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/kdomanski/iso9660 v0.4.0
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/masterzen/winrm v0.0.0-20261114181639-d693523ae428
 	github.com/ulikunitz/xz v0.5.17
 	golang.org/x/crypto v0.59.0
