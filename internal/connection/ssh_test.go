@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // generateTestKey returns a freshly-minted ed25519 private key in OpenSSH
@@ -97,8 +99,9 @@ func TestNewSSH_RequiresHostAndUsername(t *testing.T) {
 // At least one auth method must be configured -- raw key, key path, or
 // password. Refusing here at config time is friendlier than the SSH
 // handshake error you'd get from an empty Auth slice.
+// NOTE: not parallel -- t.Setenv modifies the global environment.
 func TestNewSSH_RequiresAuthMethod(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SSH_AUTH_SOCK", "")
 
 	knownHosts := writeKnownHostsFile(t)
 	_, err := NewSSH(SSHOptions{
@@ -114,10 +117,37 @@ func TestNewSSH_RequiresAuthMethod(t *testing.T) {
 	}
 }
 
+// When the SSH agent socket is set but unreachable, and no explicit auth
+// is configured, the error must mention the agent dial failure so the
+// user knows the agent was tried and failed.
+// Skipped on Windows (no Unix socket, different pipe semantics).
+// NOTE: not parallel -- t.Setenv modifies the global environment.
+func TestNewSSH_RequiresAuthMethod_AgentFailed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SSH agent socket test requires Unix domain socket")
+	}
+
+	t.Setenv("SSH_AUTH_SOCK", "/nonexistent/agent.sock")
+
+	knownHosts := writeKnownHostsFile(t)
+	_, err := NewSSH(SSHOptions{
+		Host:           "example.com",
+		Username:       "u",
+		KnownHostsPath: knownHosts,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "SSH agent dial failed") {
+		t.Errorf("error = %v, want SSH agent dial failed", err)
+	}
+}
+
 // Auth precedence: raw key bytes win over a key path. Both can be set in
 // the user's environment; the tests document which one the provider uses.
+// NOTE: not parallel -- t.Setenv modifies the global environment.
 func TestBuildSSHAuthMethods_RawKeyWinsOverPath(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SSH_AUTH_SOCK", "")
 
 	keyBytes := generateTestKey(t)
 
@@ -136,8 +166,9 @@ func TestBuildSSHAuthMethods_RawKeyWinsOverPath(t *testing.T) {
 
 // When PrivateKey is empty, PrivateKeyPath is read from disk. Verifies
 // the fallback path actually loads and parses the file.
+// NOTE: not parallel -- t.Setenv modifies the global environment.
 func TestBuildSSHAuthMethods_FallsBackToKeyPath(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SSH_AUTH_SOCK", "")
 
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "id_ed25519")
@@ -157,8 +188,9 @@ func TestBuildSSHAuthMethods_FallsBackToKeyPath(t *testing.T) {
 // Password is a valid auth method on its own (no key required). The
 // SSH-server host typically wants key auth, but the provider shouldn't
 // hard-block password when a key is absent.
+// NOTE: not parallel -- t.Setenv modifies the global environment.
 func TestBuildSSHAuthMethods_PasswordOnly(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SSH_AUTH_SOCK", "")
 
 	auths, err := buildSSHAuthMethods(SSHOptions{Password: []byte("secret")})
 	if err != nil {
@@ -171,8 +203,9 @@ func TestBuildSSHAuthMethods_PasswordOnly(t *testing.T) {
 
 // Both key and password configured: both methods are offered, key first.
 // SSH negotiates whichever the server accepts.
+// NOTE: not parallel -- t.Setenv modifies the global environment.
 func TestBuildSSHAuthMethods_KeyAndPasswordBothOffered(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SSH_AUTH_SOCK", "")
 
 	auths, err := buildSSHAuthMethods(SSHOptions{
 		PrivateKey: generateTestKey(t),
@@ -594,7 +627,7 @@ func TestWaitForDone_ReturnsOnCtxCancelEvenIfDoneNeverFires(t *testing.T) {
 	t.Parallel()
 
 	done := make(chan error)
-	defer close(done) // unblocks waitForDone's background drain goroutine
+	defer close(done)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
@@ -645,5 +678,57 @@ func TestWaitForDone_ReturnsDoneResultBeforeCtxExpires(t *testing.T) {
 
 	if err := waitForDone(ctx, done, func() { t.Error("close callback should not run") }); !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want %v", err, sentinel)
+	}
+}
+
+// Agent auth is auto-detected when SSH_AUTH_SOCK points at a running
+// agent. This test spins up a mock agent on a temp Unix socket, sets
+// SSH_AUTH_SOCK, then verifies buildSSHAuthMethods includes an agent
+// auth method. Skipped on Windows where Unix sockets aren't available.
+// NOTE: not parallel -- t.Setenv modifies the global environment.
+func TestBuildSSHAuthMethods_AgentAuth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires SSH agent socket (not available on Windows test runners)")
+	}
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate agent key: %v", err)
+	}
+
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "agent.sock")
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen %s: %v", sockPath, err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		keyring := agent.NewKeyring()
+		if err := keyring.Add(agent.AddedKey{PrivateKey: priv}); err != nil {
+			t.Errorf("add key to keyring: %v", err)
+		}
+		_ = agent.ServeAgent(keyring, c)
+	}()
+	defer func() {
+		_ = ln.Close()
+		<-done
+	}()
+
+	t.Setenv("SSH_AUTH_SOCK", sockPath)
+
+	auths, err := buildSSHAuthMethods(SSHOptions{})
+	if err != nil {
+		t.Fatalf("buildSSHAuthMethods: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("len(auths) = %d, want 1 (agent auth)", len(auths))
 	}
 }
